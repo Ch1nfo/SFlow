@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw, Siren } from 'lucide-react'
+import { ChevronDown, ChevronRight, RefreshCw, Siren } from 'lucide-react'
 import {
   decideApproval,
   fetchDashboardSummary,
@@ -258,6 +258,7 @@ export default function SentinelFlowAlertsPage() {
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(() => readStoredSelectedSourceId())
   const [timeRange, setTimeRange] = useState<AlertTimeRange>('today')
   const [payloadExpanded, setPayloadExpanded] = useState(false)
+  const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [actionState, setActionState] = useState<{ action: string; running: boolean }>({ action: '', running: false })
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
@@ -329,6 +330,7 @@ export default function SentinelFlowAlertsPage() {
 
   useEffect(() => {
     setPayloadExpanded(false)
+    setFinalJudgmentExpanded(false)
   }, [selectedTaskId])
 
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
@@ -369,6 +371,9 @@ export default function SentinelFlowAlertsPage() {
   const selectedEvidence = Array.isArray(selectedResult.evidence)
     ? selectedResult.evidence.map((item) => String(item).trim()).filter(Boolean)
     : []
+  const hasFinalJudgment = Boolean(
+    selectedFinalJudgmentMarkdown || selectedDisposition || selectedReason || selectedSummary,
+  )
   const hideTaskError = Boolean(selectedClosureStep.attempted) && Boolean(selectedClosureStep.success)
   const dipPreview = formatIpPreview(selectedPayload.dip)
   const workflowDecision = String(
@@ -408,7 +413,7 @@ export default function SentinelFlowAlertsPage() {
       setQueueListMaxHeight(null)
       return
     }
-  }, [selectedTaskId, payloadExpanded, selectedTask?.task_id, selectedTask?.status, selectedDisposition, selectedFinalJudgmentMarkdown, selectedReason, selectedSummary, selectedEvidence.length, selectedConsistencyIssues.length])
+  }, [selectedTaskId, payloadExpanded, finalJudgmentExpanded, selectedTask?.task_id, selectedTask?.status, selectedDisposition, selectedFinalJudgmentMarkdown, selectedReason, selectedSummary, selectedEvidence.length, selectedConsistencyIssues.length])
 
   async function runAction(action: string) {
     setActionState({ action, running: true })
@@ -665,30 +670,44 @@ export default function SentinelFlowAlertsPage() {
                     )}
                   </div>
                 ) : null}
-                {selectedFinalJudgmentMarkdown ? (
+                {hasFinalJudgment ? (
                   <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
-                    <div className="mt-2 text-sm text-blue-900">
-                      <MarkdownContent content={selectedFinalJudgmentMarkdown} />
-                    </div>
-                  </div>
-                ) : selectedDisposition || selectedReason || selectedSummary ? (
-                  <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
-                    <div className="mt-2 text-sm font-semibold text-blue-950">
-                      {`分类：${getDispositionLabel(selectedDisposition)}`}
-                    </div>
-                    {selectedSummary ? <div className="mt-2 text-sm text-blue-900">结论：{selectedSummary}</div> : null}
-                    {selectedReason ? <div className="mt-2 text-sm text-blue-900">理由：{selectedReason}</div> : null}
-                    {selectedEvidence.length ? (
-                      <div className="mt-3">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">关键依据</div>
-                        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-blue-900">
-                          {selectedEvidence.map((item, index) => (
-                            <li key={`${selectedTask.task_id}-evidence-${index}`}>{item}</li>
-                          ))}
-                        </ul>
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
+                        <p className="mt-1 text-sm text-blue-900">
+                          {finalJudgmentExpanded ? '已展开完整研判内容。' : '点击展开查看完整研判思路与内容。'}
+                        </p>
                       </div>
+                      <button type="button" className="sentinelflow-ghost-button" onClick={() => setFinalJudgmentExpanded((current) => !current)}>
+                        {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                        {finalJudgmentExpanded ? '收起最终研判' : '展开最终研判'}
+                      </button>
+                    </div>
+                    {finalJudgmentExpanded ? (
+                      selectedFinalJudgmentMarkdown ? (
+                        <div className="mt-4 text-sm text-blue-900">
+                          <MarkdownContent content={selectedFinalJudgmentMarkdown} />
+                        </div>
+                      ) : (
+                        <div className="mt-4">
+                          <div className="text-sm font-semibold text-blue-950">
+                            {`分类：${getDispositionLabel(selectedDisposition)}`}
+                          </div>
+                          {selectedSummary ? <div className="mt-2 text-sm text-blue-900">结论：{selectedSummary}</div> : null}
+                          {selectedReason ? <div className="mt-2 text-sm text-blue-900">理由：{selectedReason}</div> : null}
+                          {selectedEvidence.length ? (
+                            <div className="mt-3">
+                              <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">关键依据</div>
+                              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-blue-900">
+                                {selectedEvidence.map((item, index) => (
+                                  <li key={`${selectedTask.task_id}-evidence-${index}`}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                        </div>
+                      )
                     ) : null}
                   </div>
                 ) : null}

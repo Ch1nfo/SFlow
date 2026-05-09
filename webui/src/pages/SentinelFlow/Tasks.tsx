@@ -435,6 +435,7 @@ export default function SentinelFlowTasksPage() {
   const [runningAction, setRunningAction] = useState('')
   const [filter, setFilter] = useState<TaskFilter>(() => readSessionValue<TaskFilter>(TASK_FILTER_KEY, 'all'))
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [toolResultsExpanded, setToolResultsExpanded] = useState(false)
   const [processExpanded, setProcessExpanded] = useState(false)
   const taskListPanelRef = useRef<HTMLDivElement | null>(null)
@@ -478,6 +479,7 @@ export default function SentinelFlowTasksPage() {
   }, [filteredTasks])
 
   useEffect(() => {
+    setFinalJudgmentExpanded(false)
     setToolResultsExpanded(false)
     setProcessExpanded(false)
   }, [selectedTaskId])
@@ -520,7 +522,7 @@ export default function SentinelFlowTasksPage() {
       setTaskListMaxHeight(null)
       return
     }
-  }, [selectedTaskId, toolResultsExpanded, processExpanded, filteredTasks.length, selectedTask?.task_id, selectedTask?.status])
+  }, [selectedTaskId, finalJudgmentExpanded, toolResultsExpanded, processExpanded, filteredTasks.length, selectedTask?.task_id, selectedTask?.status])
 
   const refreshTasks = useCallback(() => {
     void fetchAllPollAlerts().then((next) => {
@@ -620,6 +622,9 @@ export default function SentinelFlowTasksPage() {
   const selectedEvidence = Array.isArray(selectedResult.evidence)
     ? selectedResult.evidence.map((item) => String(item).trim()).filter(Boolean)
     : []
+  const hasFinalJudgment = Boolean(
+    selectedFinalJudgmentMarkdown || selectedDisposition || selectedReason || selectedSummary,
+  )
   const hideTaskError = Boolean(selectedClosureStep.attempted) && Boolean(selectedClosureStep.success)
   const selectedTrace = Array.isArray(selectedResult.execution_trace) && selectedResult.execution_trace.length
     ? (selectedResult.execution_trace as ExecutionTraceItem[])
@@ -782,28 +787,42 @@ export default function SentinelFlowTasksPage() {
                     </div>
                   ) : null}
 
-                  {selectedFinalJudgmentMarkdown ? (
+                  {hasFinalJudgment ? (
                     <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
-                      <div className="mt-2 text-sm text-blue-900">
-                        <MarkdownContent content={selectedFinalJudgmentMarkdown} />
-                      </div>
-                    </div>
-                  ) : selectedDisposition || selectedReason || selectedSummary ? (
-                    <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
-                      <div className="mt-2 text-sm font-semibold text-blue-950">{`分类：${getDispositionLabel(selectedDisposition)}`}</div>
-                      {selectedSummary ? <div className="mt-2 text-sm text-blue-900">结论：{selectedSummary}</div> : null}
-                      {selectedReason ? <div className="mt-2 text-sm text-blue-900">理由：{selectedReason}</div> : null}
-                      {selectedEvidence.length ? (
-                        <div className="mt-3">
-                          <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">关键依据</div>
-                          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-blue-900">
-                            {selectedEvidence.map((item, index) => (
-                              <li key={`${selectedTask.task_id}-evidence-${index}`}>{item}</li>
-                            ))}
-                          </ul>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
+                          <p className="mt-1 text-sm text-blue-900">
+                            {finalJudgmentExpanded ? '已展开完整研判内容。' : '点击展开查看完整研判思路与内容。'}
+                          </p>
                         </div>
+                        <button type="button" className="sentinelflow-ghost-button" onClick={() => setFinalJudgmentExpanded((current) => !current)}>
+                          {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                          {finalJudgmentExpanded ? '收起最终研判' : '展开最终研判'}
+                        </button>
+                      </div>
+                      {finalJudgmentExpanded ? (
+                        selectedFinalJudgmentMarkdown ? (
+                          <div className="mt-4 text-sm text-blue-900">
+                            <MarkdownContent content={selectedFinalJudgmentMarkdown} />
+                          </div>
+                        ) : (
+                          <div className="mt-4">
+                            <div className="text-sm font-semibold text-blue-950">{`分类：${getDispositionLabel(selectedDisposition)}`}</div>
+                            {selectedSummary ? <div className="mt-2 text-sm text-blue-900">结论：{selectedSummary}</div> : null}
+                            {selectedReason ? <div className="mt-2 text-sm text-blue-900">理由：{selectedReason}</div> : null}
+                            {selectedEvidence.length ? (
+                              <div className="mt-3">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">关键依据</div>
+                                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-blue-900">
+                                  {selectedEvidence.map((item, index) => (
+                                    <li key={`${selectedTask.task_id}-evidence-${index}`}>{item}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null}
+                          </div>
+                        )
                       ) : null}
                     </div>
                   ) : null}
