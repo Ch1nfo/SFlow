@@ -557,9 +557,6 @@ export default function SentinelFlowSettingsPage() {
                 <div className="sentinelflow-stack-item"><strong>自动轮询告警</strong><div className="sentinelflow-inline-status"><StatusBadge tone={settings.features.alert_polling ? 'success' : 'neutral'}>{settings.features.alert_polling ? 'enabled' : 'disabled'}</StatusBadge></div></div>
                 <div className="sentinelflow-stack-item"><strong>Agent Runtime</strong><div className="sentinelflow-inline-status"><StatusBadge tone={settings.llm.agent_available ? 'success' : 'warn'}>{settings.llm.agent_available ? 'available' : 'missing deps'}</StatusBadge></div></div>
               </div>
-              <div className="sentinelflow-message-block mt-3">
-                系统运行时默认使用当前唯一主 Agent。这里不需要再单独选择主 Agent；只要在 Agents 页面保持一个启用中的主 Agent 即可。
-              </div>
             </div>
           </div>
         ) : null}

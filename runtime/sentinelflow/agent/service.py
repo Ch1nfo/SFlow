@@ -17,9 +17,7 @@ from sentinelflow.agent.policy import can_agent_delegate_to_worker, can_agent_ex
 from sentinelflow.agent.prompt_builder import PromptBuildContext, build_prompt
 from sentinelflow.agent.prompts import (
     PRIMARY_ALERT_ORCHESTRATION_APPENDIX,
-    PRIMARY_ALERT_SYNTHESIS_APPENDIX,
     PRIMARY_COMMAND_ORCHESTRATION_APPENDIX,
-    PRIMARY_COMMAND_SYNTHESIS_APPENDIX,
 )
 from sentinelflow.agent.registry import list_agent_definitions, resolve_default_agent
 from sentinelflow.agent.skill_run_analyzer import SkillRunAnalyzerMixin
@@ -332,75 +330,6 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 )
             )
         return "\n".join(items)
-
-    def _build_primary_synthesis_prompt(self, primary_agent, appendix_template: str) -> str:
-        mode_map = {
-            PRIMARY_COMMAND_SYNTHESIS_APPENDIX: "primary_synthesize_command",
-            PRIMARY_ALERT_SYNTHESIS_APPENDIX: "primary_synthesize_alert",
-        }
-        return build_prompt(
-            PromptBuildContext(
-                base_prompt=primary_agent.prompt_for_mode(mode_map.get(appendix_template, "primary_synthesize_alert")).strip() if primary_agent else "",
-                mode=mode_map.get(appendix_template, "primary_synthesize_alert"),
-            )
-        )
-
-    async def _summarize_worker_command(
-        self,
-        primary_agent,
-        command_text: str,
-        step_results: list[dict[str, Any]],
-        cancel_event=None,
-    ) -> dict[str, Any]:
-        latest = step_results[-1] if step_results else {}
-        synthesis_agent = replace(
-            primary_agent,
-            prompt=self._build_primary_synthesis_prompt(primary_agent, PRIMARY_COMMAND_SYNTHESIS_APPENDIX),
-        )
-        synthesis_payload = {
-            "eventIds": f"SUM-{uuid4().hex[:12].upper()}",
-            "alert_name": "子 Agent 执行结果汇总",
-            "payload": json.dumps(
-                {
-                    "user_command": command_text,
-                    "step_results": step_results,
-                    "latest_worker_agent": latest.get("worker_agent", ""),
-                    "latest_worker_final_response": latest.get("final_response", ""),
-                },
-                ensure_ascii=False,
-            ),
-            "alert_source": "agent_synthesis",
-        }
-        return await self._run_agent_graph(synthesis_agent, synthesis_payload, history=[], cancel_event=cancel_event)
-
-    async def _summarize_worker_alert(
-        self,
-        primary_agent,
-        alert: dict[str, Any],
-        action_hint: str | None,
-        step_results: list[dict[str, Any]],
-        cancel_event=None,
-    ) -> dict[str, Any]:
-        latest = step_results[-1] if step_results else {}
-        synthesis_agent = replace(
-            primary_agent,
-            prompt=self._build_primary_synthesis_prompt(primary_agent, PRIMARY_ALERT_SYNTHESIS_APPENDIX),
-        )
-        synthesis_payload = {
-            **dict(alert),
-            "handling_intent": action_hint or "",
-            "payload": json.dumps(
-                {
-                    "original_alert": alert,
-                    "step_results": step_results,
-                    "latest_worker_agent": latest.get("worker_agent", ""),
-                    "latest_worker_final_response": latest.get("final_response", ""),
-                },
-                ensure_ascii=False,
-            ),
-            "alert_source": "agent_synthesis",
-        }
-        return await self._run_agent_graph(synthesis_agent, synthesis_payload, history=[], cancel_event=cancel_event)
 
     def _build_command_planner_payload(self, command_text: str, step_results: list[dict[str, Any]]) -> dict[str, Any]:
         return {
@@ -1016,7 +945,13 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             if str(state.get("parent_checkpoint_thread_id", "")).strip():
                 return self._build_worker_wrapped_result(checkpoint, state, graph_result)
             if str(checkpoint.get("execution_entry", "")).strip() == "manual_alert":
-                return self._serialize_alert_result(state.get("alert_data", {}) or {}, graph_result, str(checkpoint.get("action_hint", "")).strip() or None)
+                return await self._serialize_alert_result(
+                    state.get("alert_data", {}) or {},
+                    graph_result,
+                    str(checkpoint.get("action_hint", "")).strip() or None,
+                    agent_definition=agent_definition,
+                    effective_config=effective_config,
+                )
             return graph_result
 
         if checkpoint_kind == "orchestrator_graph":
@@ -1056,7 +991,13 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 graph_result["route"] = "approval_required"
                 return graph_result
             if str(checkpoint.get("execution_entry", "")).strip() == "manual_alert":
-                return self._serialize_alert_result(state.get("alert_data", {}) or {}, graph_result, str(checkpoint.get("action_hint", "")).strip() or None)
+                return await self._serialize_alert_result(
+                    state.get("alert_data", {}) or {},
+                    graph_result,
+                    str(checkpoint.get("action_hint", "")).strip() or None,
+                    agent_definition=agent_definition,
+                    effective_config=effective_config,
+                )
             return graph_result
 
         return {
@@ -1517,7 +1458,13 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             graph_result["structured_judgment"] = await self._run_synthesis(
                 graph_result, effective_config=effective_config
             )
-        return self._serialize_alert_result(alert, graph_result, action_hint)
+        return await self._serialize_alert_result(
+            alert,
+            graph_result,
+            action_hint,
+            agent_definition=primary_agent,
+            effective_config=effective_config,
+        )
 
     async def _run_synthesis(
         self,
@@ -1575,6 +1522,185 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             )
             return None
 
+    def _resolve_prompt_synthesize_agent(self, agent_definition, graph_result: dict[str, Any]):
+        if agent_definition is not None:
+            return agent_definition
+        agent_name = str(graph_result.get("primary_agent") or graph_result.get("agent_name") or "").strip() or None
+        try:
+            return resolve_default_agent(self.agent_root, agent_name)
+        except Exception:
+            return None
+
+    def _trace_with_inserted_step(self, trace: list[dict[str, Any]], step: dict[str, Any]) -> list[dict[str, Any]]:
+        if not trace:
+            return [step]
+        for index in range(len(trace) - 1, -1, -1):
+            item = trace[index]
+            if isinstance(item, dict) and str(item.get("phase", "")).strip() == "final_status":
+                return [*trace[:index], step, *trace[index:]]
+        return [*trace, step]
+
+    def _build_final_summary_context(
+        self,
+        *,
+        alert: dict[str, Any],
+        action_hint: str | None,
+        graph_result: dict[str, Any],
+        disposition: str,
+        summary: str,
+        reason: str,
+        evidence: list[str],
+        skill_runs: list[dict[str, Any]],
+        action_steps: list[dict[str, Any]],
+        closure_step: dict[str, Any],
+        closure_result: dict[str, Any],
+        actions: dict[str, Any],
+        workflow_runs: list[dict[str, Any]],
+        final_facts: dict[str, Any],
+        execution_trace: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "original_alert": alert,
+            "action_hint": action_hint or "",
+            "current_structured_judgment": {
+                "disposition": disposition,
+                "summary": summary,
+                "reason": reason,
+                "evidence": evidence,
+            },
+            "agent_result": {
+                "final_response": graph_result.get("final_response", ""),
+                "messages": graph_result.get("messages", []),
+                "tool_calls": graph_result.get("tool_calls", []),
+                "structured_judgment": graph_result.get("structured_judgment"),
+                "worker_results": graph_result.get("worker_results", []),
+                "workflow_runs": workflow_runs,
+            },
+            "skill_execution": {
+                "skill_runs": skill_runs,
+                "action_steps": action_steps,
+                "closure_step": closure_step,
+                "closure_result": closure_result,
+                "actions": actions,
+            },
+            "final_facts": final_facts,
+            "execution_trace": execution_trace,
+        }
+
+    async def _run_prompt_synthesize_final_summary(
+        self,
+        *,
+        alert: dict[str, Any],
+        action_hint: str | None,
+        graph_result: dict[str, Any],
+        disposition: str,
+        summary: str,
+        reason: str,
+        evidence: list[str],
+        skill_runs: list[dict[str, Any]],
+        action_steps: list[dict[str, Any]],
+        closure_step: dict[str, Any],
+        closure_result: dict[str, Any],
+        actions: dict[str, Any],
+        workflow_runs: list[dict[str, Any]],
+        final_facts: dict[str, Any],
+        execution_trace: list[dict[str, Any]],
+        agent_definition=None,
+        effective_config=None,
+    ) -> tuple[str, dict[str, Any] | None]:
+        task_outcome = final_facts.get("task_outcome", {}) if isinstance(final_facts, dict) else {}
+        status = str(task_outcome.get("status", "")).strip()
+        if task_outcome.get("success") is not True or status not in {"succeeded", "completed"}:
+            return "", None
+
+        prompt_agent = self._resolve_prompt_synthesize_agent(agent_definition, graph_result)
+        prompt = str(getattr(prompt_agent, "prompt_synthesize", "") or "").strip()
+        if not prompt:
+            return "", None
+
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            from langchain_openai import ChatOpenAI
+        except ModuleNotFoundError as exc:
+            return "", {
+                "phase": "final_judgment_synthesis",
+                "title": "最终研判总结",
+                "summary": "prompt_synthesize 总结失败，已回退到结构化最终研判。",
+                "success": False,
+                "data": {"error": str(exc), "source": "prompt_synthesize"},
+            }
+
+        try:
+            config = effective_config
+            if config is None:
+                runtime_config = load_runtime_config()
+                config = prompt_agent.resolve_runtime_config(runtime_config) if prompt_agent is not None else runtime_config
+            context = self._build_final_summary_context(
+                alert=alert,
+                action_hint=action_hint,
+                graph_result=graph_result,
+                disposition=disposition,
+                summary=summary,
+                reason=reason,
+                evidence=evidence,
+                skill_runs=skill_runs,
+                action_steps=action_steps,
+                closure_step=closure_step,
+                closure_result=closure_result,
+                actions=actions,
+                workflow_runs=workflow_runs,
+                final_facts=final_facts,
+                execution_trace=execution_trace,
+            )
+            llm = ChatOpenAI(
+                model=config.llm_model,
+                api_key=config.llm_api_key,
+                base_url=config.llm_api_base_url,
+                temperature=config.llm_temperature if config.llm_temperature is not None else 0,
+                timeout=config.llm_timeout,
+            )
+            response = await llm.ainvoke(
+                [
+                    SystemMessage(content=prompt),
+                    HumanMessage(
+                        content=(
+                            "以下 JSON 是本次告警处置完成后的完整上下文。"
+                            "请只按照 system prompt 的要求生成最终研判展示内容。\n\n"
+                            f"```json\n{json.dumps(context, ensure_ascii=False, indent=2, default=str)}\n```"
+                        )
+                    ),
+                ]
+            )
+            content = getattr(response, "content", response)
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(item.get("text", item)) if isinstance(item, dict) else str(item)
+                    for item in content
+                )
+            markdown = _clean_model_text(str(content or "")).strip()
+            if not markdown:
+                return "", {
+                    "phase": "final_judgment_synthesis",
+                    "title": "最终研判总结",
+                    "summary": "prompt_synthesize 未返回有效内容，已回退到结构化最终研判。",
+                    "success": False,
+                    "data": {"error": "empty_response", "source": "prompt_synthesize"},
+                }
+            return markdown, {
+                "success": True,
+                "source": "prompt_synthesize",
+                "agent_name": str(getattr(prompt_agent, "name", "") or graph_result.get("agent_name") or "").strip(),
+            }
+        except Exception as exc:
+            LOGGER.warning("prompt_synthesize final summary failed; falling back to structured judgment.", exc_info=True)
+            return "", {
+                "phase": "final_judgment_synthesis",
+                "title": "最终研判总结",
+                "summary": "prompt_synthesize 总结失败，已回退到结构化最终研判。",
+                "success": False,
+                "data": {"error": str(exc), "source": "prompt_synthesize"},
+            }
+
 
     async def run_command(
         self,
@@ -1618,7 +1744,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         serialized = await self._run_agent_graph(agent_definition, alert_payload, history=[], cancel_event=cancel_event, execution_context=execution_context)
         if serialized.get("approval_pending"):
             return serialized
-        return self._serialize_alert_result(alert, serialized, action_hint)
+        return await self._serialize_alert_result(alert, serialized, action_hint, agent_definition=agent_definition)
 
 
     def _serialize_graph_result(self, source: str, state: dict[str, Any], agent_name: str = "") -> dict[str, Any]:
@@ -1665,11 +1791,14 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             ),
         }
 
-    def _serialize_alert_result(
+    async def _serialize_alert_result(
         self,
         alert: dict[str, Any],
         graph_result: dict[str, Any],
         action_hint: str | None,
+        *,
+        agent_definition=None,
+        effective_config=None,
     ) -> dict[str, Any]:
         skill_runs = self._extract_skill_runs(graph_result)
         fallback_judgment = self.triage_service.analyze_alert(alert)
@@ -1787,8 +1916,29 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         final_disposition = str(
             ((final_facts.get("judgment", {}) if isinstance(final_facts, dict) else {}).get("disposition", disposition))
         ).strip() or disposition
+        final_judgment_markdown, final_judgment_synthesis = await self._run_prompt_synthesize_final_summary(
+            alert=alert,
+            action_hint=action_hint,
+            graph_result=graph_result,
+            disposition=final_disposition,
+            summary=summary,
+            reason=reason,
+            evidence=evidence,
+            skill_runs=skill_runs,
+            action_steps=action_steps,
+            closure_step=closure_step,
+            closure_result=closure_result,
+            actions=actions,
+            workflow_runs=workflow_runs,
+            final_facts=final_facts,
+            execution_trace=execution_trace,
+            agent_definition=agent_definition,
+            effective_config=effective_config,
+        )
+        if final_judgment_synthesis and not final_judgment_markdown:
+            execution_trace = self._trace_with_inserted_step(execution_trace, final_judgment_synthesis)
 
-        return {
+        result_payload = {
             **graph_result,
             "event_ids": str(alert.get("eventIds", "")).strip(),
             "disposition": final_disposition,
@@ -1831,6 +1981,15 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             "has_close_action": bool(closure_step.get("attempted")),
             "has_disposal_action": bool(actions),
         }
+        if final_judgment_markdown:
+            result_payload["final_judgment_markdown"] = final_judgment_markdown
+            result_payload["final_judgment_synthesis"] = final_judgment_synthesis or {
+                "success": True,
+                "source": "prompt_synthesize",
+            }
+        elif final_judgment_synthesis:
+            result_payload["final_judgment_synthesis"] = final_judgment_synthesis
+        return result_payload
 
     def _extract_workflow_selection(
         self,

@@ -159,43 +159,6 @@ PRIMARY_ALERT_ORCHESTRATION_APPENDIX = """\
 """.strip()
 
 
-# ── Legacy synthesis prompts (kept for potential future use) ──────────────────
-
-PRIMARY_COMMAND_SYNTHESIS_APPENDIX = """\
-你当前是主 Agent，一个或多个子 Agent 已经完成执行。
-
-你的职责：
-1. 阅读用户原始指令
-2. 阅读子 Agent 的执行结果
-3. 用中文给出最终回复
-
-要求：
-- 不要输出 JSON
-- 不要重复内部调度过程
-- 如果子 Agent 已经给出明确结果，就直接用值班助手口吻总结
-- 如果子 Agent 执行失败或信息不足，要明确告诉用户还缺什么
-""".strip()
-
-
-PRIMARY_ALERT_SYNTHESIS_APPENDIX = """\
-你当前是主 Agent，一个或多个子 Agent 已经完成告警处理。
-
-你的职责：
-1. 阅读原始告警
-2. 阅读子 Agent 的执行结果
-3. 给出最终值班结论
-
-输出要求：
-- 直接输出最终结论，不要输出 JSON
-- 必须包含以下 4 项：
-  1. 最终分类：真实攻击 / 业务触发 / 误报 三选一
-  2. 简短理由：一句话说明为什么这样判定
-  3. 关键依据：列出 1-3 条关键证据
-  4. 执行结果：说明是否已查询、处置、通知、结单
-- 不要把内部调度过程写给值班人员
-""".strip()
-
-
 # ── Synthesis prompt for structured output node ───────────────────────────────
 
 SYNTHESIS_SYSTEM_PROMPT = """\

@@ -12,6 +12,7 @@ import {
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import Surface from '@/components/sentinelflow/Surface'
 import PageHeader from '@/components/common/PageHeader'
+import MarkdownContent from '@/components/sentinelflow/MarkdownContent'
 import { withProductName } from '@/config/brand'
 import { publishRuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
@@ -361,6 +362,7 @@ export default function SentinelFlowAlertsPage() {
     (selectedResult.effective_closure_step as Record<string, unknown> | undefined)
     ?? (selectedResult.closure_step as Record<string, unknown> | undefined)
   ) ?? {}
+  const selectedFinalJudgmentMarkdown = String(selectedResult.final_judgment_markdown ?? '').trim()
   const selectedReason = String(selectedResult.reason ?? '').trim()
   const selectedDisposition = String(selectedFinalJudgment.disposition ?? selectedResult.disposition ?? '').trim()
   const selectedSummary = String(selectedResult.summary ?? '').trim()
@@ -406,7 +408,7 @@ export default function SentinelFlowAlertsPage() {
       setQueueListMaxHeight(null)
       return
     }
-  }, [selectedTaskId, payloadExpanded, selectedTask?.task_id, selectedTask?.status, selectedDisposition, selectedReason, selectedSummary, selectedEvidence.length, selectedConsistencyIssues.length])
+  }, [selectedTaskId, payloadExpanded, selectedTask?.task_id, selectedTask?.status, selectedDisposition, selectedFinalJudgmentMarkdown, selectedReason, selectedSummary, selectedEvidence.length, selectedConsistencyIssues.length])
 
   async function runAction(action: string) {
     setActionState({ action, running: true })
@@ -663,7 +665,14 @@ export default function SentinelFlowAlertsPage() {
                     )}
                   </div>
                 ) : null}
-                {selectedDisposition || selectedReason || selectedSummary ? (
+                {selectedFinalJudgmentMarkdown ? (
+                  <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
+                    <div className="mt-2 text-sm text-blue-900">
+                      <MarkdownContent content={selectedFinalJudgmentMarkdown} />
+                    </div>
+                  </div>
+                ) : selectedDisposition || selectedReason || selectedSummary ? (
                   <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
                     <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
                     <div className="mt-2 text-sm font-semibold text-blue-950">

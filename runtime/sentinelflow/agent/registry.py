@@ -57,8 +57,6 @@ class SentinelFlowAgentDefinition:
             "primary_orchestrate_command": self.prompt_command,
             "agent_alert": self.prompt_alert,
             "primary_orchestrate_alert": self.prompt_alert,
-            "primary_synthesize_command": self.prompt_synthesize,
-            "primary_synthesize_alert": self.prompt_synthesize,
         }
         specialized = str(mapping.get(mode, "")).strip()
         return specialized or self.prompt

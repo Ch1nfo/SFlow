@@ -71,6 +71,7 @@ export type AlertTaskResultData = Record<string, unknown> & {
   summary?: string
   reason?: string
   evidence?: string[]
+  final_judgment_markdown?: string
   workflow_selection?: Record<string, unknown>
   workflow_runs?: Array<Record<string, unknown>>
   analysis_step?: Record<string, unknown>

@@ -169,6 +169,8 @@ class TextExtractorMixin:
     def _infer_closure_field(self, skill_runs: list[dict[str, Any]], field_name: str, fallback: str) -> str:
         closure_run = self._select_closure_run(skill_runs, None)  # type: ignore[attr-defined]
         if closure_run is None:
+            closure_run = next((run for run in skill_runs if isinstance(run, dict) and bool(run.get("is_closure"))), None)
+        if closure_run is None:
             return fallback
         payload = closure_run.get("payload", {})
         if isinstance(payload, dict):
