@@ -647,8 +647,12 @@
     @apply max-w-[85%] px-1 py-1;
   }
 
-  .sentinelflow-chat-bubble strong {
+  .sentinelflow-chat-bubble > .sentinelflow-response-row strong {
     @apply mb-2 block text-sm font-semibold;
+  }
+
+  .sentinelflow-chat-bubble .prose strong {
+    @apply inline font-semibold;
   }
 
   .sentinelflow-chat-bubble p {

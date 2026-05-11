@@ -54,7 +54,11 @@ function renderMarkdownToHtml(markdown: string): string {
   const normalized = markdown
     .replace(/\r\n/g, '\n')
     .trim()
-    .replace(/([^\n]+)\n: ([^\n]+)/g, '$1: $2')
+    // Merge definition-list lines: "Term\n: Value" or "Term\n：Value" → "Term: Value"
+    .replace(/([^\n]+)\n[：:]\s*([^\n]+)/g, '$1: $2')
+    // Merge lines where the next line starts with Chinese sentence-continuation punctuation (run twice for chained cases)
+    .replace(/([^\n]+)\n([，。、；！？…）」』〕】])/g, '$1$2')
+    .replace(/([^\n]+)\n([，。、；！？…）」』〕】])/g, '$1$2')
   if (!normalized) return ''
 
   const lines = normalized.split('\n')
