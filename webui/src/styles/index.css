@@ -357,7 +357,8 @@
   }
 
   .sentinelflow-alert-queue-scroll {
-    @apply min-h-0 flex-1 overflow-y-auto;
+    @apply min-h-0 flex-1 overflow-y-auto pr-3;
+    scrollbar-gutter: stable;
   }
 
   .sentinelflow-skill-list-scroll {
