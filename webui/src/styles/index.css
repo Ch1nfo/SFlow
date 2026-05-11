@@ -577,19 +577,29 @@
   }
 
   .sentinelflow-conversation-layout {
-    @apply mx-auto min-w-0 w-full max-w-5xl;
+    @apply flex min-w-0 w-full gap-4 items-start;
   }
 
-  .sentinelflow-session-strip {
-    @apply mb-4 flex flex-wrap items-center gap-2;
+  .sentinelflow-session-sidebar {
+    @apply flex w-44 shrink-0 flex-col gap-1.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-3;
+    height: calc(100vh - 11rem);
+    min-height: 760px;
+  }
+
+  .sentinelflow-session-sidebar-label {
+    @apply mb-1 px-2 text-xs font-semibold uppercase tracking-wider text-slate-400;
+  }
+
+  .sentinelflow-session-delete-btn {
+    @apply mt-auto w-full justify-center;
   }
 
   .sentinelflow-session-chip {
-    @apply inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-50;
+    @apply inline-flex w-full items-center gap-2 rounded-lg border border-transparent px-3 py-2 text-sm text-slate-600 transition-colors hover:bg-slate-50 hover:border-slate-200 text-left;
   }
 
   .sentinelflow-session-chip span {
-    @apply font-medium text-slate-900;
+    @apply block truncate font-medium text-slate-900;
   }
 
   .sentinelflow-session-chip-active {
@@ -605,7 +615,7 @@
   }
 
   .sentinelflow-chat-panel {
-    @apply flex h-[calc(100vh-11rem)] min-h-[760px] min-w-0 flex-col gap-5;
+    @apply flex h-[calc(100vh-11rem)] min-h-[760px] min-w-0 flex-1 flex-col gap-5;
   }
 
   .sentinelflow-chat-panel-empty {
@@ -614,6 +624,7 @@
 
   .sentinelflow-chat-stream {
     @apply flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto bg-white px-4 py-6;
+    scrollbar-gutter: stable both-edges;
   }
 
   .sentinelflow-chat-empty-state {

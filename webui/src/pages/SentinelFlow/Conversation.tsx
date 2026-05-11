@@ -519,7 +519,8 @@ export default function SentinelFlowConversationPage() {
 
       <Surface title="">
         <div className="sentinelflow-conversation-layout">
-          <div className="sentinelflow-session-strip">
+          <div className="sentinelflow-session-sidebar">
+            <div className="sentinelflow-session-sidebar-label">对话历史</div>
             {sessions.map((session) => (
               <button
                 key={session.id}
@@ -536,7 +537,7 @@ export default function SentinelFlowConversationPage() {
             {sessions.length > 1 ? (
               <button
                 type="button"
-                className="sentinelflow-ghost-button sentinelflow-inline-button"
+                className="sentinelflow-ghost-button sentinelflow-inline-button sentinelflow-session-delete-btn"
                 onClick={handleDeleteCurrentSession}
                 disabled={running}
               >

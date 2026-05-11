@@ -13,7 +13,10 @@ function escapeHtml(value: string): string {
 }
 
 function applyInlineMarkdown(text: string): string {
-  let output = escapeHtml(text)
+  const BR_PLACEHOLDER = '\x00BR\x00'
+  let output = text.replace(/<br\s*\/?>/gi, BR_PLACEHOLDER)
+  output = escapeHtml(output)
+  output = output.replace(/\x00BR\x00/g, '<br>')
   output = output.replace(/`([^`]+)`/g, '<code>$1</code>')
   output = output.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   output = output.replace(/(^|[^\*])\*([^*]+)\*(?!\*)/g, '$1<em>$2</em>')
@@ -48,7 +51,10 @@ function renderTable(lines: string[]): string {
 }
 
 function renderMarkdownToHtml(markdown: string): string {
-  const normalized = markdown.replace(/\r\n/g, '\n').trim()
+  const normalized = markdown
+    .replace(/\r\n/g, '\n')
+    .trim()
+    .replace(/([^\n]+)\n: ([^\n]+)/g, '$1: $2')
   if (!normalized) return ''
 
   const lines = normalized.split('\n')
@@ -156,7 +162,7 @@ function renderMarkdownToHtml(markdown: string): string {
       paragraph.push(next)
       index += 1
     }
-    html.push(`<p>${applyInlineMarkdown(paragraph.join(' '))}</p>`)
+    html.push(`<p>${applyInlineMarkdown(paragraph.join('<br>'))}</p>`)
   }
 
   return html.join('')
