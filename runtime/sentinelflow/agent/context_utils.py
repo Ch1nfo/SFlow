@@ -255,7 +255,6 @@ def validate_execution_inputs(
     contract = {"skill_name": skill_name, "action_type": "generic", "required": []}
 
     is_contact = any(marker in compact_name for marker in ("contact", "hiklink", "sendhiklink"))
-    is_ban = any(marker in compact_name for marker in ("ban", "block", "sgpban", "封禁"))
     is_closure_like = compact_name in {"exec", "calling", "close", "soccalling"} or any(
         marker in compact_name for marker in ("close", "closure", "ticketclose", "结单", "闭环")
     )
@@ -266,10 +265,6 @@ def validate_execution_inputs(
             missing.append(_missing_field("to", "联系/通知类 Skill 执行前必须有明确收信人。"))
         if not _has_any(args, ("body",)):
             missing.append(_missing_field("body", "联系/通知类 Skill 执行前必须有明确消息内容。"))
-    elif is_ban:
-        contract = {"skill_name": skill_name, "action_type": "containment", "required": ["ip"]}
-        if not _has_any(args, ("ip", "target_ip", "source_ip", "sip", "ban_ip", "blocked_ip")):
-            missing.append(_missing_field("ip", "封禁/阻断类 Skill 执行前必须有明确目标 IP。"))
     elif is_closure_like:
         contract = {"skill_name": skill_name, "action_type": "closure_or_status_update", "required": ["eventIds", "status"]}
         if not _has_any(args, ("eventIds", "event_id", "alert_id")):
