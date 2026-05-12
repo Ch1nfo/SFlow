@@ -10,10 +10,10 @@ import {
   LayoutDashboard,
   ListTodo,
   MessageSquareText,
-  Radar,
   Settings,
   Shield,
   Siren,
+  Workflow as WorkflowIcon,
 } from 'lucide-react'
 import { brand, withProductName } from '@/config/brand'
 import { fetchAllPollAlerts, type AlertTask, type PollAlertsResponse } from '@/api/sentinelflow'
@@ -89,7 +89,7 @@ export default function Layout() {
           { name: 'Skills', href: '/skills', icon: BookOpen, description: '管理平台可读取和可执行的 Skills。' },
           { name: 'RAG', href: '/rag', icon: Database, description: '配置 RAG 向量知识库参数，自动同步到 rag Skill。' },
           { name: 'Agents', href: '/agents', icon: Bot, description: withProductName('管理主 Agent、子 Agent 和技能权限。') },
-          { name: '工作流', href: '/workflows', icon: Radar, description: withProductName('编排任务和告警场景下的 Agent Workflow。') },
+          { name: '工作流', href: '/workflows', icon: WorkflowIcon, description: withProductName('编排任务和告警场景下的 Agent Workflow。') },
           { name: '平台设置', href: '/settings', icon: Settings, description: '配置平台参数、告警接入和解析规则。' },
         ],
       },
