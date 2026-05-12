@@ -123,11 +123,26 @@ def _is_successful_ban_action(action_name: str, payload: dict[str, Any]) -> bool
     return True
 
 
+BAN_IP_FIELDS = {"ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "name"}
+
+
+def _split_ip_values(value: Any) -> set[str]:
+    if isinstance(value, list):
+        values: set[str] = set()
+        for item in value:
+            values.update(_split_ip_values(item))
+        return values
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    return {item.strip() for item in re.split(r"[,，;；\s]+", text) if item.strip()}
+
+
 def _extract_ban_ip(payload: dict[str, Any]) -> str:
-    for candidate in ("ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip"):
-        value = str(payload.get(candidate, "")).strip()
-        if value:
-            return value
+    for candidate in ("ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "name"):
+        values = _split_ip_values(payload.get(candidate, ""))
+        if values:
+            return ",".join(sorted(values))
     return ""
 
 
@@ -135,16 +150,8 @@ def _collect_ip_values(payload: Any) -> set[str]:
     values: set[str] = set()
     if isinstance(payload, dict):
         for key, value in payload.items():
-            if str(key).strip() in {"ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip"}:
-                if isinstance(value, list):
-                    for item in value:
-                        text = str(item).strip()
-                        if text:
-                            values.add(text)
-                else:
-                    text = str(value).strip()
-                    if text:
-                        values.add(text)
+            if str(key).strip() in BAN_IP_FIELDS:
+                values.update(_split_ip_values(value))
             elif isinstance(value, (dict, list)):
                 values.update(_collect_ip_values(value))
     elif isinstance(payload, list):
