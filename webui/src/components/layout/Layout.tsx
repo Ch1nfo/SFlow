@@ -6,6 +6,7 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Database,
   LayoutDashboard,
   ListTodo,
   MessageSquareText,
@@ -62,6 +63,7 @@ function getAlertTaskSourceName(task: AlertTask, result: PollAlertsResponse): st
 export default function Layout() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
+  const [expandedContentVisible, setExpandedContentVisible] = useState(true)
   const [newAlertNotice, setNewAlertNotice] = useState<NewAlertNotice | null>(null)
   const knownTaskIdsRef = useRef<Set<string> | null>(null)
 
@@ -85,6 +87,7 @@ export default function Layout() {
         name: '平台能力',
         items: [
           { name: 'Skills', href: '/skills', icon: BookOpen, description: '管理平台可读取和可执行的 Skills。' },
+          { name: 'RAG', href: '/rag', icon: Database, description: '配置 RAG 向量知识库参数，自动同步到 rag Skill。' },
           { name: 'Agents', href: '/agents', icon: Bot, description: withProductName('管理主 Agent、子 Agent 和技能权限。') },
           { name: '工作流', href: '/workflows', icon: Radar, description: withProductName('编排任务和告警场景下的 Agent Workflow。') },
           { name: '平台设置', href: '/settings', icon: Settings, description: '配置平台参数、告警接入和解析规则。' },
@@ -137,6 +140,28 @@ export default function Layout() {
     return () => window.clearTimeout(timer)
   }, [newAlertNotice])
 
+  useEffect(() => {
+    if (collapsed) {
+      setExpandedContentVisible(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setExpandedContentVisible(true)
+    }, 180)
+    return () => window.clearTimeout(timer)
+  }, [collapsed])
+
+  function collapseSidebar() {
+    setExpandedContentVisible(false)
+    window.setTimeout(() => {
+      setCollapsed(true)
+    }, 80)
+  }
+
+  function expandSidebar() {
+    setCollapsed(false)
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {newAlertNotice ? (
@@ -167,7 +192,7 @@ export default function Layout() {
         </div>
       ) : null}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 border-r border-gray-200 bg-white transition-all duration-300 ${
+        className={`fixed inset-y-0 left-0 z-40 border-r border-gray-200 bg-white transition-[width] duration-300 ease-out ${
           collapsed ? 'w-20' : 'w-72'
         }`}
       >
@@ -183,7 +208,7 @@ export default function Layout() {
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-sky-600 to-emerald-500 text-white shadow-sm">
                     <Shield className="h-5 w-5" />
                   </div>
-                  <div className="min-w-0">
+                  <div className={`min-w-0 transition-all duration-200 ${expandedContentVisible ? 'translate-x-0 opacity-100' : 'translate-x-2 opacity-0'}`}>
                     <div className="truncate text-lg font-bold text-gray-900">{brand.productName}</div>
                     <div className="truncate text-xs text-gray-500">{brand.platformTagline}</div>
                   </div>
@@ -193,7 +218,7 @@ export default function Layout() {
             {!collapsed && (
               <button
                 type="button"
-                onClick={() => setCollapsed(true)}
+                onClick={collapseSidebar}
                 className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700"
                 aria-label="Collapse sidebar"
               >
@@ -205,11 +230,17 @@ export default function Layout() {
           <nav className={`flex-1 overflow-y-auto py-5 ${collapsed ? 'px-2' : 'px-4'}`}>
             {navigation.map((section) => (
               <div key={section.name} className="mb-7">
-                {!collapsed && (
-                  <div className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                    {section.name}
-                  </div>
-                )}
+                <div
+                  className={`mb-2 h-4 px-3 text-xs font-semibold uppercase tracking-wider text-gray-400 transition-all duration-200 ${
+                    collapsed
+                      ? 'opacity-0'
+                      : expandedContentVisible
+                        ? 'translate-x-0 opacity-100'
+                        : 'translate-x-2 opacity-0'
+                  }`}
+                >
+                  {section.name}
+                </div>
                 <div className="space-y-1.5">
                   {section.items.map((item) => {
                     const active = location.pathname === item.href
@@ -220,7 +251,7 @@ export default function Layout() {
                         title={collapsed ? item.name : undefined}
                         className={`flex rounded-2xl border transition-all ${
                           collapsed
-                            ? 'justify-center px-2 py-3'
+                            ? 'items-center px-5 py-3'
                             : 'items-center gap-3 px-3 py-3'
                         } ${
                           active
@@ -230,7 +261,7 @@ export default function Layout() {
                       >
                         <item.icon className={`h-5 w-5 flex-shrink-0 ${active ? 'text-sky-700' : 'text-gray-400'}`} />
                         {!collapsed && (
-                          <div className="min-w-0">
+                          <div className={`min-w-0 transition-all duration-200 ${expandedContentVisible ? 'translate-x-0 opacity-100' : 'translate-x-2 opacity-0'}`}>
                             <div className="truncate text-sm font-semibold">{item.name}</div>
                           </div>
                         )}
@@ -246,17 +277,17 @@ export default function Layout() {
             {collapsed ? (
               <button
                 type="button"
-                onClick={() => setCollapsed(false)}
+                onClick={expandSidebar}
                 className="flex w-full items-center justify-center rounded-xl border border-gray-200 bg-gray-50 p-2 text-gray-600 transition-colors hover:bg-gray-100"
                 aria-label="Expand sidebar"
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
             ) : (
-              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-r from-emerald-50 to-sky-50 p-4">
+              <div className={`rounded-2xl border border-emerald-100 bg-gradient-to-r from-emerald-50 to-sky-50 p-4 transition-all duration-200 ${expandedContentVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}>
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-                  <BellRing className="h-4 w-4 text-emerald-600" />
-                  {brand.productName} 平台入口
+                  <BellRing className="h-4 w-4 flex-shrink-0 text-emerald-600" />
+                  <span className="min-w-0 truncate">{brand.productName} 平台入口</span>
                 </div>
                 <p className="mt-2 text-xs leading-5 text-gray-600">
                   {withProductName('统一承载告警接入、任务闭环、Agent Workflow、Skills 和对话指挥能力。')}

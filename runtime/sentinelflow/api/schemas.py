@@ -76,6 +76,37 @@ class RuntimeConfigRequest(BaseModel):
         return {key: value for key, value in payload.items() if value is not None}
 
 
+class RagConfigRequest(BaseModel):
+    enabled: bool | None = None
+    knowledge_id: str | None = Field(default=None, alias="knowledgeId")
+    api_key: str | None = Field(default=None, alias="apiKey")
+    top_k: int | None = Field(default=None, alias="topK")
+    similarity_threshold: float | None = Field(default=None, alias="similarityThreshold")
+    retrieve_strategy: int | None = Field(default=None, alias="retrieveStrategy")
+    enable_rerank_model: bool | None = Field(default=None, alias="enableRerankModel")
+    rerank_model: str | None = Field(default=None, alias="rerankModel")
+
+    def to_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.enabled is not None:
+            payload["rag_enabled"] = self.enabled
+        if self.knowledge_id is not None:
+            payload["rag_knowledge_id"] = self.knowledge_id
+        if self.api_key is not None:
+            payload["rag_api_key"] = self.api_key
+        if self.top_k is not None:
+            payload["rag_top_k"] = self.top_k
+        if self.similarity_threshold is not None:
+            payload["rag_similarity_threshold"] = self.similarity_threshold
+        if self.retrieve_strategy is not None:
+            payload["rag_retrieve_strategy"] = self.retrieve_strategy
+        if self.enable_rerank_model is not None:
+            payload["rag_enable_rerank_model"] = self.enable_rerank_model
+        if self.rerank_model is not None:
+            payload["rag_rerank_model"] = self.rerank_model
+        return payload
+
+
 class AlertSourceParserGenerateRequest(BaseModel):
     sample_payload: str = Field(..., alias="samplePayload")
 

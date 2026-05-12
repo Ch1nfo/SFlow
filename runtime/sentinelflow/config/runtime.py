@@ -66,6 +66,18 @@ class AlertSourceConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RagConfig:
+    enabled: bool
+    knowledge_id: str
+    api_key: str
+    top_k: int
+    similarity_threshold: float
+    retrieve_strategy: int
+    enable_rerank_model: bool
+    rerank_model: str
+
+
+@dataclass(frozen=True, slots=True)
 class SentinelFlowRuntimeConfig:
     demo_mode: bool
     demo_fallback: bool
@@ -93,6 +105,7 @@ class SentinelFlowRuntimeConfig:
     poll_interval_seconds: int
     failed_retry_interval_seconds: int
     alert_sources: list[AlertSourceConfig]
+    rag: RagConfig
 
 
 def _default_values() -> dict[str, Any]:
@@ -123,6 +136,14 @@ def _default_values() -> dict[str, Any]:
         "poll_interval_seconds": int(os.getenv("SENTINELFLOW_POLL_INTERVAL_SECONDS", "60")),
         "failed_retry_interval_seconds": int(os.getenv("SENTINELFLOW_FAILED_RETRY_INTERVAL_SECONDS", "0")),
         "alert_sources": [],
+        "rag_enabled": _read_env_bool("SENTINELFLOW_RAG_ENABLED", True),
+        "rag_knowledge_id": os.getenv("SENTINELFLOW_RAG_KNOWLEDGE_ID", "2875eb66-b4e7-4d16-a4f6-e37c774b8cc6").strip(),
+        "rag_api_key": os.getenv("SENTINELFLOW_RAG_API_KEY", "sk-a492d612394b411b877164f4053aae69").strip(),
+        "rag_top_k": int(os.getenv("SENTINELFLOW_RAG_TOP_K", "5")),
+        "rag_similarity_threshold": float(os.getenv("SENTINELFLOW_RAG_SIMILARITY_THRESHOLD", "0.8")),
+        "rag_retrieve_strategy": int(os.getenv("SENTINELFLOW_RAG_RETRIEVE_STRATEGY", "3")),
+        "rag_enable_rerank_model": _read_env_bool("SENTINELFLOW_RAG_ENABLE_RERANK_MODEL", True),
+        "rag_rerank_model": os.getenv("SENTINELFLOW_RAG_RERANK_MODEL", "bge-reranker-base").strip(),
     }
 
 
@@ -238,6 +259,16 @@ def _normalize_config(values: dict[str, Any]) -> SentinelFlowRuntimeConfig:
         poll_interval_seconds=primary_source.poll_interval_seconds,
         failed_retry_interval_seconds=primary_source.failed_retry_interval_seconds,
         alert_sources=alert_sources,
+        rag=RagConfig(
+            enabled=_read_bool_value(values.get("rag_enabled"), True),
+            knowledge_id=str(values.get("rag_knowledge_id", "2875eb66-b4e7-4d16-a4f6-e37c774b8cc6")).strip(),
+            api_key=str(values.get("rag_api_key", "sk-a492d612394b411b877164f4053aae69")).strip(),
+            top_k=int(values.get("rag_top_k", 5)),
+            similarity_threshold=float(values.get("rag_similarity_threshold", 0.8)),
+            retrieve_strategy=int(values.get("rag_retrieve_strategy", 3)),
+            enable_rerank_model=_read_bool_value(values.get("rag_enable_rerank_model"), True),
+            rerank_model=str(values.get("rag_rerank_model", "bge-reranker-base")).strip(),
+        ),
     )
 
 

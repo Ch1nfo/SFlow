@@ -91,7 +91,7 @@ function splitAlertIps(value: unknown): string[] {
     .filter(Boolean)
 }
 
-function formatIpPreview(value: unknown, limit = 4): { text: string; fullText: string } {
+function formatIpPreview(value: unknown, limit = 3): { text: string; fullText: string } {
   const ips = splitAlertIps(value)
   if (!ips.length) {
     const fallback = String(value ?? '').trim()
@@ -630,7 +630,7 @@ export default function SentinelFlowTasksPage() {
     ? (selectedResult.execution_trace as ExecutionTraceItem[])
     : buildFallbackTrace(selectedTask)
   const selectedToolResults = collectToolInvocationResults(selectedTrace)
-  const dipPreview = formatIpPreview(selectedPayload.dip, 4)
+  const dipPreview = formatIpPreview(selectedPayload.dip)
   const workflowDecision = String(
     selectedWorkflowRun?.workflow_name ?? selectedWorkflowRun?.workflow_id ?? selectedTask?.workflow_name ?? '',
   ).trim()

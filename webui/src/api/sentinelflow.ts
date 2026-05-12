@@ -259,7 +259,20 @@ export type RuntimeSettingsResponse = {
     audit_timeline: boolean
     agent_runtime: boolean
   }
+  rag: RagSettings
   persisted_overrides: Record<string, unknown>
+}
+
+export type RagSettings = {
+  enabled: boolean
+  knowledge_id: string
+  api_key: string
+  api_key_configured: boolean
+  top_k: number
+  similarity_threshold: number
+  retrieve_strategy: number
+  enable_rerank_model: boolean
+  rerank_model: string
 }
 
 export type AlertSourceSettings = {
@@ -867,4 +880,21 @@ export async function testAlertParser(payload: {
   parserRule?: Record<string, unknown>
 }) {
   return postJson<AlertSourceParserGenerateResponse['preview']>('/api/sentinelflow/runtime/settings/alert-source/test-parse', payload)
+}
+
+export async function fetchRagSettings(): Promise<RagSettings> {
+  return getJson('/api/sentinelflow/runtime/rag-settings')
+}
+
+export async function saveRagSettings(payload: {
+  enabled?: boolean
+  knowledgeId?: string
+  apiKey?: string
+  topK?: number
+  similarityThreshold?: number
+  retrieveStrategy?: number
+  enableRerankModel?: boolean
+  rerankModel?: string
+}): Promise<RagSettings> {
+  return postJson<RagSettings>('/api/sentinelflow/runtime/rag-settings', payload)
 }

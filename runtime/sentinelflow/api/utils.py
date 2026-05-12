@@ -14,6 +14,8 @@ VISIBLE_RUNTIME_OVERRIDE_KEYS = {
     "alert_source_headers", "alert_source_query", "alert_source_body",
     "alert_source_timeout", "alert_source_sample_payload", "alert_parser_rule",
     "alert_script_code", "alert_script_timeout", "alert_sources",
+    "rag_enabled", "rag_knowledge_id", "rag_api_key", "rag_top_k",
+    "rag_similarity_threshold", "rag_retrieve_strategy", "rag_enable_rerank_model", "rag_rerank_model",
 }
 
 

@@ -560,12 +560,12 @@ export default function SentinelFlowAlertsPage() {
         <div className="sentinelflow-grid-2 items-start">
           <div
             ref={queuePanelRef}
-            className="sentinelflow-detail-panel h-auto overflow-hidden"
+            className="sentinelflow-detail-panel h-auto overflow-hidden min-h-[220px]"
             style={queuePanelHeight ? { height: `${queuePanelHeight}px` } : undefined}
           >
             <h3>告警队列</h3>
             <div
-              className="sentinelflow-alert-queue-scroll"
+              className="sentinelflow-alert-queue-scroll flex-1 min-h-0"
               style={queueListMaxHeight ? { maxHeight: `${queueListMaxHeight}px` } : undefined}
             >
               <table className="sentinelflow-data-table">
@@ -596,8 +596,9 @@ export default function SentinelFlowAlertsPage() {
             </div>
           </div>
 
-          <div ref={detailPanelRef} className={`sentinelflow-detail-panel h-auto self-start sentinelflow-detail-panel-${selectedTask ? getTaskStatusClass(selectedTask) : 'neutral'}`}>
+          <div ref={detailPanelRef} className={`sentinelflow-detail-panel h-auto self-start min-h-[220px] sentinelflow-detail-panel-${selectedTask ? getTaskStatusClass(selectedTask) : 'neutral'}`}>
             <h3>当前选中告警</h3>
+            <div className="flex-1 min-h-0">
             {selectedTask ? (
               <div className="sentinelflow-response-stack">
                 <div className="sentinelflow-response-row">
@@ -742,6 +743,7 @@ export default function SentinelFlowAlertsPage() {
             ) : (
               <p className="sentinelflow-muted-text">选择一条告警后查看详情。</p>
             )}
+            </div>
           </div>
         </div>
       </Surface>
