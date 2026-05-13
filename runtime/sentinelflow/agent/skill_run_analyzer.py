@@ -21,6 +21,33 @@ class SkillRunAnalyzerMixin:
 
     # ── Core extraction ───────────────────────────────────────────────────────
 
+    def _normalize_tool_arguments(self, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _raw_tool_error(self, tool_payload: dict[str, Any]) -> str:
+        error = tool_payload.get("error")
+        if error:
+            return str(error)
+        raw = tool_payload.get("raw")
+        if not isinstance(raw, str):
+            return ""
+        normalized = raw.strip().lower()
+        if (
+            normalized.startswith("error:")
+            or "validation error" in normalized
+            or "please fix your mistakes" in normalized
+        ):
+            return raw.strip()
+        return ""
+
     def _extract_skill_runs(self, graph_result: dict[str, Any]) -> list[dict[str, Any]]:
         tool_calls = [item for item in graph_result.get("tool_calls", []) if isinstance(item, dict)]
         tool_messages = [
@@ -50,9 +77,7 @@ class SkillRunAnalyzerMixin:
             if not isinstance(args, dict):
                 args = {}
             skill_name = str(args.get("skill_name", "")).strip()
-            arguments = args.get("arguments", {})
-            if not isinstance(arguments, dict):
-                arguments = {}
+            arguments = self._normalize_tool_arguments(args.get("arguments", {}))
             if tool_name == "execute_skill_no_args":
                 arguments = {}
 
@@ -97,13 +122,18 @@ class SkillRunAnalyzerMixin:
                 business_payload=business_payload,
                 inferred_from_summary=False,
             )
+            tool_error = self._raw_tool_error(tool_payload)
             runs.append(
                 {
                     "skill_name": skill_name,
                     "tool_name": tool_name,
                     "tool_call_id": tool_call_id,
-                    "tool_success": bool(tool_payload.get("success")) if isinstance(tool_payload.get("success"), bool) else not bool(tool_payload.get("error")),
-                    "tool_error": tool_payload.get("error"),
+                    "tool_success": (
+                        bool(tool_payload.get("success"))
+                        if isinstance(tool_payload.get("success"), bool)
+                        else not bool(tool_error)
+                    ),
+                    "tool_error": tool_error or None,
                     "tool_payload": tool_payload,
                     "arguments": arguments,
                     "payload": dict(business_payload),
@@ -165,9 +195,7 @@ class SkillRunAnalyzerMixin:
             if not isinstance(args, dict):
                 args = {}
             skill_name = str(args.get("skill_name", "")).strip()
-            arguments = args.get("arguments", {})
-            if not isinstance(arguments, dict):
-                arguments = {}
+            arguments = self._normalize_tool_arguments(args.get("arguments", {}))
             if tool_name == "execute_skill_no_args":
                 arguments = {}
 
@@ -193,12 +221,13 @@ class SkillRunAnalyzerMixin:
                 inferred_from_summary=True,
             )
             tool_success = tool_payload.get("success")
+            tool_error = self._raw_tool_error(tool_payload)
             run = {
                 "skill_name": skill_name,
                 "tool_name": tool_name,
                 "tool_call_id": tool_call_id,
-                "tool_success": tool_success if isinstance(tool_success, bool) else None,
-                "tool_error": tool_payload.get("error"),
+                "tool_success": tool_success if isinstance(tool_success, bool) else (False if tool_error else None),
+                "tool_error": tool_error or None,
                 "tool_payload": tool_payload,
                 "arguments": arguments,
                 "payload": dict(business_payload),
@@ -231,6 +260,8 @@ class SkillRunAnalyzerMixin:
         success — but will NOT promote the run to closure success without an
         explicit positive signal (that guard lives in ``_is_successful_closure_run``).
         """
+        if self._raw_tool_error(tool_payload):
+            return False
         if bool(tool_payload.get("error")):
             return False
         tool_success = tool_payload.get("success")

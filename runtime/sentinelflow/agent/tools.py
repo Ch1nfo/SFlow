@@ -28,6 +28,34 @@ def build_agent_tools(
 
     tools: list = []
 
+    def _normalize_skill_arguments(arguments: dict[str, Any] | str | None) -> tuple[dict[str, Any], str | None]:
+        if arguments is None:
+            return {}, None
+        if isinstance(arguments, dict):
+            return arguments, None
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments)
+            except json.JSONDecodeError:
+                return {}, "Skill arguments must be a JSON object."
+            if isinstance(parsed, dict):
+                return parsed, None
+            return {}, "Skill arguments must be a JSON object."
+        return {}, "Skill arguments must be a JSON object."
+
+    def _invalid_arguments_payload(skill_name: str, error: str) -> str:
+        return json.dumps(
+            {
+                "success": False,
+                "data": {
+                    "skill_name": skill_name,
+                    "arguments": {},
+                },
+                "error": error,
+            },
+            ensure_ascii=False,
+        )
+
     def _arguments_fingerprint(arguments: dict[str, Any] | None) -> str:
         return approval_service.fingerprint_arguments(arguments)
 
@@ -167,9 +195,12 @@ def build_agent_tools(
         def execute_skill(
             skill_name: str,
             state: Annotated[SentinelFlowAgentState, InjectedState()],  # type: ignore[misc]
-            arguments: dict[str, Any] | None = None,
+            arguments: dict[str, Any] | str | None = None,
         ) -> str:
             """执行指定技能并返回 JSON 字符串结果。"""
+            normalized_arguments, argument_error = _normalize_skill_arguments(arguments)
+            if argument_error is not None:
+                return _invalid_arguments_payload(skill_name, argument_error)
             cancel_event = state.get("cancel_event")
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 return json.dumps(
@@ -185,7 +216,7 @@ def build_agent_tools(
                 )
             validation_payload = _input_validation_payload(
                 skill_name=skill_name,
-                arguments=arguments or {},
+                arguments=normalized_arguments,
                 state=state,
             )
             if validation_payload is not None:
@@ -193,15 +224,15 @@ def build_agent_tools(
             execution_entry = str(state.get("execution_entry", "")).strip()
             skill = skill_runtime.resolver.resolve(skill_name)
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
-                if _is_rejected_in_current_run(skill_name=skill_name, arguments=arguments or {}, state=state):
-                    return _rejected_payload(skill_name=skill_name, arguments=arguments or {})
-                return _approval_payload(skill_name=skill_name, arguments=arguments or {}, state=state)
+                if _is_rejected_in_current_run(skill_name=skill_name, arguments=normalized_arguments, state=state):
+                    return _rejected_payload(skill_name=skill_name, arguments=normalized_arguments)
+                return _approval_payload(skill_name=skill_name, arguments=normalized_arguments, state=state)
             context = {
                 "event_id_ref": state.get("event_id_ref", ""),
                 "alert_data": state.get("alert_data", {}),
             }
             try:
-                result = skill_runtime.execute_skill(skill_name, arguments or {}, context)
+                result = skill_runtime.execute_skill(skill_name, normalized_arguments, context)
                 payload = result.data if isinstance(result.data, dict) else {"result": result.data}
                 return json.dumps(
                     {
