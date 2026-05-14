@@ -645,7 +645,7 @@
   }
 
   .sentinelflow-chat-bubble {
-    @apply max-w-[85%] px-1 py-1;
+    @apply max-w-[85%] min-w-0 px-1 py-1;
   }
 
   .sentinelflow-chat-bubble > .sentinelflow-response-row strong {
@@ -657,7 +657,33 @@
   }
 
   .sentinelflow-chat-bubble p {
-    @apply whitespace-pre-wrap text-[15px] leading-8;
+    @apply whitespace-pre-wrap break-words text-[15px] leading-8;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .sentinelflow-chat-markdown {
+    @apply min-w-0;
+  }
+
+  .sentinelflow-chat-markdown .prose,
+  .sentinelflow-chat-markdown .prose * {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .sentinelflow-chat-markdown-clamped {
+    max-height: 20rem;
+    overflow: hidden;
+  }
+
+  .sentinelflow-chat-expand-button {
+    @apply mt-2 inline-flex items-center gap-1 text-xs font-semibold text-slate-500 transition-colors hover:text-slate-800;
+  }
+
+  .sentinelflow-chat-expand-button-inverted {
+    @apply text-slate-500 hover:text-slate-800;
   }
 
   .sentinelflow-markdown-table-wrap {

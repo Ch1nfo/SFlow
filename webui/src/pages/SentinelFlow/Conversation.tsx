@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Bot, CheckCircle2, FileJson, MessageSquareText, Plus, RotateCcw, Send, Square, Trash2, Workflow, Wrench } from 'lucide-react'
+import { Bot, CheckCircle2, ChevronDown, ChevronRight, FileJson, MessageSquareText, Plus, RotateCcw, Send, Square, Trash2, Workflow, Wrench } from 'lucide-react'
 import type { ApprovalRequest, CommandDispatchResponse } from '@/api/sentinelflow'
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
 import MarkdownContent from '@/components/sentinelflow/MarkdownContent'
@@ -76,6 +76,34 @@ type CommandDataLike = {
 type DetailField = {
   label: string
   value: unknown
+}
+
+function CollapsibleChatMarkdown({ content, inverted = false }: { content: string; inverted?: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const normalizedContent = String(content ?? '')
+  const shouldClamp = normalizedContent.length > 360 || normalizedContent.split(/\r?\n/).length > 10
+
+  useEffect(() => {
+    setExpanded(false)
+  }, [normalizedContent])
+
+  return (
+    <div className="sentinelflow-chat-markdown">
+      <div className={shouldClamp && !expanded ? 'sentinelflow-chat-markdown-clamped' : undefined}>
+        <MarkdownContent content={normalizedContent} inverted={inverted} />
+      </div>
+      {shouldClamp ? (
+        <button
+          type="button"
+          className={`sentinelflow-chat-expand-button ${inverted ? 'sentinelflow-chat-expand-button-inverted' : ''}`}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          {expanded ? '收起' : '展开全部'}
+        </button>
+      ) : null}
+    </div>
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -606,7 +634,7 @@ export default function SentinelFlowConversationPage() {
                     </div>
 
                     <div className="sentinelflow-chat-bubble sentinelflow-chat-bubble-user">
-                      <MarkdownContent content={item.command} inverted />
+                      <CollapsibleChatMarkdown content={item.command} inverted />
                     </div>
 
                     <div className="sentinelflow-chat-bubble sentinelflow-chat-bubble-assistant">
@@ -657,7 +685,7 @@ export default function SentinelFlowConversationPage() {
                           ) : null}
                         </div>
                       ) : null}
-                      {!hideExecutionSummary ? <MarkdownContent content={assistantReply} /> : null}
+                      {!hideExecutionSummary ? <CollapsibleChatMarkdown content={assistantReply} /> : null}
                       {!hideExecutionSummary && hasAnyToolSummary ? (
                         <button
                           type="button"
@@ -745,14 +773,14 @@ export default function SentinelFlowConversationPage() {
                   <div className="sentinelflow-chat-turn">
                   {runtimeState.pendingCommand.trim() ? (
                     <div className="sentinelflow-chat-bubble sentinelflow-chat-bubble-user">
-                      <MarkdownContent content={runtimeState.pendingCommand} inverted />
+                      <CollapsibleChatMarkdown content={runtimeState.pendingCommand} inverted />
                     </div>
                   ) : null}
                   <div className="sentinelflow-chat-bubble sentinelflow-chat-bubble-assistant">
                     <div className="sentinelflow-response-row">
                       <strong>SentinelFlow</strong>
                     </div>
-                    <MarkdownContent content={sanitizeDisplayText(streamingReply) || (runningAgentStatus ? '正在协同处理，请稍候…' : streamingStatus)} />
+                    <CollapsibleChatMarkdown content={sanitizeDisplayText(streamingReply) || (runningAgentStatus ? '正在协同处理，请稍候…' : streamingStatus)} />
                     {runningAgentStatus ? (
                       <div className="sentinelflow-tool-call-summary">{runningAgentStatus}</div>
                     ) : null}
