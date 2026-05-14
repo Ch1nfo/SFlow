@@ -685,7 +685,7 @@ export default function SentinelFlowConversationPage() {
                           ) : null}
                         </div>
                       ) : null}
-                      {!hideExecutionSummary ? <CollapsibleChatMarkdown content={assistantReply} /> : null}
+                      {!hideExecutionSummary ? <MarkdownContent content={assistantReply} /> : null}
                       {!hideExecutionSummary && hasAnyToolSummary ? (
                         <button
                           type="button"
@@ -780,7 +780,7 @@ export default function SentinelFlowConversationPage() {
                     <div className="sentinelflow-response-row">
                       <strong>SentinelFlow</strong>
                     </div>
-                    <CollapsibleChatMarkdown content={sanitizeDisplayText(streamingReply) || (runningAgentStatus ? '正在协同处理，请稍候…' : streamingStatus)} />
+                    <MarkdownContent content={sanitizeDisplayText(streamingReply) || (runningAgentStatus ? '正在协同处理，请稍候…' : streamingStatus)} />
                     {runningAgentStatus ? (
                       <div className="sentinelflow-tool-call-summary">{runningAgentStatus}</div>
                     ) : null}
