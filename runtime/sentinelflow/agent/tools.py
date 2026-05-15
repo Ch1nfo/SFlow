@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any
 
-from sentinelflow.agent.context_utils import build_context_manifest, validate_execution_inputs
+from sentinelflow.agent.context_utils import (
+    build_context_manifest,
+    validate_execution_inputs,
+    validate_skill_input_schema,
+)
 from sentinelflow.agent.state import SentinelFlowAgentState
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
 from sentinelflow.services.skill_approval_service import SkillApprovalService
@@ -55,6 +59,53 @@ def build_agent_tools(
             },
             ensure_ascii=False,
         )
+
+    def _build_validation_payload(
+        *,
+        skill_name: str,
+        arguments: dict[str, Any],
+        validation: dict[str, Any],
+        state: SentinelFlowAgentState,
+        error_message: str,
+        include_invalid_inputs: bool,
+    ) -> str:
+        alert_data = state.get("alert_data", {})
+        task_prompt = ""
+        if isinstance(alert_data, dict):
+            task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
+        manifest = build_context_manifest(
+            current_goal=task_prompt or f"执行 Skill {skill_name}",
+            entry_type=str(state.get("execution_entry", "")).strip(),
+            original_input=alert_data,
+            current_task_prompt=task_prompt,
+            current_skill_args=arguments,
+            input_contract=validation.get("input_contract", {}),
+            missing_required_inputs=validation.get("missing_required_inputs", []),
+        )
+        data: dict[str, Any] = {
+            "skill_name": skill_name,
+            "arguments": arguments,
+            "input_contract": validation.get("input_contract", {}),
+            "missing_required_inputs": validation.get("missing_required_inputs", []),
+            "context_manifest": manifest,
+            "context_warnings": manifest.get("context_warnings", []),
+        }
+        if include_invalid_inputs:
+            data["invalid_inputs"] = validation.get("invalid_inputs", [])
+        return json.dumps(
+            {"success": False, "data": data, "error": error_message},
+            ensure_ascii=False,
+        )
+
+    def _resolve_skill_or_error(skill_name: str) -> tuple[Any, str | None]:
+        try:
+            return skill_runtime.resolver.resolve(skill_name), None
+        except Exception as exc:
+            payload = json.dumps(
+                {"success": False, "data": {}, "error": f"加载 Skill 失败：{exc}"},
+                ensure_ascii=False,
+            )
+            return None, payload
 
     def _arguments_fingerprint(arguments: dict[str, Any] | None) -> str:
         return approval_service.fingerprint_arguments(arguments)
@@ -108,29 +159,13 @@ def build_agent_tools(
         )
         if validation.get("valid"):
             return None
-        manifest = build_context_manifest(
-            current_goal=task_prompt or f"执行 Skill {skill_name}",
-            entry_type=str(state.get("execution_entry", "")).strip(),
-            original_input=alert_data,
-            current_task_prompt=task_prompt,
-            current_skill_args=arguments,
-            input_contract=validation.get("input_contract", {}),
-            missing_required_inputs=validation.get("missing_required_inputs", []),
-        )
-        return json.dumps(
-            {
-                "success": False,
-                "data": {
-                    "skill_name": skill_name,
-                    "arguments": arguments,
-                    "input_contract": validation.get("input_contract", {}),
-                    "missing_required_inputs": validation.get("missing_required_inputs", []),
-                    "context_manifest": manifest,
-                    "context_warnings": manifest.get("context_warnings", []),
-                },
-                "error": "Skill 调用缺少必需执行参数，请先补齐后再执行。",
-            },
-            ensure_ascii=False,
+        return _build_validation_payload(
+            skill_name=skill_name,
+            arguments=arguments,
+            validation=validation,
+            state=state,
+            error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+            include_invalid_inputs=False,
         )
 
     def _approval_payload(
@@ -214,6 +249,23 @@ def build_agent_tools(
                     {"success": False, "data": {}, "error": f"当前 Agent 未被授权执行技能 {skill_name}。"},
                     ensure_ascii=False,
                 )
+            skill, resolve_error = _resolve_skill_or_error(skill_name)
+            if resolve_error is not None:
+                return resolve_error
+            schema_validation = validate_skill_input_schema(
+                skill_name=skill_name,
+                arguments=normalized_arguments,
+                input_schema=getattr(skill.spec, "input_schema", {}),
+            )
+            if not schema_validation.get("valid"):
+                return _build_validation_payload(
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    validation=schema_validation,
+                    state=state,
+                    error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
+                    include_invalid_inputs=True,
+                )
             validation_payload = _input_validation_payload(
                 skill_name=skill_name,
                 arguments=normalized_arguments,
@@ -222,7 +274,6 @@ def build_agent_tools(
             if validation_payload is not None:
                 return validation_payload
             execution_entry = str(state.get("execution_entry", "")).strip()
-            skill = skill_runtime.resolver.resolve(skill_name)
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments=normalized_arguments, state=state):
                     return _rejected_payload(skill_name=skill_name, arguments=normalized_arguments)
@@ -273,6 +324,23 @@ def build_agent_tools(
                     {"success": False, "data": {}, "error": f"当前 Agent 未被授权执行技能 {skill_name}。"},
                     ensure_ascii=False,
                 )
+            skill, resolve_error = _resolve_skill_or_error(skill_name)
+            if resolve_error is not None:
+                return resolve_error
+            schema_validation = validate_skill_input_schema(
+                skill_name=skill_name,
+                arguments={},
+                input_schema=getattr(skill.spec, "input_schema", {}),
+            )
+            if not schema_validation.get("valid"):
+                return _build_validation_payload(
+                    skill_name=skill_name,
+                    arguments={},
+                    validation=schema_validation,
+                    state=state,
+                    error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
+                    include_invalid_inputs=True,
+                )
             validation_payload = _input_validation_payload(
                 skill_name=skill_name,
                 arguments={},
@@ -281,7 +349,6 @@ def build_agent_tools(
             if validation_payload is not None:
                 return validation_payload
             execution_entry = str(state.get("execution_entry", "")).strip()
-            skill = skill_runtime.resolver.resolve(skill_name)
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments={}, state=state):
                     return _rejected_payload(skill_name=skill_name, arguments={})

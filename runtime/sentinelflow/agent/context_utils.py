@@ -240,6 +240,118 @@ def _missing_field(field: str, reason: str, source: str = "arguments") -> dict[s
     return {"field": field, "source": source, "reason": reason}
 
 
+def _is_missing_schema_value(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _schema_type_matches(value: Any, expected_type: str) -> bool:
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    return True
+
+
+def validate_skill_input_schema(
+    *,
+    skill_name: str,
+    arguments: dict[str, Any],
+    input_schema: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Validate the small JSON Schema subset used by Skill frontmatter."""
+    if not isinstance(input_schema, dict) or not input_schema:
+        return {"valid": True, "input_contract": {}, "missing_required_inputs": [], "invalid_inputs": []}
+
+    schema_type = str(input_schema.get("type") or "object").strip() or "object"
+    required = input_schema.get("required", [])
+    properties = input_schema.get("properties", {})
+    additional_properties = input_schema.get("additionalProperties", True)
+    if not isinstance(required, list):
+        required = []
+    if not isinstance(properties, dict):
+        properties = {}
+
+    contract = {
+        "skill_name": skill_name,
+        "action_type": "schema",
+        "required": [str(field) for field in required],
+        "schema_type": schema_type,
+        "additionalProperties": additional_properties if isinstance(additional_properties, bool) else True,
+    }
+    missing: list[dict[str, str]] = []
+    invalid: list[dict[str, str]] = []
+
+    if schema_type != "object":
+        invalid.append(
+            {
+                "field": "$",
+                "source": "input_schema",
+                "reason": f"当前仅支持 object 类型 Skill input_schema，实际为 {schema_type}。",
+            }
+        )
+        return {
+            "valid": False,
+            "input_contract": contract,
+            "missing_required_inputs": missing,
+            "invalid_inputs": invalid,
+        }
+
+    for field in contract["required"]:
+        if _is_missing_schema_value(arguments.get(field)):
+            missing.append(
+                {
+                    "field": field,
+                    "source": "arguments",
+                    "reason": f"Skill「{skill_name}」执行前必须提供非空字段 {field}。",
+                }
+            )
+
+    for field, field_schema in properties.items():
+        if field not in arguments or _is_missing_schema_value(arguments.get(field)):
+            continue
+        if not isinstance(field_schema, dict):
+            continue
+        expected_type = field_schema.get("type")
+        if not isinstance(expected_type, str) or not expected_type.strip():
+            continue
+        if not _schema_type_matches(arguments[field], expected_type.strip()):
+            invalid.append(
+                {
+                    "field": str(field),
+                    "source": "arguments",
+                    "reason": f"字段 {field} 类型不符合 input_schema，期望 {expected_type}。",
+                }
+            )
+
+    allow_additional = additional_properties if isinstance(additional_properties, bool) else True
+    if not allow_additional:
+        allowed = {str(field) for field in properties.keys()}
+        for field in arguments.keys():
+            if str(field) not in allowed:
+                invalid.append(
+                    {
+                        "field": str(field),
+                        "source": "arguments",
+                        "reason": f"字段 {field} 未在 input_schema.properties 中声明。",
+                    }
+                )
+
+    return {
+        "valid": not missing and not invalid,
+        "input_contract": contract,
+        "missing_required_inputs": missing,
+        "invalid_inputs": invalid,
+    }
+
+
 def validate_execution_inputs(
     *,
     skill_name: str = "",
