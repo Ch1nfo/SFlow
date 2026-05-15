@@ -26,6 +26,7 @@ class SentinelFlowSkillRuntime:
             name=skill.spec.name,
             type=skill.spec.type,
             description=skill.spec.description,
+            category=skill.spec.category,
             markdown=skill.markdown,
             executable=skill.executable,
             approval_required=skill.spec.approval_required,

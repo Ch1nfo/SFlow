@@ -36,6 +36,7 @@ class SkillSpec:
     description: str
     base_dir: Path
     doc_path: Path
+    category: str = "other"
     entry: str | None = None
     mode: SkillRuntimeMode | None = None
     input_schema: dict[str, Any] = field(default_factory=dict)
@@ -69,6 +70,7 @@ class SkillReadResult:
     description: str
     markdown: str
     executable: bool
+    category: str = "other"
     approval_required: bool = False
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)

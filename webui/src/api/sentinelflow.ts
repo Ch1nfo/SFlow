@@ -139,6 +139,7 @@ export type SkillSummary = {
   name: string
   type: string
   description: string
+  category?: string
   executable: boolean
   approval_required: boolean
   completion_policy?: {
@@ -513,6 +514,7 @@ export async function fetchSkillDetail(name: string): Promise<SkillDetail> {
 export async function createSkill(payload: {
   name: string
   description: string
+  category?: string
   type: string
   content: string
   code: string
@@ -530,6 +532,7 @@ export async function createSkill(payload: {
 export async function saveSkill(name: string, payload: {
   name: string
   description: string
+  category?: string
   type: string
   content: string
   code: string

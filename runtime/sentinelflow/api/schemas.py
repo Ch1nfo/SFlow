@@ -119,6 +119,7 @@ class AlertSourceParserPreviewRequest(BaseModel):
 class SkillCreateRequest(BaseModel):
     name: str
     description: str
+    category: str = "other"
     type: str = "doc"
     content: str = ""
     mode: str | None = None

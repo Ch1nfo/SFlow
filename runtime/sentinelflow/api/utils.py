@@ -187,6 +187,7 @@ def _build_skill_markdown(
     mode: str | None = None,
     approval_required: bool = False,
     completion_policy: dict[str, Any] | None = None,
+    category: str = "other",
 ) -> str:
     """
     Build the full SKILL.md text with frontmatter containing all skill metadata.
@@ -194,11 +195,15 @@ def _build_skill_markdown(
     The frontmatter is the single source of truth — no separate skill.yaml needed.
     """
     normalized_type = "hybrid" if skill_type == "exec" else (skill_type or "doc")
+    normalized_category = (category or "other").strip().lower()
+    if normalized_category not in {"query", "disposal", "other"}:
+        normalized_category = "other"
 
     fm_lines = [
         "---",
         f"name: {name}",
         f"description: {description}",
+        f"category: {normalized_category}",
         f"type: {normalized_type}",
     ]
     if normalized_type == "hybrid":

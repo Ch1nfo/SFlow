@@ -184,6 +184,11 @@ def _normalize_completion_policy(value: Any) -> SkillCompletionPolicy:
     )
 
 
+def _normalize_skill_category(value: Any) -> str:
+    category = str(value or "other").strip().lower() or "other"
+    return category if category in {"query", "disposal", "other"} else "other"
+
+
 class SentinelFlowSkillLoader:
     """
     Discover and load SentinelFlow skills from a plugin directory.
@@ -338,6 +343,7 @@ class SentinelFlowSkillLoader:
             description=description,
             base_dir=skill_dir,
             doc_path=doc_path,
+            category=_normalize_skill_category(meta.get("category")),
             entry=entry,
             mode=runtime_mode,
             input_schema=input_schema,

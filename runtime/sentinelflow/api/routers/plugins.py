@@ -25,6 +25,7 @@ def list_skills() -> dict[str, Any]:
             "name": read.name,
             "type": read.type.value,
             "description": read.description,
+            "category": read.category,
             "executable": read.executable,
             "approval_required": read.approval_required,
             "entry": read.entry,
@@ -49,7 +50,16 @@ def create_skill(payload: SkillCreateRequest) -> dict[str, Any]:
 
     _mirror_project_file(
         skill_dir / "SKILL.md",
-        _build_skill_markdown(payload.name, description, payload.content, skill_type, payload.mode, payload.approval_required, payload.completion_policy),
+        _build_skill_markdown(
+            payload.name,
+            description,
+            payload.content,
+            skill_type,
+            payload.mode,
+            payload.approval_required,
+            payload.completion_policy,
+            payload.category,
+        ),
     )
     if skill_type == "hybrid":
         _mirror_project_file(skill_dir / "main.py", payload.code if payload.code.strip() else _build_skill_main(skill_name))
@@ -80,7 +90,16 @@ def save_skill(name: str, payload: SkillCreateRequest) -> dict[str, Any]:
     skill_dir = Path(".sentinelflow") / "plugins" / "skills" / new_slug
     _mirror_project_file(
         skill_dir / "SKILL.md",
-        _build_skill_markdown(payload.name, description, payload.content, skill_type, payload.mode, payload.approval_required, payload.completion_policy),
+        _build_skill_markdown(
+            payload.name,
+            description,
+            payload.content,
+            skill_type,
+            payload.mode,
+            payload.approval_required,
+            payload.completion_policy,
+            payload.category,
+        ),
     )
     if skill_type == "hybrid":
         _mirror_project_file(skill_dir / "main.py", payload.code if payload.code.strip() else _build_skill_main(new_slug))
@@ -101,6 +120,7 @@ def get_skill(name: str) -> dict[str, Any]:
     read = skill_runtime.read_skill(name)
     return {
         "name": read.name, "type": read.type.value, "description": read.description,
+        "category": read.category,
         "markdown": read.markdown, "code": _read_skill_code(read.name), "executable": read.executable,
         "approval_required": read.approval_required,
         "entry": read.entry, "mode": read.mode.value if read.mode else None,

@@ -15,6 +15,24 @@ function getSkillTypeLabel(type: string) {
   return type
 }
 
+const SKILL_CATEGORY_OPTIONS = [
+  { value: 'query', label: '查询类', description: '用于查询资产、流量、情报、历史案例等上下文。' },
+  { value: 'disposal', label: '处置类', description: '用于封禁、通知、状态流转、结单等处置动作。' },
+  { value: 'other', label: '其他类', description: '不属于查询或处置闭环的辅助 Skill。' },
+] as const
+
+type SkillCategory = (typeof SKILL_CATEGORY_OPTIONS)[number]['value']
+
+function normalizeSkillCategory(category?: string | null): SkillCategory {
+  const value = String(category || 'other').trim().toLowerCase()
+  return SKILL_CATEGORY_OPTIONS.some((item) => item.value === value) ? value as SkillCategory : 'other'
+}
+
+function getSkillCategoryLabel(category?: string | null) {
+  const normalized = normalizeSkillCategory(category)
+  return SKILL_CATEGORY_OPTIONS.find((item) => item.value === normalized)?.label ?? '其他类'
+}
+
 const DEFAULT_COMPLETION_POLICY = {
   enabled: false,
   action_kind: 'other',
@@ -100,6 +118,7 @@ export default function SentinelFlowSkillsPage() {
   const [draft, setDraft] = useState({
     name: '',
     description: '',
+    category: 'other',
     type: 'doc',
     mode: 'subprocess',
     content: '',
@@ -109,7 +128,12 @@ export default function SentinelFlowSkillsPage() {
   })
 
   useEffect(() => {
-    const first = data?.skills?.[0] ?? null
+    const categoryOrder = SKILL_CATEGORY_OPTIONS.map((item) => item.value)
+    const first = [...(data?.skills ?? [])].sort((a, b) => {
+      const categoryDiff = categoryOrder.indexOf(normalizeSkillCategory(a.category)) - categoryOrder.indexOf(normalizeSkillCategory(b.category))
+      if (categoryDiff !== 0) return categoryDiff
+      return a.name.localeCompare(b.name)
+    })[0] ?? null
     setSelectedSkill((prev) => prev ?? first)
   }, [data])
 
@@ -129,10 +153,19 @@ export default function SentinelFlowSkillsPage() {
     const query = searchQuery.trim().toLowerCase()
     if (!query) return skills
     return skills.filter((skill) => {
-      const haystack = `${skill.name} ${skill.description} ${skill.type} ${skill.mode ?? ''}`.toLowerCase()
+      const haystack = `${skill.name} ${skill.description} ${skill.type} ${skill.mode ?? ''} ${getSkillCategoryLabel(skill.category)}`.toLowerCase()
       return haystack.includes(query)
     })
   }, [data?.skills, searchQuery])
+
+  const groupedSkills = useMemo(() => {
+    return SKILL_CATEGORY_OPTIONS.map((category) => ({
+      ...category,
+      skills: filteredSkills
+        .filter((skill) => normalizeSkillCategory(skill.category) === category.value)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }))
+  }, [filteredSkills])
 
   async function handleRefresh() {
     if (refreshing) return
@@ -155,6 +188,7 @@ export default function SentinelFlowSkillsPage() {
       setSelectedSkill({
         name: created.name,
         description: created.description,
+        category: created.category,
         type: created.type,
         executable: created.executable,
         approval_required: created.approval_required,
@@ -163,7 +197,7 @@ export default function SentinelFlowSkillsPage() {
         mode: created.mode,
       })
       setDetail(created)
-      setDraft({ name: '', description: '', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
+      setDraft({ name: '', description: '', category: 'other', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
       setEditingSkillName(null)
       setCreateFormExpanded(false)
     } catch (error) {
@@ -184,6 +218,7 @@ export default function SentinelFlowSkillsPage() {
       setSelectedSkill({
         name: saved.name,
         description: saved.description,
+        category: saved.category,
         type: saved.type,
         executable: saved.executable,
         approval_required: saved.approval_required,
@@ -194,7 +229,7 @@ export default function SentinelFlowSkillsPage() {
       await reload()
       setEditingSkillName(null)
       setDebuggingSkillName(null)
-      setDraft({ name: '', description: '', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
+      setDraft({ name: '', description: '', category: 'other', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
       setDebugInput('{\n  "ip": "198.51.100.10"\n}')
       setDebugOutput(null)
       setDebugError(null)
@@ -216,7 +251,7 @@ export default function SentinelFlowSkillsPage() {
       setSelectedSkill(null)
       setDetail(null)
       setEditingSkillName(null)
-      setDraft({ name: '', description: '', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
+      setDraft({ name: '', description: '', category: 'other', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
     } finally {
       setDeleting(false)
     }
@@ -231,6 +266,7 @@ export default function SentinelFlowSkillsPage() {
     setDraft({
       name: detail.name,
       description: detail.description,
+      category: normalizeSkillCategory(detail.category),
       type: detail.type,
       mode: detail.mode ?? 'subprocess',
       content: detail.markdown,
@@ -246,7 +282,7 @@ export default function SentinelFlowSkillsPage() {
     setDebuggingSkillName(null)
     setCreateFormExpanded(false)
     setFormError(null)
-    setDraft({ name: '', description: '', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
+    setDraft({ name: '', description: '', category: 'other', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
     setDebugInput('{\n  "ip": "198.51.100.10"\n}')
     setDebugOutput(null)
     setDebugError(null)
@@ -261,6 +297,7 @@ export default function SentinelFlowSkillsPage() {
     setDraft({
       name: detail.name,
       description: detail.description,
+      category: normalizeSkillCategory(detail.category),
       type: detail.type,
       mode: detail.mode ?? 'subprocess',
       content: detail.markdown,
@@ -445,9 +482,18 @@ export default function SentinelFlowSkillsPage() {
             {debuggingSkillName ? `调试 Skill：${debuggingSkillName}` : editingSkillName ? `编辑 Skill：${editingSkillName}` : '新建 Skill'}
           </div>
           {formError ? <div className="mb-3 sentinelflow-message-block sentinelflow-message-error">{formError}</div> : null}
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <input className="sentinelflow-settings-input" placeholder="Skill 名称，如 ip-investigate" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} disabled={Boolean(editingSkillName)} />
             <input className="sentinelflow-settings-input" placeholder="描述" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} />
+            <select
+              className="sentinelflow-settings-input"
+              value={draft.category}
+              onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}
+            >
+              {SKILL_CATEGORY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
             {editingSkillName ? (
               <div className="flex gap-3">
                 <button type="button" className="sentinelflow-primary-button flex-1" onClick={() => void handleSaveSkill()} disabled={saving}>
@@ -547,24 +593,48 @@ export default function SentinelFlowSkillsPage() {
         <div className="sentinelflow-independent-scroll-grid">
           <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
             <h3>可用 Skills</h3>
-            <div className="min-w-0">
-              <table className="sentinelflow-data-table">
-                <thead>
-                  <tr><th>Skill</th><th>类型</th><th>是否可执行</th></tr>
-                </thead>
-                <tbody>
-                  {loading ? <tr><td colSpan={3}>正在加载 Skills...</td></tr> : null}
-                  {error ? <tr><td colSpan={3}>加载失败：{error}</td></tr> : null}
-                  {!loading && !error ? filteredSkills.map((skill) => (
-                    <tr key={skill.name} className={selectedSkill?.name === skill.name ? 'sentinelflow-table-row-active' : ''} onClick={() => setSelectedSkill(skill)}>
-                      <td>{skill.name}</td>
-                      <td>{getSkillTypeLabel(skill.type)}</td>
-                      <td>{skill.executable ? '是' : '否'}</td>
-                    </tr>
-                  )) : null}
-                  {!loading && !error && filteredSkills.length === 0 ? <tr><td colSpan={3}>没有匹配的 Skill。</td></tr> : null}
-                </tbody>
-              </table>
+            <div className="min-w-0 space-y-4">
+              {loading ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">正在加载 Skills...</div> : null}
+              {error ? <div className="sentinelflow-message-block sentinelflow-message-error">加载失败：{error}</div> : null}
+              {!loading && !error && filteredSkills.length === 0 ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">没有匹配的 Skill。</div> : null}
+              {!loading && !error ? groupedSkills.map((group) => (
+                <section key={group.value} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
+                  <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-2">
+                    <div>
+                      <div className="text-sm font-bold text-slate-900">{group.label}</div>
+                      <div className="mt-0.5 text-xs text-slate-500">{group.description}</div>
+                    </div>
+                    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm">{group.skills.length}</span>
+                  </div>
+                  {group.skills.length ? (
+                    <div className="space-y-2">
+                      {group.skills.map((skill) => (
+                        <button
+                          key={skill.name}
+                          type="button"
+                          className={`w-full rounded-xl border bg-white px-3 py-2 text-left transition-all ${
+                            selectedSkill?.name === skill.name
+                              ? 'border-sky-400 shadow-sm ring-2 ring-sky-100'
+                              : 'border-gray-200 hover:border-slate-300 hover:shadow-sm'
+                          }`}
+                          onClick={() => setSelectedSkill(skill)}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="truncate text-sm font-semibold text-slate-900">{skill.name}</span>
+                            <span className={skill.executable ? 'shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700' : 'shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600'}>
+                              {skill.executable ? '可执行' : '文档'}
+                            </span>
+                          </div>
+                          <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{skill.description}</div>
+                          <div className="mt-1 text-xs text-slate-400">{getSkillTypeLabel(skill.type)}</div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-white/70 p-3 text-sm text-slate-400">暂无 Skill</div>
+                  )}
+                </section>
+              )) : null}
             </div>
           </div>
           <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
@@ -574,6 +644,7 @@ export default function SentinelFlowSkillsPage() {
               <KeyValueList
                 items={[
                   { label: '类型', value: getSkillTypeLabel(detail.type) },
+                  { label: '分类', value: getSkillCategoryLabel(detail.category) },
                   { label: '可执行', value: detail.executable ? '是' : '否' },
                   { label: '执行审批', value: detail.approval_required ? '需要审批（仅对对话 / 手动单告警；每次执行都需单独审批）' : '直接执行' },
                   { label: '自动处置闭环', value: completionPolicyLabel(detail.completion_policy) },
