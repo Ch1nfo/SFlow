@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Database, Save } from 'lucide-react'
 import { fetchRagSettings, saveRagSettings, type RagSettings } from '@/api/sentinelflow'
-import KeyValueList from '@/components/sentinelflow/KeyValueList'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import Surface from '@/components/sentinelflow/Surface'
 import PageHeader from '@/components/common/PageHeader'
@@ -32,6 +31,14 @@ function buildDraft(settings: RagSettings, prevDraft?: RagDraft | null): RagDraf
     enableRerankModel: prevDraft?.enableRerankModel ?? settings.enable_rerank_model,
     rerankModel: prevDraft?.rerankModel ?? settings.rerank_model,
   }
+}
+
+function getRetrieveStrategyLabel(strategy: number | string | undefined) {
+  const value = String(strategy ?? '')
+  if (value === '1') return '语义检索'
+  if (value === '2') return '全文检索'
+  if (value === '3') return '混合检索'
+  return value || '—'
 }
 
 export default function SentinelFlowRagPage() {
@@ -92,7 +99,7 @@ export default function SentinelFlowRagPage() {
       />
 
       {/* Status Cards */}
-      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Surface title="RAG 状态">
           <div className="flex items-center gap-2">
             <StatusBadge tone={settings?.enabled ? 'success' : 'neutral'}>
@@ -100,16 +107,19 @@ export default function SentinelFlowRagPage() {
             </StatusBadge>
           </div>
         </Surface>
-        <Surface title="API Key">
-          <div className="flex items-center gap-2">
-            <StatusBadge tone={settings?.api_key_configured ? 'success' : 'neutral'}>
-              {settings?.api_key_configured ? '已配置' : '未配置'}
-            </StatusBadge>
+        <Surface title="Top K">
+          <div className="text-sm font-semibold leading-6 text-gray-800">
+            {settings?.top_k ?? '—'}
           </div>
         </Surface>
-        <Surface title="Knowledge ID">
-          <div className="text-sm text-gray-700 font-mono">
-            {settings?.knowledge_id ? `${settings.knowledge_id.slice(0, 16)}...` : '—'}
+        <Surface title="相似度阈值">
+          <div className="text-sm font-semibold leading-6 text-gray-800">
+            {settings?.similarity_threshold ?? '—'}
+          </div>
+        </Surface>
+        <Surface title="检索策略">
+          <div className="text-sm font-semibold leading-6 text-gray-800">
+            {getRetrieveStrategyLabel(settings?.retrieve_strategy)}
           </div>
         </Surface>
         <Surface title="Rerank 模型">
@@ -266,23 +276,6 @@ export default function SentinelFlowRagPage() {
                     onChange={(e) => updateDraft({ rerankModel: e.target.value })}
                     className="mt-2 block w-64 rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
                     placeholder="bge-reranker-base"
-                  />
-                </div>
-              )}
-
-              {/* Current Values Summary */}
-              {settings && (
-                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                  <div className="text-sm font-semibold text-gray-900 mb-2">当前生效参数</div>
-                  <KeyValueList
-                    items={[
-                      { label: 'Knowledge ID', value: settings.knowledge_id },
-                      { label: 'Top K', value: String(settings.top_k) },
-                      { label: 'Similarity Threshold', value: String(settings.similarity_threshold) },
-                      { label: 'Retrieve Strategy', value: String(settings.retrieve_strategy) },
-                      { label: 'Enable Rerank', value: settings.enable_rerank_model ? 'True' : 'False' },
-                      { label: 'Rerank Model', value: settings.rerank_model },
-                    ]}
                   />
                 </div>
               )}

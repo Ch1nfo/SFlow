@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bot, Plus, RefreshCw } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Plus, RefreshCw } from 'lucide-react'
 import {
   createAgent,
   deleteAgent,
@@ -385,6 +385,7 @@ export default function SentinelFlowAgentsPage() {
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_DRAFT)
   const [editDraft, setEditDraft] = useState<AgentDraft>(EMPTY_DRAFT)
   const [editing, setEditing] = useState(false)
+  const [createFormExpanded, setCreateFormExpanded] = useState(false)
   const [promptExpanded, setPromptExpanded] = useState(false)
   const [advancedPromptExpanded, setAdvancedPromptExpanded] = useState(false)
   const [formError, setFormError] = useState('')
@@ -425,6 +426,7 @@ export default function SentinelFlowAgentsPage() {
       await reload()
       setDraft(EMPTY_DRAFT)
       setAdvancedPromptExpanded(false)
+      setCreateFormExpanded(false)
     } catch (error) {
       setFormError(error instanceof Error ? error.message : '创建 Agent 失败。')
     } finally {
@@ -478,6 +480,7 @@ export default function SentinelFlowAgentsPage() {
       setSelected(null)
       setDetail(null)
       setEditDraft(EMPTY_DRAFT)
+      setCreateFormExpanded(false)
     } finally {
       setDeleting(false)
     }
@@ -487,6 +490,7 @@ export default function SentinelFlowAgentsPage() {
     if (!detail) return
     setEditDraft(detailToDraft(detail))
     setEditing(true)
+    setCreateFormExpanded(true)
     setFormError('')
     setAdvancedPromptExpanded(false)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -496,6 +500,7 @@ export default function SentinelFlowAgentsPage() {
     if (!detail) return
     setEditDraft(detailToDraft(detail))
     setEditing(false)
+    setCreateFormExpanded(false)
     setFormError('')
   }
 
@@ -524,14 +529,19 @@ export default function SentinelFlowAgentsPage() {
             <div className="mt-1 text-sm text-gray-500">
               {editing
                 ? '当前正在编辑已有 Agent。保存后会直接覆盖当前 Agent 配置；如果修改名称，系统会一并完成重命名。'
-                : '这里只用于创建新的子 Agent；系统主 Agent 请在下方详情里点“开始编辑”后修改。'}
+                : '默认隐藏新建表单；系统主 Agent 请在下方详情里点“开始编辑”后修改。'}
             </div>
           </div>
           {editing ? (
             <button type="button" className="sentinelflow-ghost-button" onClick={handleCancelEdit} disabled={saving}>
               取消编辑
             </button>
-          ) : null}
+          ) : (
+            <button type="button" className="sentinelflow-primary-button" onClick={() => setCreateFormExpanded((current) => !current)}>
+              {createFormExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {createFormExpanded ? '收起新建' : '新建子 Agent'}
+            </button>
+          )}
         </div>
 
         {editing ? (
@@ -542,18 +552,20 @@ export default function SentinelFlowAgentsPage() {
           </div>
         ) : null}
 
-        <AgentForm
-          title={editing ? 'Agent 编辑表单' : 'Agent 新建表单'}
-          draft={topDraft}
-          onChange={(updater) => editing ? setEditDraft(updater) : setDraft(updater)}
-          onSubmit={() => editing ? void handleSave() : void handleCreate()}
-          submitting={editing ? saving : creating}
-          submitText={editing ? (selectedIsSystem ? '保存主 Agent' : '保存更改') : '新建子 Agent'}
-          skills={skills}
-          agents={agents}
-          advancedPromptExpanded={advancedPromptExpanded}
-          onToggleAdvancedPrompt={() => setAdvancedPromptExpanded((current) => !current)}
-        />
+        {editing || createFormExpanded ? (
+          <AgentForm
+            title={editing ? 'Agent 编辑表单' : 'Agent 新建表单'}
+            draft={topDraft}
+            onChange={(updater) => editing ? setEditDraft(updater) : setDraft(updater)}
+            onSubmit={() => editing ? void handleSave() : void handleCreate()}
+            submitting={editing ? saving : creating}
+            submitText={editing ? (selectedIsSystem ? '保存主 Agent' : '保存更改') : '新建子 Agent'}
+            skills={skills}
+            agents={agents}
+            advancedPromptExpanded={advancedPromptExpanded}
+            onToggleAdvancedPrompt={() => setAdvancedPromptExpanded((current) => !current)}
+          />
+        ) : null}
       </div>
       {formError ? <div className="sentinelflow-message-block sentinelflow-message-error">{formError}</div> : null}
 
@@ -561,8 +573,8 @@ export default function SentinelFlowAgentsPage() {
         {loading ? <p className="sentinelflow-muted-text">正在读取 Agent 列表...</p> : null}
         {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
         {!loading && !error ? (
-          <div className="sentinelflow-grid-2">
-            <div className="sentinelflow-detail-panel">
+          <div className="sentinelflow-independent-scroll-grid">
+            <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
               <div className="sentinelflow-task-list">
                 <div className="mb-2 text-sm font-semibold text-gray-900">系统主 Agent</div>
                 {primaryAgent ? (
@@ -604,7 +616,7 @@ export default function SentinelFlowAgentsPage() {
                 {agents.length === 0 ? <p className="sentinelflow-muted-text">当前还没有 Agent。</p> : null}
               </div>
             </div>
-            <div className="sentinelflow-detail-panel">
+            <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
               <h3>{detail ? getAgentDisplayName(detail) : 'Agent 详情'}</h3>
               {detail ? (
                 <div className="space-y-3">

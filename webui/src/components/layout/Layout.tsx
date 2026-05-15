@@ -147,7 +147,7 @@ export default function Layout() {
     }
     const timer = window.setTimeout(() => {
       setExpandedContentVisible(true)
-    }, 180)
+    }, 260)
     return () => window.clearTimeout(timer)
   }, [collapsed])
 
@@ -260,7 +260,7 @@ export default function Layout() {
                         }`}
                       >
                         <item.icon className={`h-5 w-5 flex-shrink-0 ${active ? 'text-sky-700' : 'text-gray-400'}`} />
-                        {!collapsed && (
+                        {!collapsed && expandedContentVisible && (
                           <div className={`min-w-0 transition-all duration-200 ${expandedContentVisible ? 'translate-x-0 opacity-100' : 'translate-x-2 opacity-0'}`}>
                             <div className="truncate text-sm font-semibold">{item.name}</div>
                           </div>
@@ -283,7 +283,7 @@ export default function Layout() {
               >
                 <ChevronRight className="h-4 w-4" />
               </button>
-            ) : (
+            ) : expandedContentVisible ? (
               <div className={`rounded-2xl border border-emerald-100 bg-gradient-to-r from-emerald-50 to-sky-50 p-4 transition-all duration-200 ${expandedContentVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0'}`}>
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
                   <BellRing className="h-4 w-4 flex-shrink-0 text-emerald-600" />
@@ -292,6 +292,10 @@ export default function Layout() {
                 <p className="mt-2 text-xs leading-5 text-gray-600">
                   {withProductName('统一承载告警接入、任务闭环、Agent Workflow、Skills 和对话指挥能力。')}
                 </p>
+              </div>
+            ) : (
+              <div className="flex h-10 w-full items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-600">
+                <ChevronRight className="h-4 w-4" />
               </div>
             )}
           </div>

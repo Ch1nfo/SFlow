@@ -597,122 +597,126 @@ export default function SentinelFlowAlertsPage() {
           </div>
 
           <div ref={detailPanelRef} className={`sentinelflow-detail-panel h-auto self-start min-h-[220px] sentinelflow-detail-panel-${selectedTask ? getTaskStatusClass(selectedTask) : 'neutral'}`}>
-            <h3>当前选中告警</h3>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="mb-0">当前选中告警</h3>
+              <button
+                type="button"
+                className="sentinelflow-primary-button"
+                onClick={() => setFinalJudgmentExpanded((current) => !current)}
+                disabled={!hasFinalJudgment}
+                title={hasFinalJudgment ? undefined : '当前告警暂无最终研判信息'}
+              >
+                {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                {finalJudgmentExpanded ? '关闭研判信息' : '展示最终研判'}
+              </button>
+            </div>
             <div className="flex-1 min-h-0">
             {selectedTask ? (
               <div className="sentinelflow-response-stack">
-                <div className="sentinelflow-response-row">
-                  <StatusBadge tone={getTaskTone(selectedTask)}>{getTaskStatusLabel(selectedTask)}</StatusBadge>
-                  <span>{formatAlertTime(selectedTask.alert_time)}</span>
-                  <span>{getTaskFlowLabel(selectedTask)}</span>
-                </div>
-                <p className="sentinelflow-muted-text">{selectedTask.description}</p>
-                <div className="sentinelflow-context-grid">
-                  <div className="sentinelflow-context-card"><strong>告警名称</strong><span>{String(selectedPayload.alert_name ?? selectedTask.title ?? '未提供')}</span></div>
-                  <div className="sentinelflow-context-card"><strong>告警时间</strong><span>{formatAlertTime(selectedTask.alert_time)}</span></div>
-                  <div className="sentinelflow-context-card"><strong>事件号</strong><span>{selectedTask.event_ids || '未提供'}</span></div>
-                  <div className="sentinelflow-context-card"><strong>来源</strong><span>{String(selectedPayload.alert_source ?? '未提供')}</span></div>
-                  <div className="sentinelflow-context-card"><strong>源 IP</strong><span>{String(selectedPayload.sip ?? '未提供')}</span></div>
-                  <div className="sentinelflow-context-card"><strong>目的 IP</strong><span title={dipPreview.fullText}>{dipPreview.text}</span></div>
-                  <div className="sentinelflow-context-card"><strong>当前研判</strong><span>{String(selectedPayload.current_judgment ?? '未提供')}</span></div>
-                  <div className="sentinelflow-context-card"><strong>历史研判</strong><span>{String(selectedPayload.history_judgment ?? '未提供')}</span></div>
-                </div>
-                {selectedPayloadText ? (
-                  <div className="rounded-xl border border-slate-200 bg-white p-4">
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">告警 Payload</div>
-                      {shouldCollapsePayload ? (
-                        <button type="button" className="sentinelflow-ghost-button" onClick={() => setPayloadExpanded((current) => !current)}>
-                          {payloadExpanded ? '收起' : '展开'}
-                        </button>
-                      ) : null}
-                    </div>
-                    <pre
-                      className="overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-700"
-                    >
-                      {shouldCollapsePayload && !payloadExpanded ? collapsedPayloadText : selectedPayloadText}
-                    </pre>
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+                    <StatusBadge tone={getTaskTone(selectedTask)}>{getTaskStatusLabel(selectedTask)}</StatusBadge>
+                    <span>{formatAlertTime(selectedTask.alert_time)}</span>
+                    <span className="text-slate-300">/</span>
+                    <span>{getTaskFlowLabel(selectedTask)}</span>
                   </div>
-                ) : null}
-                <div className="sentinelflow-action-bar">
-                  <button type="button" className="sentinelflow-primary-button" onClick={() => void runAction('triage_dispose')} disabled={actionState.running || isPrimaryDisposeDisabled(selectedTask)}>处置当前告警</button>
-                  {isReDisposableStatus(selectedTask) ? (
-                    <button type="button" className="sentinelflow-ghost-button" onClick={() => void runAction('retry_task')} disabled={actionState.running}>
-                      {getEffectiveTaskStatus(selectedTask) === 'pending_closure' ? '重新处置' : '重试任务'}
-                    </button>
-                  ) : null}
                 </div>
-                {String(selectedApprovalRequest.approval_id ?? '').trim() ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">待审批 Skill</div>
-                    <div className="mt-2 text-sm font-semibold text-amber-950">{String(selectedApprovalRequest.skill_name ?? '').trim() || '未命名 Skill'}</div>
-                    <div className="mt-2 text-sm text-amber-900">{String(selectedApprovalRequest.message ?? '该 Skill 需要审批后才能继续执行。').trim()}</div>
-                    <div className="mt-2 text-xs text-amber-800">参数：{String(selectedApprovalRequest.arguments_summary ?? '无参数').trim() || '无参数'}</div>
-                    <div className="mt-3 flex gap-2">
-                      <button type="button" className="sentinelflow-primary-button" onClick={() => void resolveApproval('approve')} disabled={actionState.running}>批准并继续</button>
-                      <button type="button" className="sentinelflow-ghost-button" onClick={() => void resolveApproval('reject')} disabled={actionState.running}>拒绝并继续</button>
-                    </div>
-                  </div>
-                ) : null}
-                {selectedWorkflowRun && workflowDecision ? (
-                  <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Workflow 调用</div>
-                    <div className="mt-2 text-sm font-semibold text-amber-950">
-                      {`主 Agent 调用了流程：${workflowDecision}`}
-                    </div>
-                    {workflowDecisionReason ? (
-                      <div className="mt-2 text-sm text-amber-900">
-                        {`Workflow 返回：${workflowDecisionReason}`}
+                {finalJudgmentExpanded ? (
+                  <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
+                    {selectedFinalJudgmentMarkdown ? (
+                      <div className="mt-4 text-sm text-blue-900">
+                        <MarkdownContent content={selectedFinalJudgmentMarkdown} />
                       </div>
                     ) : (
-                      <div className="mt-2 text-sm text-amber-900">
-                        该 Workflow 已作为主 Agent 的一个中间能力被调用。
+                      <div className="mt-4">
+                        <div className="text-sm font-semibold text-blue-950">
+                          {`分类：${getDispositionLabel(selectedDisposition)}`}
+                        </div>
+                        {selectedSummary ? <div className="mt-2 text-sm text-blue-900">结论：{selectedSummary}</div> : null}
+                        {selectedReason ? <div className="mt-2 text-sm text-blue-900">理由：{selectedReason}</div> : null}
+                        {selectedEvidence.length ? (
+                          <div className="mt-3">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">关键依据</div>
+                            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-blue-900">
+                              {selectedEvidence.map((item, index) => (
+                                <li key={`${selectedTask.task_id}-evidence-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
                       </div>
                     )}
                   </div>
-                ) : null}
-                {hasFinalJudgment ? (
-                  <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">最终研判</div>
-                        <p className="mt-1 text-sm text-blue-900">
-                          {finalJudgmentExpanded ? '已展开完整研判内容。' : '点击展开查看完整研判思路与内容。'}
-                        </p>
-                      </div>
-                      <button type="button" className="sentinelflow-ghost-button" onClick={() => setFinalJudgmentExpanded((current) => !current)}>
-                        {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                        {finalJudgmentExpanded ? '收起最终研判' : '展开最终研判'}
-                      </button>
+                ) : (
+                  <>
+                    <div className="sentinelflow-context-grid">
+                      <div className="sentinelflow-context-card"><strong>告警名称</strong><span>{String(selectedPayload.alert_name ?? selectedTask.title ?? '未提供')}</span></div>
+                      <div className="sentinelflow-context-card"><strong>告警时间</strong><span>{formatAlertTime(selectedTask.alert_time)}</span></div>
+                      <div className="sentinelflow-context-card"><strong>事件号</strong><span>{selectedTask.event_ids || '未提供'}</span></div>
+                      <div className="sentinelflow-context-card"><strong>来源</strong><span>{String(selectedPayload.alert_source ?? '未提供')}</span></div>
+                      <div className="sentinelflow-context-card"><strong>源 IP</strong><span>{String(selectedPayload.sip ?? '未提供')}</span></div>
+                      <div className="sentinelflow-context-card"><strong>目的 IP</strong><span title={dipPreview.fullText}>{dipPreview.text}</span></div>
+                      <div className="sentinelflow-context-card"><strong>当前研判</strong><span>{String(selectedPayload.current_judgment ?? '未提供')}</span></div>
+                      <div className="sentinelflow-context-card"><strong>历史研判</strong><span>{String(selectedPayload.history_judgment ?? '未提供')}</span></div>
                     </div>
-                    {finalJudgmentExpanded ? (
-                      selectedFinalJudgmentMarkdown ? (
-                        <div className="mt-4 text-sm text-blue-900">
-                          <MarkdownContent content={selectedFinalJudgmentMarkdown} />
-                        </div>
-                      ) : (
-                        <div className="mt-4">
-                          <div className="text-sm font-semibold text-blue-950">
-                            {`分类：${getDispositionLabel(selectedDisposition)}`}
-                          </div>
-                          {selectedSummary ? <div className="mt-2 text-sm text-blue-900">结论：{selectedSummary}</div> : null}
-                          {selectedReason ? <div className="mt-2 text-sm text-blue-900">理由：{selectedReason}</div> : null}
-                          {selectedEvidence.length ? (
-                            <div className="mt-3">
-                              <div className="text-xs font-semibold uppercase tracking-wide text-blue-700">关键依据</div>
-                              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-blue-900">
-                                {selectedEvidence.map((item, index) => (
-                                  <li key={`${selectedTask.task_id}-evidence-${index}`}>{item}</li>
-                                ))}
-                              </ul>
-                            </div>
+                    {selectedPayloadText ? (
+                      <div className="rounded-xl border border-slate-200 bg-white p-4">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">告警 Payload</div>
+                          {shouldCollapsePayload ? (
+                            <button type="button" className="sentinelflow-ghost-button" onClick={() => setPayloadExpanded((current) => !current)}>
+                              {payloadExpanded ? '收起' : '展开'}
+                            </button>
                           ) : null}
                         </div>
-                      )
+                        <pre
+                          className="overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-700"
+                        >
+                          {shouldCollapsePayload && !payloadExpanded ? collapsedPayloadText : selectedPayloadText}
+                        </pre>
+                      </div>
                     ) : null}
-                  </div>
-                ) : null}
-                {selectedTaskOutcomeStatus === 'pending_manual_closure' ? (
+                    <div className="sentinelflow-action-bar">
+                      <button type="button" className="sentinelflow-primary-button" onClick={() => void runAction('triage_dispose')} disabled={actionState.running || isPrimaryDisposeDisabled(selectedTask)}>处置当前告警</button>
+                      {isReDisposableStatus(selectedTask) ? (
+                        <button type="button" className="sentinelflow-ghost-button" onClick={() => void runAction('retry_task')} disabled={actionState.running}>
+                          {getEffectiveTaskStatus(selectedTask) === 'pending_closure' ? '重新处置' : '重试任务'}
+                        </button>
+                      ) : null}
+                    </div>
+                    {String(selectedApprovalRequest.approval_id ?? '').trim() ? (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">待审批 Skill</div>
+                        <div className="mt-2 text-sm font-semibold text-amber-950">{String(selectedApprovalRequest.skill_name ?? '').trim() || '未命名 Skill'}</div>
+                        <div className="mt-2 text-sm text-amber-900">{String(selectedApprovalRequest.message ?? '该 Skill 需要审批后才能继续执行。').trim()}</div>
+                        <div className="mt-2 text-xs text-amber-800">参数：{String(selectedApprovalRequest.arguments_summary ?? '无参数').trim() || '无参数'}</div>
+                        <div className="mt-3 flex gap-2">
+                          <button type="button" className="sentinelflow-primary-button" onClick={() => void resolveApproval('approve')} disabled={actionState.running}>批准并继续</button>
+                          <button type="button" className="sentinelflow-ghost-button" onClick={() => void resolveApproval('reject')} disabled={actionState.running}>拒绝并继续</button>
+                        </div>
+                      </div>
+                    ) : null}
+                    {selectedWorkflowRun && workflowDecision ? (
+                      <div className="rounded-xl border border-amber-100 bg-amber-50 p-4">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Workflow 调用</div>
+                        <div className="mt-2 text-sm font-semibold text-amber-950">
+                          {`主 Agent 调用了流程：${workflowDecision}`}
+                        </div>
+                        {workflowDecisionReason ? (
+                          <div className="mt-2 text-sm text-amber-900">
+                            {`Workflow 返回：${workflowDecisionReason}`}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-sm text-amber-900">
+                            该 Workflow 已作为主 Agent 的一个中间能力被调用。
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                  </>
+                )}
+                {!finalJudgmentExpanded && selectedTaskOutcomeStatus === 'pending_manual_closure' ? (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
                     <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">自动处置完成</div>
                     <div className="mt-2 text-sm font-semibold text-amber-950">已完成自动封禁/通知，待人工在 SOC 结单。</div>
@@ -732,13 +736,13 @@ export default function SentinelFlowAlertsPage() {
                     ) : null}
                   </div>
                 ) : null}
-                {selectedConsistencyIssues.length ? (
+                {!finalJudgmentExpanded && selectedConsistencyIssues.length ? (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
                     <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">结果收敛提示</div>
                     <div className="mt-2 text-sm text-amber-900">检测到过程结果存在冲突，当前页面已按真实执行事实优先收敛展示。</div>
                   </div>
                 ) : null}
-                {selectedTask.last_result_error && !hideTaskError ? <div className="sentinelflow-message-block sentinelflow-message-error">{selectedTask.last_result_error}</div> : null}
+                {!finalJudgmentExpanded && selectedTask.last_result_error && !hideTaskError ? <div className="sentinelflow-message-block sentinelflow-message-error">{selectedTask.last_result_error}</div> : null}
               </div>
             ) : (
               <p className="sentinelflow-muted-text">选择一条告警后查看详情。</p>

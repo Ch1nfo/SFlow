@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, RefreshCw, Search, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { BookOpen, ChevronDown, ChevronRight, Plus, RefreshCw, Search, Sparkles } from 'lucide-react'
 import { createSkill, debugSkill, deleteSkill, fetchSkillDetail, fetchSkills, saveSkill, type SkillDebugResponse, type SkillDetail, type SkillSummary } from '@/api/sentinelflow'
 import KeyValueList from '@/components/sentinelflow/KeyValueList'
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
@@ -81,8 +81,6 @@ function completionPolicyOutcomeText(policy: SkillSummary['completion_policy'] |
 
 export default function SentinelFlowSkillsPage() {
   const { data, loading, error, reload } = useSentinelFlowAsyncData(fetchSkills, [])
-  const detailPanelRef = useRef<HTMLDivElement | null>(null)
-  const skillListPanelRef = useRef<HTMLDivElement | null>(null)
   const [selectedSkill, setSelectedSkill] = useState<SkillSummary | null>(null)
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
@@ -93,13 +91,12 @@ export default function SentinelFlowSkillsPage() {
   const [deleting, setDeleting] = useState(false)
   const [editingSkillName, setEditingSkillName] = useState<string | null>(null)
   const [debuggingSkillName, setDebuggingSkillName] = useState<string | null>(null)
+  const [createFormExpanded, setCreateFormExpanded] = useState(false)
   const [debugRunning, setDebugRunning] = useState(false)
   const [debugInput, setDebugInput] = useState('{\n  "ip": "198.51.100.10"\n}')
   const [debugOutput, setDebugOutput] = useState<SkillDebugResponse | null>(null)
   const [debugError, setDebugError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
-  const [skillListPanelHeight, setSkillListPanelHeight] = useState<number | null>(null)
-  const [skillListMaxHeight, setSkillListMaxHeight] = useState<number | null>(null)
   const [draft, setDraft] = useState({
     name: '',
     description: '',
@@ -137,39 +134,6 @@ export default function SentinelFlowSkillsPage() {
     })
   }, [data?.skills, searchQuery])
 
-  useEffect(() => {
-    const detailNode = detailPanelRef.current
-    const listPanelNode = skillListPanelRef.current
-    if (!detailNode || !listPanelNode || typeof ResizeObserver === 'undefined') return
-
-    const syncHeight = () => {
-      try {
-        const detailHeight = Math.max(0, Math.round(detailNode.getBoundingClientRect().height))
-        const scrollNode = listPanelNode.querySelector('.sentinelflow-skill-list-scroll') as HTMLDivElement | null
-        const scrollHeight = scrollNode?.offsetHeight ?? 0
-        const chromeHeight = Math.max(0, Math.round(listPanelNode.offsetHeight - scrollHeight))
-        const nextHeight = Math.max(0, detailHeight - chromeHeight)
-        setSkillListPanelHeight(detailHeight || null)
-        setSkillListMaxHeight(nextHeight || null)
-      } catch {
-        setSkillListPanelHeight(null)
-        setSkillListMaxHeight(null)
-      }
-    }
-
-    try {
-      syncHeight()
-      const observer = new ResizeObserver(() => syncHeight())
-      observer.observe(detailNode)
-      observer.observe(listPanelNode)
-      return () => observer.disconnect()
-    } catch {
-      setSkillListPanelHeight(null)
-      setSkillListMaxHeight(null)
-      return
-    }
-  }, [detail, detailError, filteredSkills.length, loading, error])
-
   async function handleRefresh() {
     if (refreshing) return
     setRefreshing(true)
@@ -201,6 +165,7 @@ export default function SentinelFlowSkillsPage() {
       setDetail(created)
       setDraft({ name: '', description: '', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
       setEditingSkillName(null)
+      setCreateFormExpanded(false)
     } catch (error) {
       setFormError(error instanceof Error ? error.message : '创建 Skill 失败。')
     } finally {
@@ -261,6 +226,7 @@ export default function SentinelFlowSkillsPage() {
     if (!detail) return
     setEditingSkillName(detail.name)
     setDebuggingSkillName(null)
+    setCreateFormExpanded(true)
     setFormError(null)
     setDraft({
       name: detail.name,
@@ -278,6 +244,7 @@ export default function SentinelFlowSkillsPage() {
   function handleCancelEdit() {
     setEditingSkillName(null)
     setDebuggingSkillName(null)
+    setCreateFormExpanded(false)
     setFormError(null)
     setDraft({ name: '', description: '', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
     setDebugInput('{\n  "ip": "198.51.100.10"\n}')
@@ -289,6 +256,7 @@ export default function SentinelFlowSkillsPage() {
     if (!detail) return
     setEditingSkillName(detail.name)
     setDebuggingSkillName(detail.name)
+    setCreateFormExpanded(true)
     setFormError(null)
     setDraft({
       name: detail.name,
@@ -426,38 +394,53 @@ export default function SentinelFlowSkillsPage() {
       />
 
       <Surface title={`${brand.productName} Skills`} subtitle={withProductName('这里统一管理“纯文本（Markdown）”与“文本 + 可执行”两类 Skills。')}>
-        <div className="mb-4 grid gap-3 md:grid-cols-2">
-          <button
-            type="button"
-            onClick={() => setDraft((current) => ({ ...current, type: 'doc' }))}
-            className={`rounded-xl border bg-white p-4 text-left transition-all ${
-              draft.type === 'doc'
-                ? 'border-sky-500 ring-2 ring-sky-100'
-                : 'border-gray-200 hover:border-gray-300'
-            }`}
-          >
-            <div className="text-sm font-semibold text-gray-900">纯文本（Markdown）</div>
-            <div className="mt-2 text-sm leading-6 text-gray-600">
-              只包含 Markdown 文档，用来提供说明、规范、研判指南或操作指引。
+        {!editingSkillName && !debuggingSkillName ? (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-4">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">新建 Skill</div>
+              <div className="mt-1 text-sm text-gray-500">默认隐藏创建表单，展开后选择 Skill 类型并填写文档。</div>
             </div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setDraft((current) => ({ ...current, type: 'hybrid' }))}
-            className={`rounded-xl border bg-white p-4 text-left transition-all ${
-              draft.type === 'hybrid'
-                ? 'border-sky-500 ring-2 ring-sky-100'
-                : 'border-gray-200 hover:border-gray-300'
-            }`}
-          >
-            <div className="text-sm font-semibold text-gray-900">文本 + 可执行</div>
-            <div className="mt-2 text-sm leading-6 text-gray-600">
-              同时包含 Markdown 文档和 `main.py` 代码，适合给 Agent 先读文档再执行。
-            </div>
-          </button>
-        </div>
+            <button type="button" className="sentinelflow-primary-button" onClick={() => setCreateFormExpanded((current) => !current)}>
+              {createFormExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {createFormExpanded ? '收起新建' : '新建 Skill'}
+            </button>
+          </div>
+        ) : null}
 
-        <div className="mb-4 rounded-xl border border-gray-200 bg-white p-4">
+        {createFormExpanded || editingSkillName || debuggingSkillName ? (
+          <>
+            <div className="mb-4 grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setDraft((current) => ({ ...current, type: 'doc' }))}
+                className={`rounded-xl border bg-white p-4 text-left transition-all ${
+                  draft.type === 'doc'
+                    ? 'border-sky-500 ring-2 ring-sky-100'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <div className="text-sm font-semibold text-gray-900">纯文本（Markdown）</div>
+                <div className="mt-2 text-sm leading-6 text-gray-600">
+                  只包含 Markdown 文档，用来提供说明、规范、研判指南或操作指引。
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDraft((current) => ({ ...current, type: 'hybrid' }))}
+                className={`rounded-xl border bg-white p-4 text-left transition-all ${
+                  draft.type === 'hybrid'
+                    ? 'border-sky-500 ring-2 ring-sky-100'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <div className="text-sm font-semibold text-gray-900">文本 + 可执行</div>
+                <div className="mt-2 text-sm leading-6 text-gray-600">
+                  同时包含 Markdown 文档和 `main.py` 代码，适合给 Agent 先读文档再执行。
+                </div>
+              </button>
+            </div>
+
+            <div className="mb-4 rounded-xl border border-gray-200 bg-white p-4">
           <div className="mb-3 text-sm font-semibold text-gray-900">
             {debuggingSkillName ? `调试 Skill：${debuggingSkillName}` : editingSkillName ? `编辑 Skill：${editingSkillName}` : '新建 Skill'}
           </div>
@@ -539,7 +522,9 @@ export default function SentinelFlowSkillsPage() {
               ) : null}
             </>
           )}
-        </div>
+            </div>
+          </>
+        ) : null}
 
         <div className="mb-4 grid gap-4 md:grid-cols-3">
           <div className="rounded-xl border border-gray-200 bg-white p-5">
@@ -559,17 +544,10 @@ export default function SentinelFlowSkillsPage() {
           </div>
         </div>
 
-        <div className="sentinelflow-grid-2">
-          <div
-            ref={skillListPanelRef}
-            className="sentinelflow-detail-panel h-auto overflow-hidden"
-            style={skillListPanelHeight ? { height: `${skillListPanelHeight}px` } : undefined}
-          >
+        <div className="sentinelflow-independent-scroll-grid">
+          <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
             <h3>可用 Skills</h3>
-            <div
-              className="sentinelflow-skill-list-scroll"
-              style={skillListMaxHeight ? { maxHeight: `${skillListMaxHeight}px` } : undefined}
-            >
+            <div className="min-w-0">
               <table className="sentinelflow-data-table">
                 <thead>
                   <tr><th>Skill</th><th>类型</th><th>是否可执行</th></tr>
@@ -589,7 +567,7 @@ export default function SentinelFlowSkillsPage() {
               </table>
             </div>
           </div>
-          <div ref={detailPanelRef} className="sentinelflow-detail-panel h-auto self-start">
+          <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
             <h3>{detail?.name ?? 'Skill 详情'}</h3>
             <p className="sentinelflow-muted-text">{detail?.description ?? '选择一个 Skill 查看说明文档。'}</p>
             {detail ? (
