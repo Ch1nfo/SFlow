@@ -49,33 +49,112 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
         except yaml.YAMLError:
             pass
 
-    # Fallback: minimal line-by-line key:value parser (no nesting)
-    data: dict[str, Any] = {}
-    current_parent: str | None = None
-    for line in frontmatter_text.splitlines():
-        raw = line.rstrip()
-        stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if raw.startswith("  ") and current_parent and ":" in stripped:
-            key, _, value = stripped.partition(":")
-            nested = data.get(current_parent)
-            if not isinstance(nested, dict):
-                nested = {}
-                data[current_parent] = nested
-            nested[key.strip()] = value.strip()
-            continue
-        if ":" not in stripped:
-            continue
-        key, _, value = stripped.partition(":")
-        current_parent = key.strip()
-        if value.strip():
-            data[current_parent] = value.strip()
-            current_parent = None
-        else:
-            data[current_parent] = {}
+    return _parse_minimal_yaml(frontmatter_text), body
 
-    return data, body
+
+def _parse_scalar(value: str) -> Any:
+    raw = value.strip()
+    if raw.lower() == "true":
+        return True
+    if raw.lower() == "false":
+        return False
+    if raw.lower() in {"null", "none", "~"}:
+        return None
+    if (
+        len(raw) >= 2
+        and raw[0] == raw[-1]
+        and raw[0] in {"'", '"'}
+    ):
+        return raw[1:-1]
+    return raw
+
+
+def _next_content_line(lines: list[str], start: int) -> tuple[int, str] | None:
+    for idx in range(start, len(lines)):
+        stripped = lines[idx].strip()
+        if stripped and not stripped.startswith("#"):
+            return idx, lines[idx].rstrip()
+    return None
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _parse_minimal_yaml(text: str) -> dict[str, Any]:
+    """
+    Parse the small YAML subset used in Skill frontmatter when PyYAML is absent.
+
+    This intentionally supports only mappings, scalar values, and scalar lists,
+    which is enough for execute_policy, completion_policy, and input_schema.
+    """
+    lines = text.splitlines()
+
+    def parse_block(index: int, indent: int) -> tuple[Any, int]:
+        next_line = _next_content_line(lines, index)
+        if next_line is None:
+            return {}, index
+
+        _, first_raw = next_line
+        is_list = _line_indent(first_raw) == indent and first_raw.strip().startswith("- ")
+        container: Any = [] if is_list else {}
+
+        i = index
+        while i < len(lines):
+            raw = lines[i].rstrip()
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                i += 1
+                continue
+
+            current_indent = _line_indent(raw)
+            if current_indent < indent:
+                break
+            if current_indent > indent:
+                # Nested content is consumed by the parent key that introduced it.
+                break
+
+            if isinstance(container, list):
+                if not stripped.startswith("- "):
+                    break
+                item = stripped[2:].strip()
+                container.append(_parse_scalar(item))
+                i += 1
+                continue
+
+            if ":" not in stripped:
+                i += 1
+                continue
+
+            key, _, value = stripped.partition(":")
+            key = key.strip()
+            value = value.strip()
+            if value:
+                container[key] = _parse_scalar(value)
+                i += 1
+                continue
+
+            child_line = _next_content_line(lines, i + 1)
+            if child_line is None:
+                container[key] = {}
+                i += 1
+                continue
+
+            child_index, child_raw = child_line
+            child_indent = _line_indent(child_raw)
+            if child_indent <= current_indent:
+                container[key] = {}
+                i += 1
+                continue
+
+            child, new_index = parse_block(child_index, child_indent)
+            container[key] = child
+            i = new_index
+
+        return container, i
+
+    parsed, _ = parse_block(0, 0)
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
