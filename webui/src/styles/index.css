@@ -7,6 +7,35 @@
     scrollbar-gutter: stable;
   }
 
+  * {
+    scrollbar-width: none;
+  }
+
+  *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
+  *.sentinelflow-scrollbar-active {
+    scrollbar-width: thin;
+  }
+
+  *.sentinelflow-scrollbar-active::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *.sentinelflow-scrollbar-active::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: rgb(148 163 184 / 0.65);
+    background-clip: content-box;
+  }
+
+  *.sentinelflow-scrollbar-active::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
   body {
     @apply bg-gray-50 text-gray-900;
     overflow-y: scroll;

@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Route, Routes, Navigate } from 'react-router-dom'
 import Layout from '@/components/layout/Layout'
 import SentinelFlowOverviewPage from '@/pages/SentinelFlow/Overview'
@@ -11,6 +12,52 @@ import SentinelFlowWorkflowsPage from '@/pages/SentinelFlow/Workflows'
 import SentinelFlowSettingsPage from '@/pages/SentinelFlow/Settings'
 
 export default function App() {
+  useEffect(() => {
+    const activeClass = 'sentinelflow-scrollbar-active'
+    const activeElements = new Set<Element>()
+    const timers = new WeakMap<Element, ReturnType<typeof window.setTimeout>>()
+
+    function resolveScrollElement(target: EventTarget | null): Element {
+      if (target instanceof Document || target === document || target === window) {
+        return document.documentElement
+      }
+      return target instanceof Element ? target : document.documentElement
+    }
+
+    function markScrollActive(event: Event) {
+      const element = resolveScrollElement(event.target)
+      element.classList.add(activeClass)
+      activeElements.add(element)
+
+      const existingTimer = timers.get(element)
+      if (existingTimer) {
+        window.clearTimeout(existingTimer)
+      }
+
+      const timer = window.setTimeout(() => {
+        element.classList.remove(activeClass)
+        activeElements.delete(element)
+        timers.delete(element)
+      }, 3000)
+      timers.set(element, timer)
+    }
+
+    document.addEventListener('scroll', markScrollActive, true)
+    window.addEventListener('scroll', markScrollActive, true)
+
+    return () => {
+      document.removeEventListener('scroll', markScrollActive, true)
+      window.removeEventListener('scroll', markScrollActive, true)
+      activeElements.forEach((element) => {
+        const timer = timers.get(element)
+        if (timer) {
+          window.clearTimeout(timer)
+        }
+        element.classList.remove(activeClass)
+      })
+    }
+  }, [])
+
   return (
     <Routes>
       <Route path="/" element={<Layout />}>
