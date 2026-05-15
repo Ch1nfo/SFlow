@@ -8,21 +8,24 @@
   }
 
   * {
-    scrollbar-width: none;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
   }
 
   *::-webkit-scrollbar {
-    width: 0;
-    height: 0;
+    width: 10px;
+    height: 10px;
   }
 
   *.sentinelflow-scrollbar-active {
-    scrollbar-width: thin;
+    scrollbar-color: rgb(148 163 184 / 0.65) transparent;
   }
 
-  *.sentinelflow-scrollbar-active::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+  *::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: transparent;
+    background-clip: content-box;
   }
 
   *.sentinelflow-scrollbar-active::-webkit-scrollbar-thumb {
