@@ -1516,7 +1516,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             result: AlertJudgment = await llm.ainvoke(messages)
             return result.model_dump()
         except Exception:
-            LOGGER.warning(
+            LOGGER.exception(
                 "_run_synthesis: structured output failed for orchestrator path, "
                 "_serialize_alert_result will use text parsing fallback."
             )

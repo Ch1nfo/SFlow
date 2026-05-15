@@ -115,6 +115,8 @@ export default function SentinelFlowSkillsPage() {
   const [debugOutput, setDebugOutput] = useState<SkillDebugResponse | null>(null)
   const [debugError, setDebugError] = useState<string | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [markdownScrollUnlocked, setMarkdownScrollUnlocked] = useState(false)
+  const [codeScrollUnlocked, setCodeScrollUnlocked] = useState(false)
   const [draft, setDraft] = useState({
     name: '',
     description: '',
@@ -142,6 +144,8 @@ export default function SentinelFlowSkillsPage() {
       setDetail(null)
       return
     }
+    setMarkdownScrollUnlocked(false)
+    setCodeScrollUnlocked(false)
     setDetailError(null)
     fetchSkillDetail(selectedSkill.name).then(setDetail).catch((err) => {
       setDetailError(err instanceof Error ? err.message : 'Unknown error')
@@ -666,15 +670,33 @@ export default function SentinelFlowSkillsPage() {
             {detail ? (
               <div className="mt-4 space-y-3">
                 <div className="rounded-xl border border-gray-200 bg-white p-4">
-                  <div className="mb-2 text-sm font-semibold text-gray-900">Markdown 文档</div>
-                  <div className="max-h-72 overflow-auto rounded-lg border border-gray-100 bg-gray-50 p-4">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-gray-900">Markdown 文档</div>
+                    <button
+                      type="button"
+                      className={markdownScrollUnlocked ? 'sentinelflow-primary-button px-3 py-1 text-xs' : 'sentinelflow-ghost-button px-3 py-1 text-xs'}
+                      onClick={() => setMarkdownScrollUnlocked((current) => !current)}
+                    >
+                      {markdownScrollUnlocked ? '滚动已解锁' : '滚动解锁'}
+                    </button>
+                  </div>
+                  <div className={`${markdownScrollUnlocked ? 'max-h-72 overflow-auto' : 'max-h-72 overflow-hidden'} rounded-lg border border-gray-100 bg-gray-50 p-4`}>
                     <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-700">{detail.markdown}</pre>
                   </div>
                 </div>
                 {detail.type === 'hybrid' ? (
                   <div className="rounded-xl border border-gray-200 bg-white p-4">
-                    <div className="mb-2 text-sm font-semibold text-gray-900">可执行代码（main.py）</div>
-                    <div className="max-h-72 overflow-auto rounded-lg border border-gray-100 bg-gray-50 p-4">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-gray-900">可执行代码（main.py）</div>
+                      <button
+                        type="button"
+                        className={codeScrollUnlocked ? 'sentinelflow-primary-button px-3 py-1 text-xs' : 'sentinelflow-ghost-button px-3 py-1 text-xs'}
+                        onClick={() => setCodeScrollUnlocked((current) => !current)}
+                      >
+                        {codeScrollUnlocked ? '滚动已解锁' : '滚动解锁'}
+                      </button>
+                    </div>
+                    <div className={`${codeScrollUnlocked ? 'max-h-72 overflow-auto' : 'max-h-72 overflow-hidden'} rounded-lg border border-gray-100 bg-gray-50 p-4`}>
                       <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-gray-700">{detail.code || '# 暂无代码内容'}</pre>
                     </div>
                   </div>
