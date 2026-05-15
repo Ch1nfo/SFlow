@@ -71,6 +71,15 @@ def create_skill(payload: SkillCreateRequest) -> dict[str, Any]:
 def save_skill(name: str, payload: SkillCreateRequest) -> dict[str, Any]:
     old_slug = _slugify(name)
     new_slug = _slugify(payload.name)
+    existing_input_schema: dict[str, Any] = {}
+    existing_output_schema: dict[str, Any] = {}
+    try:
+        existing = skill_runtime.read_skill(old_slug)
+        existing_input_schema = existing.input_schema if isinstance(existing.input_schema, dict) else {}
+        existing_output_schema = existing.output_schema if isinstance(existing.output_schema, dict) else {}
+    except Exception:
+        existing_input_schema = {}
+        existing_output_schema = {}
     
     if old_slug != new_slug:
         _assert_unique_plugin_name(payload.name, new_slug, "skill", current_name=old_slug)
@@ -99,6 +108,8 @@ def save_skill(name: str, payload: SkillCreateRequest) -> dict[str, Any]:
             payload.approval_required,
             payload.completion_policy,
             payload.category,
+            existing_input_schema,
+            existing_output_schema,
         ),
     )
     if skill_type == "hybrid":

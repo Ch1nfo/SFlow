@@ -229,6 +229,7 @@ export default function SentinelFlowSkillsPage() {
       await reload()
       setEditingSkillName(null)
       setDebuggingSkillName(null)
+      setCreateFormExpanded(false)
       setDraft({ name: '', description: '', category: 'other', type: 'doc', mode: 'subprocess', content: '', code: '', approvalRequired: false, completionPolicy: { ...DEFAULT_COMPLETION_POLICY } })
       setDebugInput('{\n  "ip": "198.51.100.10"\n}')
       setDebugOutput(null)

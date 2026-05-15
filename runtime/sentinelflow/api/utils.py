@@ -1,5 +1,6 @@
 import re
 import shutil
+import json
 from pathlib import Path
 from typing import Any
 from fastapi import HTTPException
@@ -179,6 +180,43 @@ def _strip_frontmatter(text: str) -> str:
     return "".join(lines[end_index + 1:]).lstrip("\n")
 
 
+def _yaml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _append_yaml_value(lines: list[str], key: str, value: Any, indent: int = 0) -> None:
+    prefix = " " * indent
+    if isinstance(value, dict):
+        if not value:
+            lines.append(f"{prefix}{key}: {{}}")
+            return
+        lines.append(f"{prefix}{key}:")
+        for child_key, child_value in value.items():
+            _append_yaml_value(lines, str(child_key), child_value, indent + 2)
+        return
+    if isinstance(value, list):
+        if not value:
+            lines.append(f"{prefix}{key}: []")
+            return
+        lines.append(f"{prefix}{key}:")
+        item_prefix = " " * (indent + 2)
+        for item in value:
+            if isinstance(item, dict):
+                lines.append(f"{item_prefix}-")
+                for child_key, child_value in item.items():
+                    _append_yaml_value(lines, str(child_key), child_value, indent + 4)
+            else:
+                lines.append(f"{item_prefix}- {_yaml_scalar(item)}")
+        return
+    lines.append(f"{prefix}{key}: {_yaml_scalar(value)}")
+
+
 def _build_skill_markdown(
     name: str,
     description: str,
@@ -188,6 +226,8 @@ def _build_skill_markdown(
     approval_required: bool = False,
     completion_policy: dict[str, Any] | None = None,
     category: str = "other",
+    input_schema: dict[str, Any] | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> str:
     """
     Build the full SKILL.md text with frontmatter containing all skill metadata.
@@ -222,6 +262,10 @@ def _build_skill_markdown(
         fm_lines.append("  enabled: true")
         fm_lines.append(f"  action_kind: {action_kind}")
         fm_lines.append(f"  completion_effect: {completion_effect}")
+    if isinstance(input_schema, dict) and input_schema:
+        _append_yaml_value(fm_lines, "input_schema", input_schema)
+    if isinstance(output_schema, dict) and output_schema:
+        _append_yaml_value(fm_lines, "output_schema", output_schema)
     fm_lines.append("---")
     frontmatter = "\n".join(fm_lines)
 
