@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, type ChangeEvent } from 'react'
-import { RotateCcw, Save, Settings as SettingsIcon } from 'lucide-react'
+import { Bug, RotateCcw, Save, Settings as SettingsIcon, X } from 'lucide-react'
 import {
+  fetchAllPollAlerts,
   fetchHealth,
   fetchRuntimeSettings,
   generateAlertParser,
@@ -8,8 +9,10 @@ import {
   saveRuntimeSettings,
   testAlertParser,
   testAlertSourceFetch,
+  type AlertTask,
   type RuntimeSettingsResponse,
 } from '@/api/sentinelflow'
+import JsonPreview from '@/components/sentinelflow/JsonPreview'
 import KeyValueList from '@/components/sentinelflow/KeyValueList'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import Surface from '@/components/sentinelflow/Surface'
@@ -19,6 +22,7 @@ import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalState'
 
 const SETTINGS_DRAFT_KEY = 'sentinelflow:settings:draft'
+const DEBUG_LOG_UNLOCK_CLICKS = 5
 
 type SettingsDraft = {
   pollIntervalSeconds: string
@@ -171,6 +175,87 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+}
+
+function buildDetailedRuntimeLog(tasks: AlertTask[]) {
+  const orderedTasks = [...tasks].sort((left, right) => {
+    const leftTime = Date.parse(String(left.alert_time ?? '').replace(' ', 'T'))
+    const rightTime = Date.parse(String(right.alert_time ?? '').replace(' ', 'T'))
+    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime)
+  })
+
+  return {
+    generated_at: new Date().toISOString(),
+    source: 'alert_tasks.last_result_data',
+    scope: '当前任务库中已持久化的原始 Agent/Skill 执行数据',
+    task_count: orderedTasks.length,
+    tasks: orderedTasks.map((task) => {
+      const result = asRecord(task.last_result_data)
+      const workerResults = asRecordArray(result.worker_results)
+      const workflowRuns = asRecordArray(result.workflow_runs)
+      return {
+        task: {
+          task_id: task.task_id,
+          event_ids: task.event_ids,
+          source_id: task.source_id,
+          source_name: task.source_name,
+          title: task.title,
+          status: task.status,
+          retry_count: task.retry_count,
+          alert_time: task.alert_time,
+          last_action: task.last_action,
+          last_result_success: task.last_result_success,
+          last_result_error: task.last_result_error,
+        },
+        raw_alert_payload: task.payload,
+        primary_agent: {
+          agent_name: result.agent_name,
+          primary_agent: result.primary_agent,
+          execution_mode: result.execution_mode,
+          final_response: result.final_response,
+          messages: result.messages,
+          tool_calls: result.tool_calls,
+          tool_calls_summary: result.tool_calls_summary,
+          structured_judgment: result.structured_judgment,
+          final_judgment_synthesis: result.final_judgment_synthesis,
+        },
+        workers: workerResults.map((worker) => ({
+          worker: worker.worker ?? worker.worker_agent,
+          success: worker.success,
+          error: worker.error,
+          task_prompt: worker.task_prompt,
+          final_response: worker.final_response,
+          messages: worker.messages,
+          tool_calls: worker.tool_calls,
+          tool_calls_summary: worker.tool_calls_summary,
+          context_manifest: worker.context_manifest,
+        })),
+        workflows: workflowRuns,
+        skill_and_action_records: {
+          primary_action_steps: result.primary_action_steps,
+          aggregated_action_steps: result.aggregated_action_steps,
+          aggregated_actions: result.aggregated_actions,
+          aggregated_closure_steps: result.aggregated_closure_steps,
+          effective_closure_step: result.effective_closure_step,
+          action_steps: result.action_steps,
+          closure_step: result.closure_step,
+          closure_result: result.closure_result,
+        },
+        execution_trace: result.execution_trace,
+        final_facts: result.final_facts,
+        raw_result_data: result,
+      }
+    }),
+  }
+}
+
 export default function SentinelFlowSettingsPage() {
   const { data: settings, loading, error, reload: reloadSettings, setData: setSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const { data: health } = useSentinelFlowAsyncData(fetchHealth, [])
@@ -218,6 +303,12 @@ export default function SentinelFlowSettingsPage() {
   const [generatingParser, setGeneratingParser] = useState(false)
   const [fetchPreview, setFetchPreview] = useState<unknown>(null)
   const [fetchPreviewExpanded, setFetchPreviewExpanded] = useState(false)
+  const [debugLogClickCount, setDebugLogClickCount] = useState(0)
+  const [debugLogUnlocked, setDebugLogUnlocked] = useState(false)
+  const [debugLogOpen, setDebugLogOpen] = useState(false)
+  const [debugLogLoading, setDebugLogLoading] = useState(false)
+  const [debugLogError, setDebugLogError] = useState<string | null>(null)
+  const [debugLogData, setDebugLogData] = useState<unknown>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const fetchPreviewStr = fetchPreview ? JSON.stringify(fetchPreview, null, 2) : ''
@@ -503,6 +594,36 @@ export default function SentinelFlowSettingsPage() {
     }
   }
 
+  async function openDetailedRuntimeLog() {
+    setDebugLogOpen(true)
+    setDebugLogLoading(true)
+    setDebugLogError(null)
+    try {
+      const data = await fetchAllPollAlerts()
+      setDebugLogData(buildDetailedRuntimeLog(data.tasks ?? []))
+    } catch (error) {
+      setDebugLogData(null)
+      setDebugLogError(error instanceof Error ? error.message : '读取详细运行日志失败')
+    } finally {
+      setDebugLogLoading(false)
+    }
+  }
+
+  function handleDebugLogButtonClick() {
+    if (debugLogUnlocked) {
+      void openDetailedRuntimeLog()
+      return
+    }
+    setDebugLogClickCount((current) => {
+      const next = current + 1
+      if (next >= DEBUG_LOG_UNLOCK_CLICKS) {
+        setDebugLogUnlocked(true)
+        void openDetailedRuntimeLog()
+      }
+      return Math.min(next, DEBUG_LOG_UNLOCK_CLICKS)
+    })
+  }
+
   return (
     <div className="sentinelflow-page-stack">
       <PageHeader
@@ -730,6 +851,60 @@ export default function SentinelFlowSettingsPage() {
         </div> : null}
         {settings && !settings.llm.agent_available ? <div className="sentinelflow-message-block sentinelflow-message-error">当前环境缺少 LangGraph/LLM 依赖：{settings.llm.agent_unavailable_reason || '未检测到相关依赖'}</div> : null}
       </Surface>
+      <div className="flex justify-end">
+        <button
+          type="button"
+          className={`inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-colors ${
+            debugLogUnlocked
+              ? 'border-slate-300 bg-slate-900 text-white hover:bg-slate-800'
+              : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+          }`}
+          onClick={handleDebugLogButtonClick}
+          title={debugLogUnlocked ? '打开专业调试日志面板' : `连续点击 ${DEBUG_LOG_UNLOCK_CLICKS} 次解锁专业调试日志`}
+        >
+          <Bug className="h-4 w-4" />
+          查看详细运行日志
+          {!debugLogUnlocked && debugLogClickCount > 0 ? (
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+              {`${DEBUG_LOG_UNLOCK_CLICKS - debugLogClickCount} 次后解锁`}
+            </span>
+          ) : null}
+        </button>
+      </div>
+      {debugLogOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-4">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-300">
+                  <Bug className="h-4 w-4" />
+                  详细运行日志
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  展示当前任务库已持久化的原始 Agent 消息、工具调用、Worker 结果、Workflow、执行轨迹和最终收敛事实。
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button type="button" className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-900" onClick={() => void openDetailedRuntimeLog()} disabled={debugLogLoading}>
+                  {debugLogLoading ? '刷新中...' : '刷新'}
+                </button>
+                <button type="button" className="rounded-lg border border-slate-700 p-2 text-slate-200 hover:bg-slate-900" onClick={() => setDebugLogOpen(false)}>
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-5">
+              {debugLogError ? <div className="mb-4 rounded-xl border border-red-800 bg-red-950/60 p-4 text-sm text-red-100">{debugLogError}</div> : null}
+              {debugLogLoading && !debugLogData ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">正在读取详细运行日志...</div> : null}
+              {debugLogData ? (
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-slate-100">
+                  <JsonPreview value={debugLogData} />
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

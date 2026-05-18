@@ -222,6 +222,26 @@ function asRecordArray(value: unknown): Array<Record<string, unknown>> {
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
 }
 
+function compactDisplayText(value: unknown, limit = 180): string {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim()
+  if (!text) return ''
+  return text.length > limit ? `${text.slice(0, limit).trim()}...` : text
+}
+
+function summarizeLargeTextField(value: unknown): string {
+  const text = String(value ?? '')
+  if (!text.trim()) return ''
+  const lowered = text.toLowerCase()
+  const isHttp = lowered.includes('http/1.') || lowered.includes('content-length:') || text.includes('\r\n\r\n')
+  const urlEncodedMatches = text.match(/%[0-9a-fA-F]{2}/g)?.length ?? 0
+  const controlChars = Array.from(text).filter((char) => char.charCodeAt(0) < 32 && !['\r', '\n', '\t'].includes(char)).length
+  if (text.length > 1000 || isHttp || urlEncodedMatches >= 12 || controlChars > 0) {
+    const kind = isHttp ? 'HTTP payload' : urlEncodedMatches >= 12 ? 'URL 编码内容' : controlChars > 0 ? '二进制/控制字符内容' : '大字段'
+    return `${kind}，长度 ${text.length} 字符，内容已省略`
+  }
+  return compactDisplayText(text, 240)
+}
+
 function getToolInvocationOutput(item: Record<string, unknown>): Record<string, unknown> {
   const payload = asRecord(item.payload)
   if (Object.keys(payload).length) return payload
@@ -233,9 +253,23 @@ function getToolInvocationOutput(item: Record<string, unknown>): Record<string, 
   return {}
 }
 
+function isSuccessfulSkillItem(item: Record<string, unknown>): boolean {
+  if (item.tool_success === false || item.success === false) return false
+  if (String(item.tool_error ?? '').trim() || String(item.error ?? '').trim()) return false
+  const toolPayload = asRecord(item.tool_payload)
+  if (toolPayload.success === false || String(toolPayload.error ?? '').trim()) return false
+  const payload = asRecord(item.payload)
+  if (String(payload.error ?? '').trim()) return false
+  const result = asRecord(item.result)
+  if (String(result.error ?? '').trim()) return false
+  if (item.tool_success === true || item.success === true || toolPayload.success === true) return true
+  return false
+}
+
 function buildToolInvocation(item: Record<string, unknown>, source: string, fallbackIndex: number): ToolInvocationResult | null {
   const skillName = String(item.skill_name ?? '').trim()
   if (!skillName) return null
+  if (!isSuccessfulSkillItem(item)) return null
   const toolName = String(item.tool_name ?? 'execute_skill').trim() || 'execute_skill'
   const toolCallId = String(item.tool_call_id ?? '').trim()
   const input = asRecord(item.arguments)
@@ -276,6 +310,111 @@ function collectToolInvocationResults(trace: ExecutionTraceItem[]): ToolInvocati
   })
 
   return results
+}
+
+function buildTraceSummaryRows(item: ExecutionTraceItem): Array<{ label: string; value: string }> {
+  const data = asRecord(item.data)
+  const rows: Array<{ label: string; value: string }> = []
+  const add = (label: string, value: unknown, limit = 180) => {
+    const text = compactDisplayText(value, limit)
+    if (text) rows.push({ label, value: text })
+  }
+  const addRaw = (label: string, value: unknown) => {
+    const text = String(value ?? '').trim()
+    if (text) rows.push({ label, value: text })
+  }
+
+  if (item.phase === 'alert_received') {
+    addRaw('事件号', data.eventIds)
+    addRaw('告警名称', data.alert_name)
+    addRaw('源 IP', data.sip)
+    addRaw('目标 IP', data.dip)
+    addRaw('目标端口', data.dport)
+    addRaw('告警时间', data.alert_time)
+    addRaw('告警源', data.alert_source)
+    add('当前研判', data.current_judgment, 220)
+    add('历史研判', data.history_judgment, 220)
+    const payloadSummary = summarizeLargeTextField(data.payload)
+    if (payloadSummary) rows.push({ label: 'payload', value: payloadSummary })
+    return rows
+  }
+
+  if (item.phase === 'workflow_selection') {
+    addRaw('Workflow', data.workflow_name ?? data.workflow_id)
+    addRaw('执行模式', data.execution_mode)
+    addRaw('执行状态', data.execution_status)
+    add('返回摘要', data.summary ?? data.reason)
+    const steps = asRecordArray(data.steps)
+    if (steps.length) rows.push({ label: '步骤数', value: String(steps.length) })
+    const nextStep = asRecord(data.next_step)
+    if (Object.keys(nextStep).length) addRaw('下一步', nextStep.name ?? nextStep.agent ?? nextStep.id)
+    return rows
+  }
+
+  if (item.phase === 'context_control') {
+    const records = asRecordArray(data.records)
+    const warnings = Array.isArray(data.context_warnings) ? data.context_warnings : []
+    const missing = Array.isArray(data.missing_required_inputs) ? data.missing_required_inputs : []
+    rows.push({ label: '上下文记录', value: `${records.length} 条` })
+    rows.push({ label: '上下文告警', value: warnings.length ? warnings.map(String).join(', ') : '无' })
+    rows.push({ label: '缺失输入', value: missing.length ? `${missing.length} 项` : '无' })
+    return rows
+  }
+
+  if (item.phase === 'analysis') {
+    addRaw('分类', getDispositionLabel(String(data.disposition ?? '').trim()))
+    add('结论', data.summary, 220)
+    add('理由', data.reason, 220)
+    const evidence = Array.isArray(data.evidence) ? data.evidence.map((entry) => compactDisplayText(entry, 120)).filter(Boolean) : []
+    if (evidence.length) rows.push({ label: '关键依据', value: evidence.join('；') })
+    return rows
+  }
+
+  if (item.phase === 'skill_runs' || item.phase === 'actions') {
+    const items = [...asRecordArray(data.runs), ...asRecordArray(data.steps)]
+    const successful = items.filter(isSuccessfulSkillItem)
+    const failed = items.filter((entry) => !isSuccessfulSkillItem(entry))
+    if (items.length) rows.push({ label: '调用统计', value: `成功 ${successful.length} / 失败或拦截 ${failed.length}` })
+    const successfulNames = successful.map((entry) => String(entry.skill_name ?? '').trim()).filter(Boolean)
+    const failedNames = failed.map((entry) => String(entry.skill_name ?? '').trim()).filter(Boolean)
+    if (successfulNames.length) rows.push({ label: '成功 Skill', value: successfulNames.join(', ') })
+    if (failedNames.length) rows.push({ label: '失败/拦截 Skill', value: failedNames.join(', ') })
+    return rows
+  }
+
+  if (item.phase === 'closure') {
+    addRaw('状态码', data.status)
+    add('备注', data.memo)
+    addRaw('处置类型', data.detailMsg ?? data.detail_msg)
+    addRaw('事件号', data.eventIds)
+    return rows
+  }
+
+  if (item.phase === 'final_status') {
+    addRaw('状态', data.status)
+    addRaw('动作', data.action)
+    add('错误', data.error, 220)
+    return rows
+  }
+
+  addRaw('状态', data.status ?? data.execution_status ?? data.action)
+  add('摘要', data.summary ?? data.reason ?? data.error, 220)
+  return rows
+}
+
+function TraceDataSummary({ item }: { item: ExecutionTraceItem }) {
+  const rows = buildTraceSummaryRows(item)
+  if (!rows.length) return null
+  return (
+    <div className="mb-3 grid gap-2 md:grid-cols-2">
+      {rows.map((row) => (
+        <div key={`${item.phase}-${row.label}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{row.label}</div>
+          <div className="mt-1 break-words text-sm text-slate-800">{row.value}</div>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function ToolInvocationResults({ tools, ownerId }: { tools: ToolInvocationResult[]; ownerId: string }) {
@@ -415,6 +554,8 @@ function ProcessTrace({ trace, traceOwnerId }: { trace: ExecutionTraceItem[]; tr
             ) : null}
             {open && data ? (
               <div className="mt-3">
+                <TraceDataSummary item={item} />
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">原始审计数据</div>
                 <JsonPreview value={data} />
               </div>
             ) : null}
