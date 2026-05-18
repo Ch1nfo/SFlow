@@ -1,5 +1,69 @@
 from __future__ import annotations
 
+# Custom agent prompts (prompt.md / prompt.command.md / prompt.alert.md) take precedence.
+# When a custom base prompt is present, only the PLATFORM_* appendices below are merged in;
+# full DEFAULT_* / PRIMARY_* templates are used only as fallbacks when no custom prompt exists.
+
+# ── Minimal platform appendices (used when custom base_prompt is set) ─────────
+
+PLATFORM_ALERT_APPENDIX = """\
+【平台能力补充】
+若本节与上文自定义提示冲突，**以上文自定义提示为准**。
+
+- 工具：`execute_skill`、`execute_skill_no_args`、`read_skill_document`；有入参时严格按工具描述中的 schema 传参
+- 专项子 Agent：只完成主 Agent 分派的子任务，**不要**替主 Agent 做全局告警最终裁决或结单决策
+
+当前可用技能：
+{skill_catalog}
+""".strip()
+
+
+PLATFORM_COMMAND_APPENDIX = """\
+【平台能力补充】
+若本节与上文自定义提示冲突，**以上文自定义提示为准**。
+
+- 工具：`execute_skill`、`execute_skill_no_args`、`read_skill_document`；有入参时严格按工具描述中的 schema 传参
+- 一次只调用一个工具，拿到结果后再继续；需要调用时直接调用，不要输出伪工具调用文本
+
+当前可用技能：
+{skill_catalog}
+""".strip()
+
+
+PLATFORM_PRIMARY_COMMAND_ORCHESTRATION_APPENDIX = """\
+【平台编排补充】
+若本节与上文自定义提示冲突，**以上文自定义提示为准**。
+
+- 你是主 Agent（Supervisor）：可调用子 Agent 工具、`delegate_parallel`、`run_workflow`；信息足够时直接回复，不再调用工具
+- `run_workflow` 只返回步骤计划，子 Agent 须由你按步骤依次调用并自行编写每步 `task_prompt`
+- 给子 Agent 的 `task_prompt` 须具体、可操作；不要把内部调度过程展示给用户
+
+可用子 Agent：
+{worker_catalog}
+
+可用 Agent Workflow：
+{workflow_catalog}
+""".strip()
+
+
+PLATFORM_PRIMARY_ALERT_ORCHESTRATION_APPENDIX = """\
+【平台编排补充】
+若本节与上文自定义提示冲突，**以上文自定义提示为准**。
+
+- 你是主 Agent（Supervisor）：可调用子 Agent 工具、`delegate_parallel`、`run_workflow`；证据足够时停止调用工具并输出最终结论
+- `run_workflow` 只返回步骤计划，子 Agent 须由你按步骤依次调用并自行编写每步 `task_prompt`
+- 给子 Agent 的 `task_prompt` 须具体、可操作；不要把内部调度过程展示给值班人员
+
+可用子 Agent：
+{worker_catalog}
+
+可用 Agent Workflow：
+{workflow_catalog}
+""".strip()
+
+
+# ── Full fallback templates (used when no custom base_prompt) ─────────────────
+
 DEFAULT_ALERT_SYSTEM_PROMPT = """\
 你是 SentinelFlow 的安全运营 Agent。
 
@@ -91,7 +155,7 @@ SYSTEM_PRIMARY_DEFAULT_PROMPT = """\
 """.strip()
 
 
-# ── Supervisor Orchestration Prompts (Tool-Calling Pattern) ───────────────────
+# ── Supervisor orchestration (full fallback when no custom primary prompt) ──────
 
 PRIMARY_COMMAND_ORCHESTRATION_APPENDIX = """\
 你当前是 SentinelFlow 的主 Agent，负责统筹完成用户的指令任务。
@@ -167,7 +231,7 @@ PRIMARY_ALERT_ORCHESTRATION_APPENDIX = """\
 """.strip()
 
 
-# ── Synthesis prompt for structured output node ───────────────────────────────
+# ── Synthesis (structured output node; follows agent conclusions) ─────────────
 
 SYNTHESIS_SYSTEM_PROMPT = """\
 你是 SentinelFlow 的结论整理模块。
@@ -181,6 +245,7 @@ SYNTHESIS_SYSTEM_PROMPT = """\
 - execution_result: 已执行的动作摘要（查询/封禁/结单等；未执行任何动作则为空字符串）
 
 规则：
+- 以对话中 Agent 的研判结论与证据为准，不要编造或推翻对话中已明确的判定
 - 不要编造不存在于对话中的证据
 - 如果无法判断 disposition，填 unknown
 - evidence 列表最多 3 条，每条不超过 160 字

@@ -6,6 +6,10 @@ from sentinelflow.agent.prompts import (
     ALERT_HANDLING_HINTS,
     DEFAULT_ALERT_SYSTEM_PROMPT,
     DEFAULT_COMMAND_SYSTEM_PROMPT,
+    PLATFORM_ALERT_APPENDIX,
+    PLATFORM_COMMAND_APPENDIX,
+    PLATFORM_PRIMARY_ALERT_ORCHESTRATION_APPENDIX,
+    PLATFORM_PRIMARY_COMMAND_ORCHESTRATION_APPENDIX,
     PRIMARY_ALERT_ORCHESTRATION_APPENDIX,
     PRIMARY_COMMAND_ORCHESTRATION_APPENDIX,
 )
@@ -22,18 +26,28 @@ class PromptBuildContext:
     workflow_catalog: str = ""
 
 
-_MODE_TEMPLATES = {
+_MODE_FALLBACK_TEMPLATES = {
     "agent_command": DEFAULT_COMMAND_SYSTEM_PROMPT,
     "agent_alert": DEFAULT_ALERT_SYSTEM_PROMPT,
     "primary_orchestrate_command": PRIMARY_COMMAND_ORCHESTRATION_APPENDIX,
     "primary_orchestrate_alert": PRIMARY_ALERT_ORCHESTRATION_APPENDIX,
 }
 
+_MODE_PLATFORM_APPENDICES = {
+    "agent_command": PLATFORM_COMMAND_APPENDIX,
+    "agent_alert": PLATFORM_ALERT_APPENDIX,
+    "primary_orchestrate_command": PLATFORM_PRIMARY_COMMAND_ORCHESTRATION_APPENDIX,
+    "primary_orchestrate_alert": PLATFORM_PRIMARY_ALERT_ORCHESTRATION_APPENDIX,
+}
+
 
 def build_prompt(context: PromptBuildContext) -> str:
-    template = _MODE_TEMPLATES.get(context.mode, "").strip()
     base_prompt = (context.base_prompt or "").strip()
-    prompt = f"{base_prompt}\n\n{template}".strip() if base_prompt else template
+    if base_prompt:
+        template = _MODE_PLATFORM_APPENDICES.get(context.mode, "").strip()
+        prompt = f"{base_prompt}\n\n{template}".strip() if template else base_prompt
+    else:
+        prompt = _MODE_FALLBACK_TEMPLATES.get(context.mode, "").strip()
 
     values = {
         "skill_catalog": context.skill_catalog,
@@ -49,7 +63,12 @@ def build_prompt(context: PromptBuildContext) -> str:
     prompt = _append_catalog(prompt, "worker_catalog", "可用子 Agent", context.worker_catalog)
     prompt = _append_catalog(prompt, "workflow_catalog", "可用 Agent Workflow", context.workflow_catalog)
 
-    if context.mode == "agent_alert" and context.action_hint in ALERT_HANDLING_HINTS:
+    # Disposition-specific hints only apply when using the built-in fallback prompt.
+    if (
+        not base_prompt
+        and context.mode == "agent_alert"
+        and context.action_hint in ALERT_HANDLING_HINTS
+    ):
         prompt = f"{prompt}\n\n{ALERT_HANDLING_HINTS[context.action_hint]}".strip()
     return prompt.strip()
 
