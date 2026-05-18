@@ -1864,8 +1864,12 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             workflow_runs=workflow_runs,
         )
         effective_closure_step = self._resolve_effective_closure_step(
+            skill_runs=skill_runs,
+            action_hint=action_hint,
             primary_closure_step=closure_step,
             aggregated_closure_steps=aggregated_closure_steps,
+            worker_results=worker_results,
+            workflow_runs=workflow_runs,
         )
         effective_closure_result = effective_closure_step.get("result", {})
         if not isinstance(effective_closure_result, dict):

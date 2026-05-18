@@ -352,26 +352,42 @@ class SkillRunAnalyzerMixin:
             return True
         return False
 
+    _VALID_EXEC_CLOSURE_STATUSES = frozenset({"4", "6"})
+
+    def _collect_closure_runs(
+        self,
+        skill_runs: list[dict[str, Any]],
+        action_hint: str | None,
+    ) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
+        for run in skill_runs:
+            if self._is_closure_run(run):
+                collected.append(run)
+        if collected:
+            return collected
+        if action_hint not in {"triage_close", "triage_dispose"}:
+            return []
+        for run in skill_runs:
+            if (
+                str(run.get("skill_name", "")).strip()
+                and not self._is_enrichment_run(run)
+                and self._looks_like_closure_fallback(run)
+            ):
+                collected.append(run)
+        return collected
+
     def _select_closure_run(
         self,
         skill_runs: list[dict[str, Any]],
         action_hint: str | None,
     ) -> dict[str, Any] | None:
-        for run in skill_runs:
-            if self._is_closure_run(run):
-                return run
-        if action_hint not in {"triage_close", "triage_dispose"}:
+        candidates = self._collect_closure_runs(skill_runs, action_hint)
+        if not candidates:
             return None
-        fallback_candidates = [
-            run
-            for run in skill_runs
-            if str(run.get("skill_name", "")).strip()
-            and not self._is_enrichment_run(run)
-            and self._looks_like_closure_fallback(run)
-        ]
-        if fallback_candidates:
-            return fallback_candidates[-1]
-        return None
+        for run in reversed(candidates):
+            if self._is_successful_closure_run(run):
+                return run
+        return candidates[-1]
 
     def _is_same_skill_run(self, left: dict[str, Any], right: dict[str, Any] | None) -> bool:
         if right is None:
@@ -382,6 +398,13 @@ class SkillRunAnalyzerMixin:
             return left_id == right_id
         return left is right
 
+    def _closure_status_value(self, run: dict[str, Any]) -> str:
+        payload = run.get("payload", {})
+        arguments = run.get("arguments", {})
+        payload = payload if isinstance(payload, dict) else {}
+        arguments = arguments if isinstance(arguments, dict) else {}
+        return str(payload.get("status", arguments.get("status", ""))).strip()
+
     def _is_successful_closure_run(self, run: dict[str, Any]) -> bool:
         if not (self._is_closure_run(run) or self._looks_like_closure_fallback(run)):
             return False
@@ -389,17 +412,19 @@ class SkillRunAnalyzerMixin:
         arguments = run.get("arguments", {})
         tool_success = run.get("tool_success")
         tool_error = run.get("tool_error")
+        tool_payload = run.get("tool_payload", {})
         payload = payload if isinstance(payload, dict) else {}
         arguments = arguments if isinstance(arguments, dict) else {}
+        tool_payload = tool_payload if isinstance(tool_payload, dict) else {}
         if bool(tool_error):
             return False
         if isinstance(tool_success, bool) and not tool_success:
             return False
-        if bool(payload.get("error")):
+        if bool(payload.get("error")) or bool(tool_payload.get("error")):
             return False
-        if bool(run.get("inferred_from_summary")) and not isinstance(tool_success, bool) and "success" not in payload and "result" not in payload:
-            return False
-        status_value = payload.get("status", arguments.get("status"))
+        status_value = self._closure_status_value(run)
+        if status_value in self._VALID_EXEC_CLOSURE_STATUSES:
+            return True
         result_value = payload.get("result", arguments.get("result"))
         success_value = payload.get("success", tool_success)
         if isinstance(success_value, bool):
@@ -414,9 +439,12 @@ class SkillRunAnalyzerMixin:
             normalized_status = status_value.strip().lower()
             if normalized_status in {"fail", "failed", "false", "error", "0", "-1"}:
                 return False
-            return True
+            if normalized_status in self._VALID_EXEC_CLOSURE_STATUSES:
+                return True
         if isinstance(tool_success, bool):
             return tool_success
+        if bool(run.get("inferred_from_summary")):
+            return not bool(tool_error) and not bool(payload.get("error")) and not bool(tool_payload.get("error"))
         return False
 
     def _is_enrichment_run(self, run: dict[str, Any]) -> bool:
@@ -466,38 +494,7 @@ class SkillRunAnalyzerMixin:
                 return payload if isinstance(payload, dict) else {}
         return {}
 
-    def _build_closure_step(
-        self,
-        skill_runs: list[dict[str, Any]],
-        closure_run: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        if closure_run is not None:
-            skill_name = str(closure_run.get("skill_name", "")).strip()
-            payload = closure_run.get("payload", {})
-            arguments = closure_run.get("arguments", {})
-            payload = payload if isinstance(payload, dict) else {}
-            arguments = arguments if isinstance(arguments, dict) else {}
-            success = self._is_successful_closure_run(closure_run)
-            summary = str(
-                payload.get("detailMsg")
-                or payload.get("detail_msg")
-                or payload.get("result")
-                or payload.get("message")
-                or ("结单执行成功。" if success else "结单执行失败。")
-            ).strip()
-            return {
-                "attempted": True,
-                "success": success,
-                "skill_name": skill_name,
-                "tool_name": closure_run.get("tool_name", ""),
-                "tool_call_id": closure_run.get("tool_call_id", ""),
-                "tool_success": closure_run.get("tool_success"),
-                "tool_error": closure_run.get("tool_error"),
-                "arguments": arguments,
-                "result": payload,
-                "error": payload.get("error"),
-                "summary": summary,
-            }
+    def _empty_closure_step(self) -> dict[str, Any]:
         return {
             "attempted": False,
             "success": False,
@@ -510,7 +507,105 @@ class SkillRunAnalyzerMixin:
             "result": {},
             "error": None,
             "summary": "",
+            "source_type": "",
+            "source_name": "",
         }
+
+    def _closure_step_from_run(
+        self,
+        closure_run: dict[str, Any],
+        *,
+        source_type: str = "",
+        source_name: str = "",
+    ) -> dict[str, Any]:
+        skill_name = str(closure_run.get("skill_name", "")).strip()
+        payload = closure_run.get("payload", {})
+        arguments = closure_run.get("arguments", {})
+        payload = payload if isinstance(payload, dict) else {}
+        arguments = arguments if isinstance(arguments, dict) else {}
+        success = self._is_successful_closure_run(closure_run)
+        summary = str(
+            payload.get("detailMsg")
+            or payload.get("detail_msg")
+            or payload.get("result")
+            or payload.get("message")
+            or ("结单执行成功。" if success else "结单执行失败。")
+        ).strip()
+        step = {
+            "attempted": True,
+            "success": success,
+            "skill_name": skill_name,
+            "tool_name": closure_run.get("tool_name", ""),
+            "tool_call_id": closure_run.get("tool_call_id", ""),
+            "tool_success": closure_run.get("tool_success"),
+            "tool_error": closure_run.get("tool_error"),
+            "arguments": arguments,
+            "result": payload,
+            "error": payload.get("error"),
+            "summary": summary,
+        }
+        if source_type:
+            step["source_type"] = source_type
+        if source_name:
+            step["source_name"] = source_name
+        return step
+
+    def _build_closure_step(
+        self,
+        skill_runs: list[dict[str, Any]],
+        closure_run: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if closure_run is not None:
+            return self._closure_step_from_run(closure_run)
+        return self._empty_closure_step()
+
+    def _enumerate_closure_steps(
+        self,
+        *,
+        skill_runs: list[dict[str, Any]],
+        action_hint: str | None,
+        worker_results: list[dict[str, Any]] | None,
+        workflow_runs: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        steps: list[dict[str, Any]] = []
+        for run in self._collect_closure_runs(skill_runs, action_hint):
+            steps.append(self._closure_step_from_run(run, source_type="primary", source_name="primary"))
+        for worker_result in worker_results or []:
+            if not isinstance(worker_result, dict):
+                continue
+            worker_name = str(worker_result.get("worker") or worker_result.get("worker_agent") or "").strip() or "worker"
+            nested_runs = self._extract_skill_runs(worker_result)
+            for run in self._collect_closure_runs(nested_runs, action_hint):
+                steps.append(
+                    self._closure_step_from_run(
+                        run,
+                        source_type="worker",
+                        source_name=worker_name,
+                    )
+                )
+        for workflow_run in workflow_runs or []:
+            if not isinstance(workflow_run, dict):
+                continue
+            workflow_name = str(workflow_run.get("workflow_name", workflow_run.get("workflow_id", ""))).strip() or "workflow"
+            workflow_closure = workflow_run.get("closure_step", {})
+            if isinstance(workflow_closure, dict) and bool(workflow_closure.get("attempted")):
+                steps.append({**workflow_closure, "source_type": "workflow", "source_name": workflow_name})
+            nested_worker_results = workflow_run.get("worker_results", [])
+            if isinstance(nested_worker_results, list):
+                for worker_result in nested_worker_results:
+                    if not isinstance(worker_result, dict):
+                        continue
+                    worker_name = str(worker_result.get("worker") or worker_result.get("worker_agent") or "").strip() or "worker"
+                    nested_runs = self._extract_skill_runs(worker_result)
+                    for run in self._collect_closure_runs(nested_runs, action_hint):
+                        steps.append(
+                            self._closure_step_from_run(
+                                run,
+                                source_type="workflow_worker",
+                                source_name=f"{workflow_name}/{worker_name}",
+                            )
+                        )
+        return steps
 
     def _extract_nested_side_effects(
         self,
@@ -657,34 +752,30 @@ class SkillRunAnalyzerMixin:
     def _resolve_effective_closure_step(
         self,
         *,
+        skill_runs: list[dict[str, Any]] | None = None,
+        action_hint: str | None = None,
         primary_closure_step: dict[str, Any],
         aggregated_closure_steps: list[dict[str, Any]],
+        worker_results: list[dict[str, Any]] | None = None,
+        workflow_runs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        if bool(primary_closure_step.get("attempted")) and bool(primary_closure_step.get("success")):
-            return {**primary_closure_step, "source_type": "primary", "source_name": "primary"}
-        for closure_step in aggregated_closure_steps:
-            if isinstance(closure_step, dict) and bool(closure_step.get("attempted")) and bool(closure_step.get("success")):
+        candidate_steps = self._enumerate_closure_steps(
+            skill_runs=list(skill_runs or []),
+            action_hint=action_hint,
+            worker_results=worker_results,
+            workflow_runs=workflow_runs,
+        )
+        if not candidate_steps:
+            candidate_steps = [step for step in aggregated_closure_steps if isinstance(step, dict)]
+        for closure_step in reversed(candidate_steps):
+            if bool(closure_step.get("attempted")) and bool(closure_step.get("success")):
+                return closure_step
+        for closure_step in reversed(candidate_steps):
+            if bool(closure_step.get("attempted")):
                 return closure_step
         if bool(primary_closure_step.get("attempted")):
             return {**primary_closure_step, "source_type": "primary", "source_name": "primary"}
-        for closure_step in aggregated_closure_steps:
-            if isinstance(closure_step, dict) and bool(closure_step.get("attempted")):
-                return closure_step
-        return {
-            "attempted": False,
-            "success": False,
-            "skill_name": "",
-            "tool_name": "",
-            "tool_call_id": "",
-            "tool_success": False,
-            "tool_error": None,
-            "arguments": {},
-            "result": {},
-            "error": None,
-            "summary": "",
-            "source_type": "",
-            "source_name": "",
-        }
+        return self._empty_closure_step()
 
     def _compute_alert_task_success(
         self,
