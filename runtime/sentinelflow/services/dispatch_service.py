@@ -18,6 +18,102 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _build_external_poll_final_facts(
+    existing_result: dict[str, Any],
+    *,
+    previous_status: str,
+    external_summary: str,
+) -> dict[str, Any]:
+    existing_final_facts = existing_result.get("final_facts")
+    if not isinstance(existing_final_facts, dict):
+        existing_final_facts = {}
+    existing_judgment = existing_final_facts.get("judgment")
+    if not isinstance(existing_judgment, dict):
+        existing_judgment = {}
+    existing_closure = existing_final_facts.get("closure")
+    if not isinstance(existing_closure, dict):
+        existing_closure = {}
+    existing_consistency = existing_final_facts.get("consistency")
+    prior_issues: list[Any] = []
+    if isinstance(existing_consistency, dict) and isinstance(existing_consistency.get("issues"), list):
+        prior_issues = list(existing_consistency.get("issues") or [])
+
+    disposition = (
+        str(existing_judgment.get("disposition", "")).strip()
+        or str(existing_result.get("disposition", "")).strip()
+        or "handled_manually"
+    )
+    return {
+        **existing_final_facts,
+        "judgment": {
+            **existing_judgment,
+            "disposition": disposition,
+            "source": "external_poll_completion",
+            "confidence": str(existing_judgment.get("confidence", "medium")).strip() or "medium",
+        },
+        "closure": {
+            **existing_closure,
+            "attempted": bool(existing_closure.get("attempted")) or True,
+            "success": True,
+            "status": str(existing_closure.get("status", "")).strip(),
+            "memo": str(existing_closure.get("memo", "")).strip() or "已被人工处置",
+            "detail_msg": external_summary,
+            "source_type": "external",
+            "source_name": "refresh_poll",
+        },
+        "task_outcome": {
+            "success": True,
+            "status": "completed",
+            "source": "refresh_poll",
+            "previous_status": previous_status,
+        },
+        "consistency": {
+            "consistent": True,
+            "issues": [],
+            "superseded_issues": prior_issues,
+        },
+    }
+
+
+def _rewrite_execution_trace_for_external_completion(
+    trace: list[dict[str, Any]],
+    *,
+    external_step: dict[str, Any],
+    final_facts: dict[str, Any],
+    previous_status: str,
+) -> list[dict[str, Any]]:
+    filtered = [
+        dict(item)
+        for item in trace
+        if isinstance(item, dict)
+        and str(item.get("phase", "")).strip() not in {"final_facts", "final_status", "completed_externally"}
+    ]
+    external_summary = str(external_step.get("summary", "")).strip()
+    return [
+        *filtered,
+        dict(external_step),
+        {
+            "phase": "final_facts",
+            "title": "最终事实收敛",
+            "summary": external_summary or "告警已不在轮询列表中，按已被人工处置完成收口。",
+            "success": True,
+            "data": final_facts,
+        },
+        {
+            "phase": "final_status",
+            "title": "最终执行状态",
+            "summary": "已被人工处置，任务已完成。",
+            "success": True,
+            "data": {
+                "success": True,
+                "status": "completed",
+                "action": "refresh_poll",
+                "previous_status": previous_status,
+            },
+        },
+    ]
+
+
 def _parse_task_datetime(value: str, default_tz) -> datetime | None:
     text = str(value or "").strip()
     if not text:
@@ -288,30 +384,40 @@ class AlertDispatchService:
                         },
                     }
                 ]
+            external_summary = f"本次轮询未再发现该 {previous_status} 告警，按已被人工处置完成收口。"
+            external_step = {
+                "phase": "completed_externally",
+                "title": "外部收口",
+                "summary": external_summary,
+                "success": True,
+                "data": {
+                    "success": True,
+                    "status": "completed",
+                    "previous_status": previous_status,
+                    "action": "refresh_poll",
+                },
+            }
+            updated_final_facts = _build_external_poll_final_facts(
+                existing_result,
+                previous_status=previous_status,
+                external_summary=external_summary,
+            )
             updated_result = {
                 **existing_result,
                 "summary": str(existing_result.get("summary") or "已被人工处置").strip(),
-                "reason": str(
-                    existing_result.get("reason")
-                    or f"本次轮询未再发现该 {previous_status} 告警，按人工处置完成收口。"
+                "reason": str(existing_result.get("reason") or external_summary).strip(),
+                "disposition": str(
+                    existing_result.get("disposition")
+                    or updated_final_facts.get("judgment", {}).get("disposition", "handled_manually")
                 ).strip(),
-                "disposition": str(existing_result.get("disposition") or "handled_manually").strip(),
                 "success": True,
-                "execution_trace": [
-                    *preserved_trace,
-                    {
-                        "phase": "completed_externally",
-                        "title": "外部收口",
-                        "summary": f"本次轮询未再发现该 {previous_status} 告警，按人工处置完成收口。",
-                        "success": True,
-                        "data": {
-                            "success": True,
-                            "status": "completed",
-                            "previous_status": previous_status,
-                            "action": "refresh_poll",
-                        },
-                    },
-                ],
+                "final_facts": updated_final_facts,
+                "execution_trace": _rewrite_execution_trace_for_external_completion(
+                    preserved_trace,
+                    external_step=external_step,
+                    final_facts=updated_final_facts,
+                    previous_status=previous_status,
+                ),
             }
             updated_task = self._update_task_columns(
                 task.task_id,

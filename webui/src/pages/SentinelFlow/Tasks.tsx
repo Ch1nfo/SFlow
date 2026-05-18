@@ -20,6 +20,7 @@ import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalState'
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, publishRuntimeActivity, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
+import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 type TaskFilter = 'all' | 'queued' | 'running' | 'succeeded' | 'completed' | 'failed'
 const TASK_FILTER_KEY = 'sentinelflow:tasks:filter'
@@ -71,15 +72,8 @@ function getDispositionLabel(value: string) {
   if (value === 'true_attack') return '真实攻击'
   if (value === 'business_trigger') return '业务触发'
   if (value === 'false_positive') return '误报'
+  if (value === 'handled_manually') return '已被人工处置'
   return value || '未明确'
-}
-
-function getEffectiveTaskStatus(task: AlertTask): AlertTask['status'] | string {
-  const result = (task.last_result_data ?? {}) as Record<string, unknown>
-  const finalFacts = (result.final_facts as Record<string, unknown> | undefined) ?? {}
-  const taskOutcome = (finalFacts.task_outcome as Record<string, unknown> | undefined) ?? {}
-  const status = String(taskOutcome.status ?? '').trim()
-  return status || task.status
 }
 
 function splitAlertIps(value: unknown): string[] {

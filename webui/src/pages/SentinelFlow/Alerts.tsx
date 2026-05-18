@@ -15,6 +15,7 @@ import PageHeader from '@/components/common/PageHeader'
 import MarkdownContent from '@/components/sentinelflow/MarkdownContent'
 import { withProductName } from '@/config/brand'
 import { publishRuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
+import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
@@ -162,14 +163,6 @@ function isReDisposableStatus(task: AlertTask): boolean {
 function isPrimaryDisposeDisabled(task: AlertTask): boolean {
   const status = getEffectiveTaskStatus(task)
   return status === 'running' || status === 'succeeded' || status === 'completed' || status === 'pending_manual_closure' || status === 'awaiting_approval'
-}
-
-function getEffectiveTaskStatus(task: AlertTask): AlertTask['status'] | string {
-  const result = (task.last_result_data ?? {}) as Record<string, unknown>
-  const finalFacts = (result.final_facts as Record<string, unknown> | undefined) ?? {}
-  const taskOutcome = (finalFacts.task_outcome as Record<string, unknown> | undefined) ?? {}
-  const status = String(taskOutcome.status ?? '').trim()
-  return status || task.status
 }
 
 function toSortableTime(value: string | undefined): number {

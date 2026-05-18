@@ -9,13 +9,7 @@ import { brand, withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
-
-function getEffectiveTaskStatus(task: Record<string, unknown>): string {
-  const result = (task.last_result_data as Record<string, unknown> | undefined) ?? {}
-  const finalFacts = (result.final_facts as Record<string, unknown> | undefined) ?? {}
-  const taskOutcome = (finalFacts.task_outcome as Record<string, unknown> | undefined) ?? {}
-  return String(taskOutcome.status ?? task.status ?? '').trim()
-}
+import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 export default function SentinelFlowOverviewPage() {
   const { data: health, reload: reloadHealth } = useSentinelFlowAsyncData(fetchHealth, [])
