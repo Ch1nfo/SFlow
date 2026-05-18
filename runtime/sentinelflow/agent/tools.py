@@ -5,6 +5,7 @@ from typing import Annotated, Any
 
 from sentinelflow.agent.context_utils import (
     build_context_manifest,
+    build_safe_current_goal,
     validate_execution_inputs,
     validate_skill_input_schema,
 )
@@ -70,17 +71,20 @@ def build_agent_tools(
         include_invalid_inputs: bool,
     ) -> str:
         alert_data = state.get("alert_data", {})
-        task_prompt = ""
-        if isinstance(alert_data, dict):
-            task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
+        safe_goal, safe_goal_meta = build_safe_current_goal(
+            alert_data=alert_data if isinstance(alert_data, dict) else {},
+            arguments=arguments,
+            skill_name=skill_name,
+        )
         manifest = build_context_manifest(
-            current_goal=task_prompt or f"执行 Skill {skill_name}",
+            current_goal=safe_goal,
             entry_type=str(state.get("execution_entry", "")).strip(),
             original_input=alert_data,
-            current_task_prompt=task_prompt,
+            current_task_prompt=safe_goal,
             current_skill_args=arguments,
             input_contract=validation.get("input_contract", {}),
             missing_required_inputs=validation.get("missing_required_inputs", []),
+            current_goal_meta=safe_goal_meta,
         )
         data: dict[str, Any] = {
             "skill_name": skill_name,

@@ -460,6 +460,7 @@ export default function SentinelFlowAgentsPage() {
         }
       })
       setEditing(false)
+      setCreateFormExpanded(false)
       setAdvancedPromptExpanded(false)
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (error) {

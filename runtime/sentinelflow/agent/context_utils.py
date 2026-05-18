@@ -47,6 +47,7 @@ KEY_FACT_ALIASES = {
 
 DEFAULT_KEY_FACT_MAX_DEPTH = 20
 DEFAULT_CONTEXT_WARNING_TOKEN_THRESHOLD = 24000
+DEFAULT_SAFE_GOAL_MAX_CHARS = 500
 
 AUTHORITY_PRIORITY = [
     "current_skill_args",
@@ -66,6 +67,122 @@ def compact_text(value: Any, limit: int = 800) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}..."
+
+
+def _clip_goal_text(value: Any, limit: int = DEFAULT_SAFE_GOAL_MAX_CHARS) -> tuple[str, dict[str, Any]]:
+    raw = str(value or "")
+    compacted = compact_text(raw, limit)
+    return compacted, {
+        "truncated": len(re.sub(r"\s+", " ", raw.strip())) > len(compacted),
+        "original_chars": len(raw),
+    }
+
+
+def _payload_noise_reason(text: str) -> str:
+    if not text:
+        return ""
+    if len(text) > 1000:
+        return "large_payload"
+    lowered = text.lower()
+    if "http/1." in lowered or "content-length:" in lowered or "\r\n\r\n" in text or "\n\n" in text:
+        return "http_payload"
+    if len(re.findall(r"%[0-9a-fA-F]{2}", text)) >= 12:
+        return "url_encoded_payload"
+    if text:
+        control_count = sum(1 for char in text if ord(char) < 32 and char not in "\r\n\t")
+        if control_count / max(len(text), 1) >= 0.02:
+            return "binary_or_control_payload"
+    if re.search(r"(?:[A-Za-z0-9+/]{80,}={0,2}|[A-Fa-f0-9]{120,}|A{120,})", text):
+        return "encoded_or_padding_payload"
+    return ""
+
+
+def _alert_summary(alert_data: dict[str, Any]) -> str:
+    parts: list[str] = []
+    event_id = str(alert_data.get("eventIds") or alert_data.get("event_id") or alert_data.get("alert_id") or "").strip()
+    alert_name = str(alert_data.get("alert_name") or alert_data.get("name") or "").strip()
+    if event_id or alert_name:
+        parts.append("告警")
+        if event_id:
+            parts.append(event_id)
+        if alert_name:
+            parts.append(alert_name)
+    for field in ("sip", "dip", "sport", "dport"):
+        value = str(alert_data.get(field) or "").strip()
+        if value:
+            parts.append(f"{field}={value}")
+    return " ".join(parts).strip()
+
+
+def build_safe_current_goal(
+    *,
+    alert_data: dict[str, Any] | None = None,
+    arguments: dict[str, Any] | None = None,
+    skill_name: str = "",
+    max_chars: int = DEFAULT_SAFE_GOAL_MAX_CHARS,
+) -> tuple[str, dict[str, Any]]:
+    """Build a short navigation goal for validation failures without mutating inputs."""
+    data = alert_data if isinstance(alert_data, dict) else {}
+    _ = arguments if isinstance(arguments, dict) else {}
+    omitted_fields: list[str] = []
+
+    delegated = str(data.get("delegated_task_prompt") or "").strip()
+    if delegated:
+        reason = _payload_noise_reason(delegated)
+        if not reason:
+            goal, clip_meta = _clip_goal_text(delegated, max_chars)
+            return goal or f"执行 Skill {skill_name}", {
+                "source": "delegated_task_prompt",
+                **clip_meta,
+                "omitted_fields": omitted_fields,
+            }
+        omitted_fields.append("delegated_task_prompt")
+
+    summary = _alert_summary(data)
+    if summary:
+        return summary, {
+            "source": "alert_summary",
+            "truncated": False,
+            "original_chars": len(summary),
+            "omitted_fields": omitted_fields,
+        }
+
+    payload = str(data.get("payload") or "").strip()
+    alert_source = str(data.get("alert_source") or "").strip()
+    if payload and (alert_source == "human_command" or str(data.get("entry_type") or "").strip() == "conversation"):
+        reason = _payload_noise_reason(payload)
+        if not reason:
+            goal, clip_meta = _clip_goal_text(payload, max_chars)
+            return goal or f"执行 Skill {skill_name}", {
+                "source": "human_command",
+                **clip_meta,
+                "omitted_fields": omitted_fields,
+            }
+
+    if payload:
+        reason = _payload_noise_reason(payload)
+        if reason:
+            omitted_fields.append("payload")
+            return f"payload 摘要：{reason}，长度 {len(payload)} 字符，内容已省略", {
+                "source": "payload_summary",
+                "truncated": True,
+                "original_chars": len(payload),
+                "omitted_fields": omitted_fields,
+                "reason": reason,
+            }
+        goal, clip_meta = _clip_goal_text(payload, max_chars)
+        return goal or f"执行 Skill {skill_name}", {
+            "source": "payload",
+            **clip_meta,
+            "omitted_fields": omitted_fields,
+        }
+
+    return f"执行 Skill {skill_name}", {
+        "source": "fallback",
+        "truncated": False,
+        "original_chars": 0,
+        "omitted_fields": omitted_fields,
+    }
 
 
 def _json_safe(value: Any, *, max_depth: int | None = None, _depth: int = 0) -> Any:
@@ -407,6 +524,7 @@ def build_context_manifest(
     model_summary: Any = None,
     input_contract: dict[str, Any] | None = None,
     missing_required_inputs: list[dict[str, Any]] | None = None,
+    current_goal_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     authority = resolve_authoritative_facts(
         current_skill_args=current_skill_args or {},
@@ -436,7 +554,7 @@ def build_context_manifest(
     conflicts = authority.get("conflicts", {})
     if isinstance(conflicts, dict) and conflicts:
         warnings.append("authority_fact_conflict")
-    return {
+    manifest = {
         "current_goal": str(current_goal or current_task_prompt or "").strip(),
         "entry_type": str(entry_type or "").strip(),
         "current_step": _json_safe(current_step or {}),
@@ -450,6 +568,9 @@ def build_context_manifest(
         "context_size": size,
         "context_warnings": warnings,
     }
+    if current_goal_meta:
+        manifest["current_goal_meta"] = _json_safe(current_goal_meta)
+    return manifest
 
 
 def format_context_manifest_header(manifest: dict[str, Any]) -> str:
