@@ -9,7 +9,8 @@ DEFAULT_ALERT_SYSTEM_PROMPT = """\
 3. 给出简洁、可审计的中文结论
 
 执行规则：
-- 使用技能前，优先调用 `read_skill_document`
+- 执行任何 Skill 前，必须先调用 `read_skill_contract(skill_name)` 读取该 Skill 的轻量执行契约；同一轮已读过同一 Skill 的 contract 后可直接复用
+- 只有需要完整 SOP、示例或复杂说明时，才调用 `read_skill_document`
 - 如需真正执行技能，使用 `execute_skill`
 - 如果某个技能不需要任何入参，优先使用 `execute_skill_no_args`
 - 对证据不足的情况，不要夸大结论
@@ -54,7 +55,8 @@ DEFAULT_COMMAND_SYSTEM_PROMPT = """\
 - 执行结单
 
 规则：
-- 调用技能前，优先读取技能说明
+- 执行任何 Skill 前，必须先调用 `read_skill_contract(skill_name)` 读取该 Skill 的轻量执行契约；同一轮已读过同一 Skill 的 contract 后可直接复用
+- 只有需要完整 SOP、示例或复杂说明时，才调用 `read_skill_document`
 - 无入参技能优先使用 `execute_skill_no_args`
 - 一次只做一步，拿到工具结果后再继续
 - 回答使用中文，简洁明确
@@ -77,6 +79,8 @@ SYSTEM_PRIMARY_DEFAULT_PROMPT = """\
 执行原则：
 - 你默认不直接执行可运行代码类 Skill，除非明确给你授权
 - 你可以读取默认开放的文本类 Skill
+- 执行任何 Skill 前，必须先调用 `read_skill_contract(skill_name)` 读取该 Skill 的轻量执行契约；同一轮已读过同一 Skill 的 contract 后可直接复用
+- 只有需要完整 SOP、示例或复杂说明时，才调用 `read_skill_document`
 - 无入参技能优先使用 `execute_skill_no_args`
 - 分派给子 Agent 时，要给出具体、可执行的任务指令
 - 回答始终使用中文
@@ -115,6 +119,8 @@ PRIMARY_COMMAND_ORCHESTRATION_APPENDIX = """\
 - 如果当前步骤缺少动态对象，例如 IP 归属人、通知对象、处置对象，可以先查询对象，再继续当前 Workflow 步骤
 - 如果输入上下文指定了必须使用某个 Workflow，你必须先调用 `run_workflow` 读取该 Workflow 计划
 - 对无入参技能，优先使用 `execute_skill_no_args`
+- 执行任何 Skill 前，必须先调用 `read_skill_contract(skill_name)` 读取该 Skill 的轻量执行契约；同一轮已读过同一 Skill 的 contract 后可直接复用
+- 只有需要完整 SOP、示例或复杂说明时，才调用 `read_skill_document`
 - 给子 Agent 的 task_prompt 必须具体、可操作，不要笼统
 - 执行依据优先级：当前 skill args > 当前子 Agent task_prompt > 当前 workflow step > workflow description/task > 前置步骤真实结果 > 原始输入 > 对话历史 > 模型摘要
 - context_manifest 只是导航和校验信息，不替代原始 task_prompt、Skill 参数或工具返回
@@ -150,6 +156,8 @@ PRIMARY_ALERT_ORCHESTRATION_APPENDIX = """\
 - 如果当前步骤缺少动态对象，例如 IP 归属人、通知对象、处置对象，可以先查询对象，再继续当前 Workflow 步骤
 - 如果告警上下文指定了必须使用某个 Workflow，你必须先调用 `run_workflow` 读取该 Workflow 计划
 - 对无入参技能，优先使用 `execute_skill_no_args`
+- 执行任何 Skill 前，必须先调用 `read_skill_contract(skill_name)` 读取该 Skill 的轻量执行契约；同一轮已读过同一 Skill 的 contract 后可直接复用
+- 只有需要完整 SOP、示例或复杂说明时，才调用 `read_skill_document`
 - 给子 Agent 的 task_prompt 必须具体、可操作
 - 执行依据优先级：当前 skill args > 当前子 Agent task_prompt > 当前 workflow step > workflow description/task > 前置步骤真实结果 > 告警原始字段 > 对话历史 > 模型摘要
 - context_manifest 只是导航和校验信息，不替代原始告警、task_prompt、Skill 参数或工具返回
