@@ -222,6 +222,7 @@ def _build_worker_subgraph_tool(
             worker_config,
             enable_read_skill_document=True,
             enable_execute_skill=True,
+            executable_skill_names=list(executable_skills or []),
         )
         try:
             worker_state = await subgraph.ainvoke(child_state)
@@ -413,6 +414,7 @@ def build_orchestrator_graph(
         approval_service,
         enable_read_skill_document=bool(readable_skills),
         enable_execute_skill=bool(executable_skills),
+        executable_skill_names=executable_skills,
     )
     workflow_catalog = {
         workflow.id: workflow

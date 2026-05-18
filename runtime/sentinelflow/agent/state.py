@@ -35,5 +35,4 @@ class SentinelFlowAgentState(TypedDict):
     approved_fingerprints: NotRequired[list[str]]
     rejected_fingerprints: NotRequired[list[str]]
     executed_skill_cache: NotRequired[dict[str, Any]]
-    read_skill_contracts: NotRequired[list[str]]
     structured_judgment: NotRequired[dict[str, Any] | None]  # AlertJudgment.model_dump() or None

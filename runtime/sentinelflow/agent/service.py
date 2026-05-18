@@ -136,6 +136,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             effective_config,
             enable_read_skill_document=bool(readable_skills),
             enable_execute_skill=bool(executable_skills),
+            executable_skill_names=executable_skills,
         )
         state = await graph.ainvoke(
             {
@@ -921,6 +922,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 effective_config,
                 enable_read_skill_document=bool(readable_skills),
                 enable_execute_skill=bool(executable_skills),
+                executable_skill_names=executable_skills,
             )
             resumed_state = await graph.ainvoke(
                 state,

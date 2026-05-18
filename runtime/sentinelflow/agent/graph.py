@@ -22,6 +22,7 @@ def build_agent_graph(
     *,
     enable_read_skill_document: bool = True,
     enable_execute_skill: bool = True,
+    executable_skill_names: list[str] | None = None,
 ):
     try:
         from langgraph.graph import END, START, StateGraph
@@ -37,6 +38,7 @@ def build_agent_graph(
         approval_service,
         enable_read_skill_document=enable_read_skill_document,
         enable_execute_skill=enable_execute_skill,
+        executable_skill_names=executable_skill_names,
     )
     llm = ChatOpenAI(
         model=runtime_config.llm_model,

@@ -27,12 +27,12 @@ def build_agent_tools(
     *,
     enable_read_skill_document: bool = True,
     enable_execute_skill: bool = True,
+    executable_skill_names: list[str] | None = None,
 ) -> list:
     if tool is None:
         raise ModuleNotFoundError("langchain_core/langgraph 未安装，无法构建 Agent tools。")
 
     tools: list = []
-    CONTRACT_DESCRIPTION_MAX_CHARS = 1000
 
     def _normalize_skill_arguments(arguments: dict[str, Any] | str | None) -> tuple[dict[str, Any], str | None]:
         if arguments is None:
@@ -132,94 +132,72 @@ def build_agent_tools(
             )
             return None, payload
 
-    def _clip_contract_text(value: Any, max_chars: int = CONTRACT_DESCRIPTION_MAX_CHARS) -> str:
-        text = str(value or "").strip()
-        if len(text) <= max_chars:
-            return text
-        return text[:max_chars].rstrip() + "..."
-
-    def _completion_policy_payload(policy: Any) -> dict[str, Any]:
-        if policy is None:
-            return {}
-        if isinstance(policy, dict):
-            return dict(policy)
-        payload: dict[str, Any] = {}
-        for key in ("enabled", "action_kind", "completion_effect"):
-            if hasattr(policy, key):
-                payload[key] = getattr(policy, key)
-        return payload
-
-    def _contract_payload_from_skill(skill: Any) -> dict[str, Any]:
-        spec = getattr(skill, "spec", None)
-        return {
-            "skill_name": str(getattr(spec, "name", "") or "").strip(),
-            "description": _clip_contract_text(getattr(spec, "description", "")),
-            "category": str(getattr(spec, "category", "") or "other"),
-            "input_schema": getattr(spec, "input_schema", {}) if isinstance(getattr(spec, "input_schema", {}), dict) else {},
-            "output_schema": getattr(spec, "output_schema", {}) if isinstance(getattr(spec, "output_schema", {}), dict) else {},
-            "execute_policy": {
-                "enabled": bool(getattr(spec, "execute_enabled", False)),
-                "approval_required": bool(getattr(spec, "approval_required", False)),
-                "audit": bool(getattr(spec, "audit_enabled", True)),
-            },
-            "completion_policy": _completion_policy_payload(getattr(spec, "completion_policy", None)),
-            "entry": getattr(spec, "entry", None),
-            "mode": str(getattr(getattr(spec, "mode", None), "value", getattr(spec, "mode", None)) or ""),
-        }
-
     def _has_input_schema(skill: Any) -> bool:
         return bool(getattr(getattr(skill, "spec", None), "input_schema", {}) or {})
 
-    def _message_attr(message: Any, key: str, default: Any = None) -> Any:
-        if isinstance(message, dict):
-            return message.get(key, default)
-        return getattr(message, key, default)
-
-    def _parse_message_json_content(message: Any) -> dict[str, Any]:
-        content = _message_attr(message, "content", "")
-        if not isinstance(content, str):
-            return {}
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-    def _has_read_skill_contract(skill_name: str, state: SentinelFlowAgentState) -> bool:
-        normalized_name = str(skill_name or "").strip()
-        if not normalized_name:
-            return False
-        for item in state.get("read_skill_contracts", []) or []:
-            if str(item or "").strip() == normalized_name:
-                return True
-        for message in state.get("messages", []) or []:
-            message_type = str(_message_attr(message, "type", "") or "").strip()
-            message_name = str(_message_attr(message, "name", "") or "").strip()
-            if message_type != "tool" and message_name != "read_skill_contract":
+    def _format_skill_schema_lines(skill_names: list[str] | None) -> list[str]:
+        if not skill_names:
+            return []
+        lines: list[str] = []
+        for name in skill_names:
+            normalized_name = str(name or "").strip()
+            if not normalized_name:
                 continue
-            if message_name and message_name != "read_skill_contract":
+            try:
+                skill = skill_runtime.resolver.resolve(normalized_name)
+            except Exception:
                 continue
-            payload = _parse_message_json_content(message)
-            if payload.get("success") is not True:
+            input_schema = getattr(skill.spec, "input_schema", None)
+            if not isinstance(input_schema, dict) or not input_schema:
                 continue
-            data = payload.get("data", {})
-            if isinstance(data, dict) and str(data.get("skill_name") or "").strip() == normalized_name:
-                return True
-        return False
+            required = input_schema.get("required") or []
+            if not isinstance(required, list):
+                required = []
+            required_names = [str(field) for field in required]
+            properties = input_schema.get("properties") or {}
+            if not isinstance(properties, dict):
+                properties = {}
+            prop_parts: list[str] = []
+            for field, field_schema in properties.items():
+                field_type = ""
+                if isinstance(field_schema, dict):
+                    field_type = str(field_schema.get("type", "")).strip()
+                prop_parts.append(f"{field}: {field_type}" if field_type else str(field))
+            additional = input_schema.get("additionalProperties", True)
+            additional_repr = "true" if (not isinstance(additional, bool)) or additional else "false"
+            properties_repr = "{" + ", ".join(prop_parts) + "}" if prop_parts else "{}"
+            lines.append(
+                f"- {normalized_name}: required={required_names}; "
+                f"properties={properties_repr}; "
+                f"additionalProperties={additional_repr}"
+            )
+        return lines
 
-    def _contract_required_payload(skill_name: str) -> str:
-        return json.dumps(
-            {
-                "success": False,
-                "data": {
-                    "skill_name": skill_name,
-                    "required_action": "read_skill_contract",
-                    "contract_required": True,
-                },
-                "error": f"执行 Skill「{skill_name}」前必须先读取 Skill Contract。",
-            },
-            ensure_ascii=False,
+    schema_lines = _format_skill_schema_lines(executable_skill_names)
+    if schema_lines:
+        schema_appendix = "\n".join(
+            [
+                "当前授权可执行 Skill 的入参契约（取自 input_schema，未列出的 Skill 未声明 input_schema，"
+                "如需详情请用 read_skill_document 查看）：",
+                *schema_lines,
+            ]
         )
+    else:
+        schema_appendix = ""
+
+    execute_skill_description = (
+        "执行指定技能并返回 JSON 字符串结果。"
+        "调用前请严格按下方 input_schema 传参；缺必填字段或类型不符会被拒绝并返回 "
+        "missing_required_inputs / invalid_inputs，请据此修正后再调用。"
+    )
+    if schema_appendix:
+        execute_skill_description = f"{execute_skill_description}\n\n{schema_appendix}"
+
+    execute_skill_no_args_description = (
+        "执行无入参技能并返回 JSON 字符串结果。仅适用于 input_schema 没有 required 字段的 Skill。"
+    )
+    if schema_appendix:
+        execute_skill_no_args_description = f"{execute_skill_no_args_description}\n\n{schema_appendix}"
 
     def _arguments_fingerprint(arguments: dict[str, Any] | None) -> str:
         return approval_service.fingerprint_arguments(arguments)
@@ -311,35 +289,6 @@ def build_agent_tools(
             ensure_ascii=False,
         )
 
-    if enable_read_skill_document or enable_execute_skill:
-        @tool
-        def read_skill_contract(
-            skill_name: str,
-            state: Annotated[SentinelFlowAgentState, InjectedState()],  # type: ignore[misc]
-        ) -> str:
-            """读取指定技能的轻量执行契约，包括 input_schema、执行策略和完成策略。"""
-            readable_skills_raw = state.get("readable_skills")
-            executable_skills_raw = state.get("executable_skills")
-            readable_skills = set(readable_skills_raw or [])
-            executable_skills = set(executable_skills_raw or [])
-            if readable_skills_raw is not None or executable_skills_raw is not None:
-                readable_allowed = readable_skills_raw is not None and skill_name in readable_skills
-                executable_allowed = executable_skills_raw is not None and skill_name in executable_skills
-                if not readable_allowed and not executable_allowed:
-                    return json.dumps(
-                        {"success": False, "data": {}, "error": f"当前 Agent 未被授权读取技能 {skill_name} 的执行契约。"},
-                        ensure_ascii=False,
-                    )
-            skill, resolve_error = _resolve_skill_or_error(skill_name)
-            if resolve_error is not None:
-                return resolve_error
-            return json.dumps(
-                {"success": True, "data": _contract_payload_from_skill(skill), "error": None},
-                ensure_ascii=False,
-            )
-
-        tools.append(read_skill_contract)
-
     if enable_read_skill_document:
         @tool
         def read_skill_document(
@@ -369,13 +318,11 @@ def build_agent_tools(
         tools.append(read_skill_document)
 
     if enable_execute_skill:
-        @tool
-        def execute_skill(
+        def _execute_skill_impl(
             skill_name: str,
             state: Annotated[SentinelFlowAgentState, InjectedState()],  # type: ignore[misc]
             arguments: dict[str, Any] | str | None = None,
         ) -> str:
-            """执行指定技能并返回 JSON 字符串结果。"""
             normalized_arguments, argument_error = _normalize_skill_arguments(arguments)
             if argument_error is not None:
                 return _invalid_arguments_payload(skill_name, argument_error)
@@ -395,8 +342,6 @@ def build_agent_tools(
             skill, resolve_error = _resolve_skill_or_error(skill_name)
             if resolve_error is not None:
                 return resolve_error
-            if not _has_read_skill_contract(skill_name, state):
-                return _contract_required_payload(skill_name)
             schema_validation = validate_skill_input_schema(
                 skill_name=skill_name,
                 arguments=normalized_arguments,
@@ -449,14 +394,13 @@ def build_agent_tools(
                     ensure_ascii=False,
                 )
 
+        execute_skill = tool("execute_skill", description=execute_skill_description)(_execute_skill_impl)
         tools.append(execute_skill)
 
-        @tool
-        def execute_skill_no_args(
+        def _execute_skill_no_args_impl(
             skill_name: str,
             state: Annotated[SentinelFlowAgentState, InjectedState()],  # type: ignore[misc]
         ) -> str:
-            """执行无入参技能并返回 JSON 字符串结果。"""
             cancel_event = state.get("cancel_event")
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                 return json.dumps(
@@ -473,8 +417,6 @@ def build_agent_tools(
             skill, resolve_error = _resolve_skill_or_error(skill_name)
             if resolve_error is not None:
                 return resolve_error
-            if not _has_read_skill_contract(skill_name, state):
-                return _contract_required_payload(skill_name)
             schema_validation = validate_skill_input_schema(
                 skill_name=skill_name,
                 arguments={},
@@ -527,6 +469,9 @@ def build_agent_tools(
                     ensure_ascii=False,
                 )
 
+        execute_skill_no_args = tool(
+            "execute_skill_no_args", description=execute_skill_no_args_description
+        )(_execute_skill_no_args_impl)
         tools.append(execute_skill_no_args)
 
     return tools
