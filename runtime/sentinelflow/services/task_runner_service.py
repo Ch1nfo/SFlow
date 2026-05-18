@@ -5,6 +5,7 @@ from typing import Any
 
 from sentinelflow.agent.service import SentinelFlowAgentService
 from sentinelflow.services.audit_service import AuditService
+from sentinelflow.services.agent_run_log_service import AgentRunLogService, RunLogRef
 from sentinelflow.services.dispatch_service import AlertDispatchService
 from sentinelflow.workflows.agent_workflow_registry import load_agent_workflow
 from sentinelflow.workflows.agent_workflow_runner import SentinelFlowAgentWorkflowRunner
@@ -18,12 +19,24 @@ class AlertTaskRunnerService:
         agent_service: SentinelFlowAgentService,
         agent_workflow_runner: SentinelFlowAgentWorkflowRunner,
         workflow_root: Path,
+        run_log_service: AgentRunLogService | None = None,
     ) -> None:
         self.dispatch_service = dispatch_service
         self.audit_service = audit_service
         self.agent_service = agent_service
         self.agent_workflow_runner = agent_workflow_runner
         self.workflow_root = workflow_root
+        self.run_log_service = run_log_service
+
+    def _log_event(self, run_log_ref: RunLogRef | dict[str, Any] | None, phase: str, title: str, data: Any, *, level: str = "info") -> None:
+        if self.run_log_service is None:
+            return
+        self.run_log_service.append(run_log_ref, phase, title, data, level=level)
+
+    def _record_agent_result(self, run_log_ref: RunLogRef | dict[str, Any] | None, agent_result: dict[str, Any]) -> None:
+        if self.run_log_service is None:
+            return
+        self.run_log_service.record_agent_result(run_log_ref, agent_result)
 
     def _agent_result_is_success(self, agent_result: dict[str, Any], selected_action: str) -> bool:
         final_facts = agent_result.get("final_facts", {})
@@ -164,17 +177,12 @@ class AlertTaskRunnerService:
             "error": error,
         }
 
-    async def _run_agent_react(self, task, alert: dict[str, Any], selected_action: str, execution_context: dict[str, Any]) -> dict[str, Any]:
-        try:
-            agent_result = await self.agent_service.run_alert(alert, selected_action, execution_context=execution_context)
-        except Exception as exc:
-            self.audit_service.record("agent_react_task_failed", "Agent ReAct runtime failed.", {"error": str(exc)})
-            return self._finalize_failure(task, selected_action, f"主 Agent 执行失败：{exc}")
-
+    def _finish_agent_result(self, task, selected_action: str, agent_result: dict[str, Any], run_log_ref: RunLogRef | dict[str, Any] | None) -> dict[str, Any]:
+        self._record_agent_result(run_log_ref, agent_result)
         if agent_result.get("approval_pending"):
             pending_payload = dict(agent_result)
             task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
-            return {
+            result = {
                 "action": selected_action,
                 "success": False,
                 "task_id": task.task_id if task else "",
@@ -183,12 +191,29 @@ class AlertTaskRunnerService:
                 "task": task,
                 "error": "任务等待技能审批。",
             }
+            self._log_event(run_log_ref, "task_finished", "任务等待技能审批", result, level="warn")
+            return result
 
         if self._agent_result_is_success(agent_result, selected_action):
-            return self._finalize_success(task, selected_action, agent_result)
-        return self._finalize_failure(task, selected_action, self._agent_result_failure_reason(agent_result, selected_action), agent_result)
+            result = self._finalize_success(task, selected_action, agent_result)
+            self._log_event(run_log_ref, "task_finished", "任务成功完成", {"success": True, "result": result})
+            return result
+        error = self._agent_result_failure_reason(agent_result, selected_action)
+        result = self._finalize_failure(task, selected_action, error, agent_result)
+        self._log_event(run_log_ref, "task_finished", "任务未完成", {"success": False, "error": error, "result": result}, level="error")
+        return result
 
-    async def _run_workflow_or_fallback(self, task, alert: dict[str, Any], selected_action: str, execution_context: dict[str, Any]) -> dict[str, Any]:
+    async def _run_agent_react(self, task, alert: dict[str, Any], selected_action: str, execution_context: dict[str, Any], run_log_ref: RunLogRef | dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            agent_result = await self.agent_service.run_alert(alert, selected_action, execution_context=execution_context)
+        except Exception as exc:
+            self.audit_service.record("agent_react_task_failed", "Agent ReAct runtime failed.", {"error": str(exc)})
+            self._log_event(run_log_ref, "agent_exception", "主 Agent 执行异常", {"error": str(exc)}, level="error")
+            return self._finalize_failure(task, selected_action, f"主 Agent 执行失败：{exc}")
+
+        return self._finish_agent_result(task, selected_action, agent_result, run_log_ref)
+
+    async def _run_workflow_or_fallback(self, task, alert: dict[str, Any], selected_action: str, execution_context: dict[str, Any], run_log_ref: RunLogRef | dict[str, Any] | None = None) -> dict[str, Any]:
         if selected_action not in {"triage_close", "triage_dispose"}:
             return self._finalize_failure(task, selected_action, "当前动作不支持工作流执行。")
         if not self.agent_service.is_configured():
@@ -201,24 +226,12 @@ class AlertTaskRunnerService:
                 agent_result = await self.agent_service.run_alert(alert, selected_action, execution_context=execution_context)
             except Exception as exc:
                 self.audit_service.record("agent_task_failed", f"Agent runtime failed during {selected_action}.", {"error": str(exc)})
+                self._log_event(run_log_ref, "agent_exception", "主 Agent 执行异常", {"error": str(exc)}, level="error")
                 return self._finalize_failure(task, selected_action, f"主 Agent 执行失败：{exc}")
-            if agent_result.get("approval_pending"):
-                pending_payload = dict(agent_result)
-                task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
-                return {
-                    "action": selected_action,
-                    "success": False,
-                    "task_id": task.task_id if task else "",
-                    "event_ids": task.event_ids if task else "",
-                    "data": pending_payload,
-                    "task": task,
-                    "error": "任务等待技能审批。",
-                }
-            if self._agent_result_is_success(agent_result, selected_action):
-                return self._finalize_success(task, selected_action, agent_result)
-            return self._finalize_failure(task, selected_action, self._agent_result_failure_reason(agent_result, selected_action), agent_result)
+            return self._finish_agent_result(task, selected_action, agent_result, run_log_ref)
         except Exception as exc:
             self.audit_service.record("agent_workflow_task_failed", f"Workflow failed during {selected_action}.", {"error": str(exc)})
+            self._log_event(run_log_ref, "workflow_exception", "Workflow 加载异常", {"error": str(exc)}, level="error")
             return self._finalize_failure(task, selected_action, f"Workflow 加载失败：{exc}")
 
         guided_alert = dict(alert)
@@ -233,24 +246,10 @@ class AlertTaskRunnerService:
             )
         except Exception as exc:
             self.audit_service.record("agent_workflow_task_failed", f"Guided workflow failed during {selected_action}.", {"error": str(exc)})
+            self._log_event(run_log_ref, "agent_exception", "主 Agent 引导式 Workflow 执行异常", {"error": str(exc)}, level="error")
             return self._finalize_failure(task, selected_action, f"主 Agent 引导式 Workflow 执行失败：{exc}")
 
-        if agent_result.get("approval_pending"):
-            pending_payload = dict(agent_result)
-            task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
-            return {
-                "action": selected_action,
-                "success": False,
-                "task_id": task.task_id if task else "",
-                "event_ids": task.event_ids if task else "",
-                "data": pending_payload,
-                "task": task,
-                "error": "任务等待技能审批。",
-            }
-
-        if self._agent_result_is_success(agent_result, selected_action):
-            return self._finalize_success(task, selected_action, agent_result)
-        return self._finalize_failure(task, selected_action, self._agent_result_failure_reason(agent_result, selected_action), agent_result)
+        return self._finish_agent_result(task, selected_action, agent_result, run_log_ref)
 
     async def run_task(self, task, action: str | None = None, execution_entry: str = "manual_alert") -> dict[str, Any]:
         alert = {}
@@ -293,15 +292,29 @@ class AlertTaskRunnerService:
             scope_type="alert_task",
             scope_ref=task.task_id,
         )
+        run_log_ref = None
+        if self.run_log_service is not None:
+            run_log_ref = self.run_log_service.start_run(
+                task_id=task.task_id,
+                event_ids=task.event_ids,
+                alert_data=alert,
+                selected_action=selected_action,
+                execution_entry=execution_entry,
+                task_title=task.title,
+            )
+            execution_context["run_log_ref"] = run_log_ref.to_dict()
+            self._log_event(run_log_ref, "task_running", "任务进入运行态", {"task": task, "execution_context": execution_context})
 
         agent_available, _agent_error = self.agent_service.is_available()
         if not agent_available:
+            self._log_event(run_log_ref, "task_finished", "Agent Runtime 不可用", {"error": _agent_error or "unknown"}, level="error")
             return self._finalize_failure(task, selected_action, f"当前 Agent Runtime 不可用：{_agent_error or 'unknown'}")
         if task.workflow_name == "agent_react":
             if not self.agent_service.is_configured():
+                self._log_event(run_log_ref, "task_finished", "主 Agent 未配置", {}, level="error")
                 return self._finalize_failure(task, selected_action, "当前未完成系统主 Agent 配置。")
-            return await self._run_agent_react(task, alert, selected_action, execution_context)
-        return await self._run_workflow_or_fallback(task, alert, selected_action, execution_context)
+            return await self._run_agent_react(task, alert, selected_action, execution_context, run_log_ref)
+        return await self._run_workflow_or_fallback(task, alert, selected_action, execution_context, run_log_ref)
 
     def finalize_after_approval(self, task_id: str, agent_result: dict[str, Any]) -> dict[str, Any]:
         task = self.dispatch_service.get_task(task_id)

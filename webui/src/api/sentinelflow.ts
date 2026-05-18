@@ -218,6 +218,7 @@ export type RuntimeSettingsResponse = {
     agent_enabled: boolean
     auto_execute_enabled: boolean
     weekly_alert_cleanup_enabled: boolean
+    run_log_retention_days: number
   }
   llm: {
     api_base_url: string
@@ -836,6 +837,7 @@ export async function saveRuntimeSettings(payload: {
   llmTemperature: string
   llmTimeout: string
   weeklyAlertCleanupEnabled: boolean
+  runLogRetentionDays?: string
   alertSourceEnabled?: boolean
   alertSourceType?: string
   alertSourceUrl?: string
@@ -851,6 +853,56 @@ export async function saveRuntimeSettings(payload: {
   alertSources?: Array<Record<string, unknown>>
 }) {
   return postJson<RuntimeSettingsResponse>('/api/sentinelflow/runtime/settings', payload)
+}
+
+export type RunLogDateSummary = {
+  date: string
+  count: number
+}
+
+export type RunLogAlertSummary = {
+  date: string
+  log_id: string
+  event_ids: string
+  task_id: string
+  title: string
+  alert_name: string
+  alert_time: string
+  source_name: string
+  event_count: number
+  updated_at: string
+}
+
+export type RunLogEvent = {
+  ts: string
+  level: string
+  phase: string
+  title: string
+  metadata?: Record<string, unknown>
+  data: unknown
+}
+
+export type RunLogDetail = {
+  date: string
+  log_id: string
+  metadata?: Record<string, unknown>
+  events: RunLogEvent[]
+}
+
+export async function fetchRunLogDates(): Promise<{ retention_days: number; dates: RunLogDateSummary[] }> {
+  return getJson('/api/sentinelflow/runtime/run-logs')
+}
+
+export async function saveRunLogSettings(retentionDays: number): Promise<{ retention_days: number; dates: RunLogDateSummary[] }> {
+  return postJson('/api/sentinelflow/runtime/run-logs/settings', { retentionDays })
+}
+
+export async function fetchRunLogAlerts(date: string): Promise<{ date: string; alerts: RunLogAlertSummary[] }> {
+  return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts`)
+}
+
+export async function fetchRunLogDetail(date: string, logId: string): Promise<RunLogDetail> {
+  return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts/${encodeURIComponent(logId)}`)
 }
 
 export async function resetRuntimeSettings() {

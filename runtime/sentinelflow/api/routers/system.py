@@ -5,7 +5,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException
 from sentinelflow.api.schemas import RagConfigRequest, RuntimeConfigRequest, AlertSourceParserGenerateRequest, AlertSourceParserPreviewRequest
 from sentinelflow.config.runtime import _normalize_config, load_runtime_config, read_persisted_runtime_config, reset_runtime_config, save_runtime_config
-from sentinelflow.api.deps import agent_service, branding, audit_service, polling_service, alert_parser_generator, _serialize, auto_execution_service, PROJECT_ROOT
+from sentinelflow.api.deps import agent_service, branding, audit_service, polling_service, alert_parser_generator, _serialize, auto_execution_service, agent_run_log_service, PROJECT_ROOT
 from sentinelflow.alerts.client import SOCAlertApiClient
 from sentinelflow.alerts.parser_runtime import parse_jsonish
 from sentinelflow.api.utils import VISIBLE_RUNTIME_OVERRIDE_KEYS, _mirror_project_file
@@ -79,6 +79,7 @@ def runtime_settings() -> dict[str, Any]:
             "agent_enabled": runtime_config.agent_enabled,
             "auto_execute_enabled": runtime_config.auto_execute_enabled,
             "weekly_alert_cleanup_enabled": runtime_config.weekly_alert_cleanup_enabled,
+            "run_log_retention_days": runtime_config.run_log_retention_days,
         },
         "llm": {
             "api_base_url": runtime_config.llm_api_base_url,
@@ -135,6 +136,36 @@ def reset_settings() -> dict[str, Any]:
     polling_service.refresh_schedule()
     auto_execution_service.apply_persisted_state()
     return runtime_settings()
+
+
+@router.get("/runtime/run-logs")
+def list_run_log_dates() -> dict[str, Any]:
+    return {
+        "retention_days": agent_run_log_service.retention_days(),
+        "dates": agent_run_log_service.list_dates(),
+    }
+
+
+@router.post("/runtime/run-logs/settings")
+def save_run_log_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    retention_days = agent_run_log_service.set_retention_days(int(payload.get("retentionDays") or payload.get("retention_days") or 1))
+    return {
+        "retention_days": retention_days,
+        "dates": agent_run_log_service.list_dates(),
+    }
+
+
+@router.get("/runtime/run-logs/{log_date}/alerts")
+def list_run_log_alerts(log_date: str) -> dict[str, Any]:
+    return {
+        "date": log_date,
+        "alerts": agent_run_log_service.list_alerts(log_date),
+    }
+
+
+@router.get("/runtime/run-logs/{log_date}/alerts/{log_id}")
+def read_run_log(log_date: str, log_id: str) -> dict[str, Any]:
+    return agent_run_log_service.read_log(log_date, log_id)
 
 
 @router.post("/runtime/settings/alert-source/test-fetch")

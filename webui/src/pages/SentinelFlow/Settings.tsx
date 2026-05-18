@@ -1,15 +1,20 @@
 import { useEffect, useState, useRef, type ChangeEvent } from 'react'
 import { Bug, RotateCcw, Save, Settings as SettingsIcon, X } from 'lucide-react'
 import {
-  fetchAllPollAlerts,
   fetchHealth,
+  fetchRunLogAlerts,
+  fetchRunLogDates,
+  fetchRunLogDetail,
   fetchRuntimeSettings,
   generateAlertParser,
   resetRuntimeSettings,
+  saveRunLogSettings,
   saveRuntimeSettings,
   testAlertParser,
   testAlertSourceFetch,
-  type AlertTask,
+  type RunLogAlertSummary,
+  type RunLogDateSummary,
+  type RunLogDetail,
   type RuntimeSettingsResponse,
 } from '@/api/sentinelflow'
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
@@ -34,6 +39,7 @@ type SettingsDraft = {
   llmTemperature: string
   llmTimeout: string
   weeklyAlertCleanupEnabled: boolean
+  runLogRetentionDays: string
   alertSourceEnabled: boolean
   alertSourceType: string
   alertSourceUrl: string
@@ -156,6 +162,7 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
     llmTemperature: String(settings.llm.temperature),
     llmTimeout: String(settings.llm.timeout),
     weeklyAlertCleanupEnabled: settings.runtime.weekly_alert_cleanup_enabled,
+    runLogRetentionDays: String(settings.runtime.run_log_retention_days ?? 1),
     alertSourceEnabled: selectedSource.enabled,
     alertSourceType: selectedSource.type,
     alertSourceUrl: selectedSource.url,
@@ -175,85 +182,16 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return []
-  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
-}
-
-function buildDetailedRuntimeLog(tasks: AlertTask[]) {
-  const orderedTasks = [...tasks].sort((left, right) => {
-    const leftTime = Date.parse(String(left.alert_time ?? '').replace(' ', 'T'))
-    const rightTime = Date.parse(String(right.alert_time ?? '').replace(' ', 'T'))
-    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime)
-  })
-
-  return {
-    generated_at: new Date().toISOString(),
-    source: 'alert_tasks.last_result_data',
-    scope: '当前任务库中已持久化的原始 Agent/Skill 执行数据',
-    task_count: orderedTasks.length,
-    tasks: orderedTasks.map((task) => {
-      const result = asRecord(task.last_result_data)
-      const workerResults = asRecordArray(result.worker_results)
-      const workflowRuns = asRecordArray(result.workflow_runs)
-      return {
-        task: {
-          task_id: task.task_id,
-          event_ids: task.event_ids,
-          source_id: task.source_id,
-          source_name: task.source_name,
-          title: task.title,
-          status: task.status,
-          retry_count: task.retry_count,
-          alert_time: task.alert_time,
-          last_action: task.last_action,
-          last_result_success: task.last_result_success,
-          last_result_error: task.last_result_error,
-        },
-        raw_alert_payload: task.payload,
-        primary_agent: {
-          agent_name: result.agent_name,
-          primary_agent: result.primary_agent,
-          execution_mode: result.execution_mode,
-          final_response: result.final_response,
-          messages: result.messages,
-          tool_calls: result.tool_calls,
-          tool_calls_summary: result.tool_calls_summary,
-          structured_judgment: result.structured_judgment,
-          final_judgment_synthesis: result.final_judgment_synthesis,
-        },
-        workers: workerResults.map((worker) => ({
-          worker: worker.worker ?? worker.worker_agent,
-          success: worker.success,
-          error: worker.error,
-          task_prompt: worker.task_prompt,
-          final_response: worker.final_response,
-          messages: worker.messages,
-          tool_calls: worker.tool_calls,
-          tool_calls_summary: worker.tool_calls_summary,
-          context_manifest: worker.context_manifest,
-        })),
-        workflows: workflowRuns,
-        skill_and_action_records: {
-          primary_action_steps: result.primary_action_steps,
-          aggregated_action_steps: result.aggregated_action_steps,
-          aggregated_actions: result.aggregated_actions,
-          aggregated_closure_steps: result.aggregated_closure_steps,
-          effective_closure_step: result.effective_closure_step,
-          action_steps: result.action_steps,
-          closure_step: result.closure_step,
-          closure_result: result.closure_result,
-        },
-        execution_trace: result.execution_trace,
-        final_facts: result.final_facts,
-        raw_result_data: result,
-      }
-    }),
+function shortEventData(value: unknown): string {
+  if (typeof value === 'string') return value.length > 160 ? `${value.slice(0, 160)}...` : value
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    const hit = [record.summary, record.content, record.final_response, record.error, record.title].find(
+      (item) => typeof item === 'string' && item.trim(),
+    )
+    if (typeof hit === 'string') return hit.length > 160 ? `${hit.slice(0, 160)}...` : hit
   }
+  return ''
 }
 
 export default function SentinelFlowSettingsPage() {
@@ -275,6 +213,7 @@ export default function SentinelFlowSettingsPage() {
       llmTemperature: '0',
       llmTimeout: '60',
       weeklyAlertCleanupEnabled: false,
+      runLogRetentionDays: '1',
       alertSourceEnabled: false,
       alertSourceType: 'api',
       alertSourceUrl: '',
@@ -308,7 +247,12 @@ export default function SentinelFlowSettingsPage() {
   const [debugLogOpen, setDebugLogOpen] = useState(false)
   const [debugLogLoading, setDebugLogLoading] = useState(false)
   const [debugLogError, setDebugLogError] = useState<string | null>(null)
-  const [debugLogData, setDebugLogData] = useState<unknown>(null)
+  const [debugLogDates, setDebugLogDates] = useState<RunLogDateSummary[]>([])
+  const [debugLogAlerts, setDebugLogAlerts] = useState<RunLogAlertSummary[]>([])
+  const [debugLogDetail, setDebugLogDetail] = useState<RunLogDetail | null>(null)
+  const [selectedDebugDate, setSelectedDebugDate] = useState('')
+  const [selectedDebugLogId, setSelectedDebugLogId] = useState('')
+  const [savingRunLogRetention, setSavingRunLogRetention] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const fetchPreviewStr = fetchPreview ? JSON.stringify(fetchPreview, null, 2) : ''
@@ -599,13 +543,84 @@ export default function SentinelFlowSettingsPage() {
     setDebugLogLoading(true)
     setDebugLogError(null)
     try {
-      const data = await fetchAllPollAlerts()
-      setDebugLogData(buildDetailedRuntimeLog(data.tasks ?? []))
+      const data = await fetchRunLogDates()
+      setDebugLogDates(data.dates ?? [])
+      updateDraft('runLogRetentionDays', String(data.retention_days ?? 1))
+      const nextDate = selectedDebugDate || data.dates?.[0]?.date || ''
+      setSelectedDebugDate(nextDate)
+      if (nextDate) {
+        const alertData = await fetchRunLogAlerts(nextDate)
+        setDebugLogAlerts(alertData.alerts ?? [])
+        const nextLogId = selectedDebugLogId || alertData.alerts?.[0]?.log_id || ''
+        setSelectedDebugLogId(nextLogId)
+        if (nextLogId) {
+          setDebugLogDetail(await fetchRunLogDetail(nextDate, nextLogId))
+        } else {
+          setDebugLogDetail(null)
+        }
+      } else {
+        setDebugLogAlerts([])
+        setDebugLogDetail(null)
+      }
     } catch (error) {
-      setDebugLogData(null)
+      setDebugLogDetail(null)
       setDebugLogError(error instanceof Error ? error.message : '读取详细运行日志失败')
     } finally {
       setDebugLogLoading(false)
+    }
+  }
+
+  async function selectDebugDate(date: string) {
+    setSelectedDebugDate(date)
+    setSelectedDebugLogId('')
+    setDebugLogDetail(null)
+    setDebugLogLoading(true)
+    setDebugLogError(null)
+    try {
+      const data = await fetchRunLogAlerts(date)
+      setDebugLogAlerts(data.alerts ?? [])
+      const firstLogId = data.alerts?.[0]?.log_id || ''
+      setSelectedDebugLogId(firstLogId)
+      if (firstLogId) setDebugLogDetail(await fetchRunLogDetail(date, firstLogId))
+    } catch (error) {
+      setDebugLogError(error instanceof Error ? error.message : '读取告警日志列表失败')
+    } finally {
+      setDebugLogLoading(false)
+    }
+  }
+
+  async function selectDebugLog(date: string, logId: string) {
+    setSelectedDebugLogId(logId)
+    setDebugLogDetail(null)
+    setDebugLogLoading(true)
+    setDebugLogError(null)
+    try {
+      setDebugLogDetail(await fetchRunLogDetail(date, logId))
+    } catch (error) {
+      setDebugLogError(error instanceof Error ? error.message : '读取告警运行日志失败')
+    } finally {
+      setDebugLogLoading(false)
+    }
+  }
+
+  async function handleSaveRunLogRetention() {
+    const days = Math.max(Number.parseInt(draft.runLogRetentionDays, 10) || 1, 1)
+    setSavingRunLogRetention(true)
+    setDebugLogError(null)
+    try {
+      const data = await saveRunLogSettings(days)
+      updateDraft('runLogRetentionDays', String(data.retention_days ?? days))
+      setDebugLogDates(data.dates ?? [])
+      if (selectedDebugDate && !(data.dates ?? []).some((item) => item.date === selectedDebugDate)) {
+        setSelectedDebugDate('')
+        setSelectedDebugLogId('')
+        setDebugLogAlerts([])
+        setDebugLogDetail(null)
+      }
+    } catch (error) {
+      setDebugLogError(error instanceof Error ? error.message : '保存日志保留天数失败')
+    } finally {
+      setSavingRunLogRetention(false)
     }
   }
 
@@ -881,7 +896,7 @@ export default function SentinelFlowSettingsPage() {
                   详细运行日志
                 </div>
                 <p className="mt-1 text-sm text-slate-400">
-                  展示当前任务库已持久化的原始 Agent 消息、工具调用、Worker 结果、Workflow、执行轨迹和最终收敛事实。
+                  按日期和告警查看从接收告警到结束的 Agent 消息、工具调用、Worker、Workflow、执行轨迹和最终结果。
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -895,12 +910,95 @@ export default function SentinelFlowSettingsPage() {
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-5">
               {debugLogError ? <div className="mb-4 rounded-xl border border-red-800 bg-red-950/60 p-4 text-sm text-red-100">{debugLogError}</div> : null}
-              {debugLogLoading && !debugLogData ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">正在读取详细运行日志...</div> : null}
-              {debugLogData ? (
-                <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-slate-100">
-                  <JsonPreview value={debugLogData} />
+              <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
+                <label className="flex flex-col gap-1 text-sm text-slate-300">
+                  <span>日志保留天数</span>
+                  <input
+                    className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                    value={draft.runLogRetentionDays || '1'}
+                    onChange={(event) => updateDraft('runLogRetentionDays', event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                  onClick={() => void handleSaveRunLogRetention()}
+                  disabled={savingRunLogRetention}
+                >
+                  {savingRunLogRetention ? '保存中...' : '保存保留策略'}
+                </button>
+                <div className="text-xs leading-5 text-slate-500">
+                  默认保留 1 天。保留多天时，下方按日期分组；每个日期内按告警选择完整运行日志。
                 </div>
-              ) : null}
+              </div>
+              {debugLogLoading && !debugLogDetail ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">正在读取详细运行日志...</div> : null}
+              <div className="grid min-h-[560px] gap-4 lg:grid-cols-[180px_320px_minmax(0,1fr)]">
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">日期</div>
+                  <div className="space-y-2">
+                    {debugLogDates.map((item) => (
+                      <button
+                        key={item.date}
+                        type="button"
+                        className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${item.date === selectedDebugDate ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+                        onClick={() => void selectDebugDate(item.date)}
+                      >
+                        <div className="font-medium">{item.date}</div>
+                        <div className="text-xs text-slate-500">{item.count} 条告警</div>
+                      </button>
+                    ))}
+                    {!debugLogDates.length ? <div className="text-sm text-slate-500">暂无日志</div> : null}
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">告警</div>
+                  <div className="max-h-[520px] space-y-2 overflow-auto pr-1">
+                    {debugLogAlerts.map((alert) => (
+                      <button
+                        key={alert.log_id}
+                        type="button"
+                        className={`w-full rounded-lg px-3 py-2 text-left transition-colors ${alert.log_id === selectedDebugLogId ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
+                        onClick={() => void selectDebugLog(selectedDebugDate, alert.log_id)}
+                      >
+                        <div className="text-sm font-medium">{alert.event_ids || alert.task_id || alert.log_id}</div>
+                        <div className="mt-1 line-clamp-2 text-xs text-slate-400">{alert.title}</div>
+                        <div className="mt-1 text-xs text-slate-500">{alert.event_count} 个事件 · {alert.updated_at}</div>
+                      </button>
+                    ))}
+                    {selectedDebugDate && !debugLogAlerts.length ? <div className="text-sm text-slate-500">该日期暂无告警日志</div> : null}
+                  </div>
+                </div>
+                <div className="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-3">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">模型数据流转记录</div>
+                      <div className="mt-1 text-sm text-slate-300">{debugLogDetail?.metadata?.title as string || selectedDebugLogId || '未选择告警'}</div>
+                    </div>
+                    <div className="text-xs text-slate-500">{debugLogDetail?.events?.length ?? 0} 个事件</div>
+                  </div>
+                  <div className="max-h-[520px] space-y-3 overflow-auto pr-1">
+                    {debugLogDetail?.events?.map((event, index) => (
+                      <details key={`${event.ts}-${index}`} className="rounded-lg border border-slate-800 bg-slate-950 p-3" open={index < 3}>
+                        <summary className="cursor-pointer list-none">
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <span>#{index + 1}</span>
+                            <span>{event.ts}</span>
+                            <span className="rounded-full bg-slate-800 px-2 py-0.5 text-slate-300">{event.phase}</span>
+                            <span className={event.level === 'error' ? 'text-red-300' : event.level === 'warn' ? 'text-amber-300' : 'text-slate-400'}>{event.level}</span>
+                          </div>
+                          <div className="mt-1 text-sm font-medium text-slate-100">{event.title}</div>
+                          {shortEventData(event.data) ? <div className="mt-1 text-xs text-slate-400">{shortEventData(event.data)}</div> : null}
+                        </summary>
+                        <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900 p-3 text-slate-100">
+                          <JsonPreview value={event} />
+                        </div>
+                      </details>
+                    ))}
+                    {debugLogDetail && !debugLogDetail.events.length ? <div className="text-sm text-slate-500">该告警日志为空</div> : null}
+                    {!debugLogDetail && !debugLogLoading ? <div className="text-sm text-slate-500">请选择左侧日期和告警。</div> : null}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -21,6 +21,7 @@ from sentinelflow.config.branding import load_branding_config
 from sentinelflow.config.runtime import load_runtime_config
 from sentinelflow.services.audit_service import AuditService
 from sentinelflow.services.auto_execution_service import AlertAutoExecutionService
+from sentinelflow.services.agent_run_log_service import AgentRunLogService
 from sentinelflow.services.dispatch_service import AlertDispatchService
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 from sentinelflow.services.task_runner_service import AlertTaskRunnerService
@@ -43,6 +44,7 @@ branding = load_branding_config()
 # ── Service singletons ───────────────────────────────────────────────────────
 skill_runtime = SentinelFlowSkillRuntime(SKILL_ROOT)
 audit_service = AuditService()
+agent_run_log_service = AgentRunLogService()
 skill_approval_service = SkillApprovalService()
 agent_service = SentinelFlowAgentService(
     project_root=PROJECT_ROOT,
@@ -72,6 +74,7 @@ task_runner_service = AlertTaskRunnerService(
     agent_service=agent_service,
     agent_workflow_runner=agent_workflow_runner,
     workflow_root=WORKFLOW_ROOT,
+    run_log_service=agent_run_log_service,
 )
 auto_execution_service = AlertAutoExecutionService(
     dispatch_service=dispatch_service,
@@ -87,6 +90,7 @@ alert_parser_generator = AlertParserGenerator()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    agent_run_log_service.cleanup()
     await polling_service.start()
     await auto_execution_service.start()
     await weekly_alert_cleanup_service.start()
