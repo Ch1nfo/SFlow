@@ -252,6 +252,7 @@ export default function SentinelFlowSettingsPage() {
   const [debugLogDetail, setDebugLogDetail] = useState<RunLogDetail | null>(null)
   const [selectedDebugDate, setSelectedDebugDate] = useState('')
   const [selectedDebugLogId, setSelectedDebugLogId] = useState('')
+  const [activeRunLogRetentionDays, setActiveRunLogRetentionDays] = useState<number>(1)
   const [savingRunLogRetention, setSavingRunLogRetention] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -545,6 +546,7 @@ export default function SentinelFlowSettingsPage() {
     try {
       const data = await fetchRunLogDates()
       setDebugLogDates(data.dates ?? [])
+      setActiveRunLogRetentionDays(data.retention_days ?? 1)
       updateDraft('runLogRetentionDays', String(data.retention_days ?? 1))
       const nextDate = selectedDebugDate || data.dates?.[0]?.date || ''
       setSelectedDebugDate(nextDate)
@@ -609,6 +611,7 @@ export default function SentinelFlowSettingsPage() {
     setDebugLogError(null)
     try {
       const data = await saveRunLogSettings(days)
+      setActiveRunLogRetentionDays(data.retention_days ?? days)
       updateDraft('runLogRetentionDays', String(data.retention_days ?? days))
       setDebugLogDates(data.dates ?? [])
       if (selectedDebugDate && !(data.dates ?? []).some((item) => item.date === selectedDebugDate)) {
@@ -915,7 +918,9 @@ export default function SentinelFlowSettingsPage() {
                   <span>日志保留天数</span>
                   <input
                     className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-                    value={draft.runLogRetentionDays || '1'}
+                    inputMode="numeric"
+                    placeholder="1"
+                    value={draft.runLogRetentionDays}
                     onChange={(event) => updateDraft('runLogRetentionDays', event.target.value)}
                   />
                 </label>
@@ -928,7 +933,7 @@ export default function SentinelFlowSettingsPage() {
                   {savingRunLogRetention ? '保存中...' : '保存保留策略'}
                 </button>
                 <div className="text-xs leading-5 text-slate-500">
-                  默认保留 1 天。保留多天时，下方按日期分组；每个日期内按告警选择完整运行日志。
+                  当前生效：保留 {activeRunLogRetentionDays} 天。默认保留 1 天。保留多天时，下方按日期分组；每个日期内按告警选择完整运行日志。
                 </div>
               </div>
               {debugLogLoading && !debugLogDetail ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">正在读取详细运行日志...</div> : null}
