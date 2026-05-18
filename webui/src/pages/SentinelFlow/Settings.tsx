@@ -290,6 +290,15 @@ export default function SentinelFlowSettingsPage() {
     writeSessionValue(SETTINGS_DRAFT_KEY, draft)
   }, [draft])
 
+  useEffect(() => {
+    if (!debugLogOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previousOverflow
+    }
+  }, [debugLogOpen])
+
   function updateSelectedSource(current: SettingsDraft, updates: Partial<AlertSourceDraft>): SettingsDraft {
     const sourceId = current.selectedSourceId || current.alertSources[0]?.id || 'default'
     return {
@@ -890,8 +899,8 @@ export default function SentinelFlowSettingsPage() {
         </button>
       </div>
       {debugLogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="flex max-h-[88vh] w-full max-w-6xl flex-col rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-slate-950/60 p-4 overscroll-contain">
+          <div className="flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-4">
               <div>
                 <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-300">
