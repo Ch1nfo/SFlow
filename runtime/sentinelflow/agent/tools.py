@@ -107,6 +107,9 @@ def build_agent_tools(
             )
             return None, payload
 
+    def _has_input_schema(skill: Any) -> bool:
+        return bool(getattr(getattr(skill, "spec", None), "input_schema", {}) or {})
+
     def _arguments_fingerprint(arguments: dict[str, Any] | None) -> str:
         return approval_service.fingerprint_arguments(arguments)
 
@@ -266,13 +269,14 @@ def build_agent_tools(
                     error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
                     include_invalid_inputs=True,
                 )
-            validation_payload = _input_validation_payload(
-                skill_name=skill_name,
-                arguments=normalized_arguments,
-                state=state,
-            )
-            if validation_payload is not None:
-                return validation_payload
+            if not _has_input_schema(skill):
+                validation_payload = _input_validation_payload(
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    state=state,
+                )
+                if validation_payload is not None:
+                    return validation_payload
             execution_entry = str(state.get("execution_entry", "")).strip()
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments=normalized_arguments, state=state):
@@ -341,13 +345,14 @@ def build_agent_tools(
                     error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
                     include_invalid_inputs=True,
                 )
-            validation_payload = _input_validation_payload(
-                skill_name=skill_name,
-                arguments={},
-                state=state,
-            )
-            if validation_payload is not None:
-                return validation_payload
+            if not _has_input_schema(skill):
+                validation_payload = _input_validation_payload(
+                    skill_name=skill_name,
+                    arguments={},
+                    state=state,
+                )
+                if validation_payload is not None:
+                    return validation_payload
             execution_entry = str(state.get("execution_entry", "")).strip()
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments={}, state=state):
