@@ -116,7 +116,7 @@ def _build_synthesis_node(runtime_config: SentinelFlowRuntimeConfig):
         from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
         from sentinelflow.agent.prompts import SYNTHESIS_SYSTEM_PROMPT
-        from sentinelflow.agent.schemas import AlertJudgment
+        from sentinelflow.agent.schemas import parse_alert_judgment_content, stringify_llm_content
 
         # ── Skip conditions ──────────────────────────────────────────────────
         if state.get("approval_pending"):
@@ -142,11 +142,16 @@ def _build_synthesis_node(runtime_config: SentinelFlowRuntimeConfig):
                 conversation_parts.append(f"\nSkill 返回：{content[:600]}")
 
         synthesis_messages = [
-            SystemMessage(content=SYNTHESIS_SYSTEM_PROMPT),
+            SystemMessage(
+                content=(
+                    f"{SYNTHESIS_SYSTEM_PROMPT}\n\n"
+                    "输出要求：只返回一个 JSON 对象，不要使用 Markdown 代码块或额外说明。"
+                )
+            ),
             HumanMessage(content="\n".join(conversation_parts)),
         ]
 
-        # ── Call structured LLM ──────────────────────────────────────────────
+        # ── Call synthesis LLM ───────────────────────────────────────────────
         try:
             llm = ChatOpenAI(
                 model=runtime_config.llm_model,
@@ -154,12 +159,14 @@ def _build_synthesis_node(runtime_config: SentinelFlowRuntimeConfig):
                 base_url=runtime_config.llm_api_base_url,
                 temperature=0,  # deterministic for schema extraction
                 timeout=runtime_config.llm_timeout,
-            ).with_structured_output(AlertJudgment)
-            result: AlertJudgment = await llm.ainvoke(synthesis_messages)
+            )
+            response = await llm.ainvoke(synthesis_messages)
+            content = stringify_llm_content(getattr(response, "content", response))
+            result = parse_alert_judgment_content(content)
             return {"structured_judgment": result.model_dump()}
         except Exception:
-            LOGGER.warning(
-                "synthesis_node: structured output call failed, "
+            LOGGER.exception(
+                "synthesis_node: synthesis output parsing failed, "
                 "_serialize_alert_result will fall back to text parsing."
             )
             return {"structured_judgment": None}

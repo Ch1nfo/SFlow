@@ -25,7 +25,6 @@ from sentinelflow.agent.text_extractor import (
     TextExtractorMixin,
     clean_model_text as _clean_model_text,
     normalize_markdown_line as _normalize_markdown_line,
-    extract_json_object as _extract_json_object,
 )
 from sentinelflow.config.runtime import load_runtime_config
 from sentinelflow.services.skill_approval_service import SkillApprovalService
@@ -1481,7 +1480,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             from langchain_openai import ChatOpenAI
             from langchain_core.messages import HumanMessage, SystemMessage
             from sentinelflow.agent.prompts import SYNTHESIS_SYSTEM_PROMPT
-            from sentinelflow.agent.schemas import AlertJudgment
+            from sentinelflow.agent.schemas import parse_alert_judgment_content, stringify_llm_content
         except ModuleNotFoundError:
             return None
 
@@ -1493,7 +1492,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 base_url=config.llm_api_base_url,
                 temperature=0,
                 timeout=config.llm_timeout,
-            ).with_structured_output(AlertJudgment)
+            )
 
             final_response = str(graph_result.get("final_response", "")).strip()
             worker_parts: list[str] = []
@@ -1510,10 +1509,17 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 conversation_text += "\n\n子Agent执行结果：\n" + "\n".join(worker_parts)
 
             messages = [
-                SystemMessage(content=SYNTHESIS_SYSTEM_PROMPT),
+                SystemMessage(
+                    content=(
+                        f"{SYNTHESIS_SYSTEM_PROMPT}\n\n"
+                        "输出要求：只返回一个 JSON 对象，不要使用 Markdown 代码块或额外说明。"
+                    )
+                ),
                 HumanMessage(content=conversation_text),
             ]
-            result: AlertJudgment = await llm.ainvoke(messages)
+            response = await llm.ainvoke(messages)
+            content = stringify_llm_content(getattr(response, "content", response))
+            result = parse_alert_judgment_content(content)
             return result.model_dump()
         except Exception:
             LOGGER.exception(

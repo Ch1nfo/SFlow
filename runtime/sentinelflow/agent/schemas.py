@@ -6,9 +6,12 @@ regex/keyword-based text parsing in _serialize_alert_result.
 """
 from __future__ import annotations
 
+from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from sentinelflow.agent.text_extractor import extract_json_object
 
 
 class AlertJudgment(BaseModel):
@@ -36,3 +39,30 @@ class AlertJudgment(BaseModel):
         default="",
         description="已执行的动作摘要，例如：已查询 IP 信息、已执行结单。未执行任何动作时为空字符串",
     )
+
+
+def stringify_llm_content(content: Any) -> str:
+    """Normalize LangChain/OpenAI message content variants into plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if text:
+                    parts.append(str(text))
+            elif item is not None:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return "" if content is None else str(content)
+
+
+def parse_alert_judgment_content(content: str) -> AlertJudgment:
+    """Parse raw or fenced JSON LLM content and validate it as AlertJudgment."""
+    payload = extract_json_object(content)
+    if payload is None:
+        raise ValueError("LLM synthesis response did not contain a JSON object.")
+    return AlertJudgment.model_validate(payload)
