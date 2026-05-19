@@ -400,21 +400,23 @@ class SkillRunAnalyzerMixin:
 
     def _closure_status_value(self, run: dict[str, Any]) -> str:
         payload = run.get("payload", {})
-        arguments = run.get("arguments", {})
+        tool_payload = run.get("tool_payload", {})
         payload = payload if isinstance(payload, dict) else {}
-        arguments = arguments if isinstance(arguments, dict) else {}
-        return str(payload.get("status", arguments.get("status", ""))).strip()
+        tool_payload = tool_payload if isinstance(tool_payload, dict) else {}
+        tool_payload_data = tool_payload.get("data", {})
+        tool_payload_data = tool_payload_data if isinstance(tool_payload_data, dict) else {}
+        return str(
+            payload.get("status", tool_payload_data.get("status", tool_payload.get("status", "")))
+        ).strip()
 
     def _is_successful_closure_run(self, run: dict[str, Any]) -> bool:
         if not (self._is_closure_run(run) or self._looks_like_closure_fallback(run)):
             return False
         payload = run.get("payload", {})
-        arguments = run.get("arguments", {})
         tool_success = run.get("tool_success")
         tool_error = run.get("tool_error")
         tool_payload = run.get("tool_payload", {})
         payload = payload if isinstance(payload, dict) else {}
-        arguments = arguments if isinstance(arguments, dict) else {}
         tool_payload = tool_payload if isinstance(tool_payload, dict) else {}
         if bool(tool_error):
             return False
@@ -425,7 +427,7 @@ class SkillRunAnalyzerMixin:
         status_value = self._closure_status_value(run)
         if status_value in self._VALID_EXEC_CLOSURE_STATUSES:
             return True
-        result_value = payload.get("result", arguments.get("result"))
+        result_value = payload.get("result")
         success_value = payload.get("success", tool_success)
         if isinstance(success_value, bool):
             return success_value
@@ -444,7 +446,7 @@ class SkillRunAnalyzerMixin:
         if isinstance(tool_success, bool):
             return tool_success
         if bool(run.get("inferred_from_summary")):
-            return not bool(tool_error) and not bool(payload.get("error")) and not bool(tool_payload.get("error"))
+            return False
         return False
 
     def _is_enrichment_run(self, run: dict[str, Any]) -> bool:
