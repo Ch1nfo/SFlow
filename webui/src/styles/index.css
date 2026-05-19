@@ -531,7 +531,7 @@
   }
 
   .sentinelflow-code-block {
-    @apply overflow-x-auto rounded-2xl bg-slate-900 p-4 text-xs leading-6 text-slate-100;
+    @apply block w-full min-w-0 max-w-full overflow-x-auto rounded-2xl bg-slate-900 p-4 text-xs leading-6 text-slate-100;
   }
 
   .sentinelflow-key-value-list {
@@ -756,7 +756,7 @@
   }
 
   .sentinelflow-chat-bubble-assistant {
-    @apply self-start max-w-none text-slate-900;
+    @apply min-w-0 w-full max-w-full self-start text-slate-900;
   }
 
   .sentinelflow-chat-actions {
@@ -824,7 +824,7 @@
   }
 
   .sentinelflow-detail-disclosure {
-    @apply rounded-xl border border-slate-100 bg-slate-50 px-3 py-2;
+    @apply min-w-0 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2;
   }
 
   .sentinelflow-detail-disclosure summary {

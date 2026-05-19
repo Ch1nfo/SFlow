@@ -12,7 +12,7 @@ export default function JsonPreview({ value }: JsonPreviewProps) {
   const preview = exceedsLimit && !expanded ? `${lines.slice(0, 20).join('\n')}\n...` : text
 
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 w-full space-y-3">
       <pre className="sentinelflow-code-block">{preview}</pre>
       {exceedsLimit ? (
         <button type="button" className="sentinelflow-ghost-button" onClick={() => setExpanded((current) => !current)}>
