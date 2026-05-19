@@ -990,8 +990,8 @@ export default function SentinelFlowSettingsPage() {
         </button>
       </div>
       {debugLogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-slate-950/60 p-4 overscroll-contain">
-          <div className="flex h-[88vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-slate-950/60 p-2 sm:p-3 overscroll-contain">
+          <div className="flex h-[92vh] w-[96vw] max-w-[1600px] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-4">
               <div>
                 <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-300">
