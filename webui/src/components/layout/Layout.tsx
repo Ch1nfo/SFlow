@@ -16,8 +16,9 @@ import {
   Workflow as WorkflowIcon,
 } from 'lucide-react'
 import { brand, withProductName } from '@/config/brand'
-import { fetchAllPollAlerts, type AlertTask, type PollAlertsResponse } from '@/api/sentinelflow'
+import { type AlertTask, type PollAlertsResponse } from '@/api/sentinelflow'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
+import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 
 type NavItem = {
   name: string
@@ -66,6 +67,7 @@ export default function Layout() {
   const [expandedContentVisible, setExpandedContentVisible] = useState(true)
   const [newAlertNotice, setNewAlertNotice] = useState<NewAlertNotice | null>(null)
   const knownTaskIdsRef = useRef<Set<string> | null>(null)
+  const { reload: reloadAllPoll } = useSentinelFlowPollStore('all')
 
   const navigation = useMemo<NavSection[]>(
     () => [
@@ -99,7 +101,8 @@ export default function Layout() {
 
   const refreshAlertNotice = useMemo(
     () => async () => {
-      const result = await fetchAllPollAlerts()
+      const result = await reloadAllPoll({ silent: true })
+      if (!result) return
       const currentTaskIds = new Set((result.tasks ?? []).map((task) => task.task_id).filter(Boolean))
       if (knownTaskIdsRef.current === null) {
         knownTaskIdsRef.current = currentTaskIds
@@ -127,7 +130,7 @@ export default function Layout() {
         setNewAlertNotice({ total, groups, timestamp: new Date().toISOString() })
       }
     },
-    [],
+    [reloadAllPoll],
   )
 
   useSentinelFlowLiveRefresh(refreshAlertNotice, { intervalMs: 5000 })

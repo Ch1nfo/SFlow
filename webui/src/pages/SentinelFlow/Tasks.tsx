@@ -3,7 +3,6 @@ import { ChevronDown, ChevronRight, Clock, ListTodo, RotateCcw, ShieldCheck, XCi
 import {
   decideApproval,
   fetchAlertTaskDetail,
-  fetchAllPollAlerts,
   fetchRuntimeSettings,
   handleAlertAction,
   type ApprovalDecisionResponse,
@@ -19,6 +18,7 @@ import PageHeader from '@/components/common/PageHeader'
 import { withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
+import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalState'
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, publishRuntimeActivity, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
@@ -566,7 +566,7 @@ function ProcessTrace({ trace, traceOwnerId }: { trace: ExecutionTraceItem[]; tr
 }
 
 export default function SentinelFlowTasksPage() {
-  const { data: poll, loading, error, reload: reloadPoll, setData: setPollData } = useSentinelFlowAsyncData(fetchAllPollAlerts, [])
+  const { data: poll, loading, error, reload: reloadPoll } = useSentinelFlowPollStore('all')
   const { data: settings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => {
     const current = readRuntimeActivity()
@@ -692,12 +692,8 @@ export default function SentinelFlowTasksPage() {
   }, [selectedTaskId, finalJudgmentExpanded, toolResultsExpanded, processExpanded, filteredTasks.length, selectedTask?.task_id, selectedTask?.status])
 
   const refreshTasks = useCallback(() => {
-    void fetchAllPollAlerts().then((next) => {
-      setPollData(next)
-    }).catch(() => {
-      // Keep the current list visible when a background refresh fails.
-    })
-  }, [setPollData])
+    void reloadPoll({ silent: true })
+  }, [reloadPoll])
 
   useSentinelFlowLiveRefresh(refreshTasks, {
     intervalMs: autoExecuteEnabled || tasks.some((task) => task.status === 'running') ? 2000 : 5000,
@@ -717,7 +713,7 @@ export default function SentinelFlowTasksPage() {
       }
       setActivity(next)
       publishRuntimeActivity(next)
-      void reloadPoll({ silent: true })
+      void reloadPoll({ force: true, silent: true })
     } finally {
       setRunningAction('')
     }
@@ -737,7 +733,7 @@ export default function SentinelFlowTasksPage() {
       }
       setActivity(next)
       publishRuntimeActivity(next)
-      void reloadPoll({ silent: true })
+      void reloadPoll({ force: true, silent: true })
     } finally {
       setRunningAction('')
     }
@@ -759,7 +755,7 @@ export default function SentinelFlowTasksPage() {
       }
       setActivity(next)
       publishRuntimeActivity(next)
-      void reloadPoll({ silent: true })
+      void reloadPoll({ force: true, silent: true })
     } finally {
       setRunningAction('')
     }
@@ -872,7 +868,7 @@ export default function SentinelFlowTasksPage() {
           <div className="sentinelflow-inline-metrics">
             <span>mode: {settings?.runtime.agent_enabled ? 'Agent' : 'Basic'}</span>
             <span>自动执行: {autoExecuteEnabled ? (autoExecuteRunning ? '自动执行中' : '已开启') : '未开启'}</span>
-            <button type="button" className="sentinelflow-ghost-button" onClick={() => void reloadPoll({ silent: true })}>刷新任务视图</button>
+            <button type="button" className="sentinelflow-ghost-button" onClick={() => void reloadPoll({ force: true, silent: true })}>刷新任务视图</button>
           </div>
         </div>
 

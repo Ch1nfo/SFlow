@@ -3,7 +3,6 @@ import { ChevronDown, ChevronRight, RefreshCw, Siren } from 'lucide-react'
 import {
   decideApproval,
   fetchAlertTaskDetail,
-  fetchPollAlerts,
   handleAlertAction,
   type AlertActionResponse,
   type AlertTask,
@@ -17,6 +16,7 @@ import { withProductName } from '@/config/brand'
 import { publishRuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
+import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
 const ALERT_QUEUE_INITIAL_RENDER_COUNT = 120
@@ -283,15 +283,20 @@ export default function SentinelFlowAlertsPage() {
   const autoExecuteEnabled = Boolean(data?.auto_execute_enabled)
   const autoExecuteRunning = Boolean(data?.auto_execute_running)
   const liveRefreshing = autoExecuteEnabled || actionState.running || (data?.tasks ?? []).some((task) => task.status === 'running')
+  const { reload: reloadPollStore } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: false })
 
-  const loadTasks = useCallback(async (options?: { silent?: boolean }) => {
+  const loadTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
     const silent = options?.silent ?? false
     if (!silent) {
       setLoading(true)
       setError(null)
     }
     try {
-      const result = await fetchPollAlerts(selectedSourceId ?? undefined)
+      const result = await reloadPollStore({ force: options?.force, silent })
+      if (!result) {
+        if (!silent) setLoading(false)
+        return
+      }
       setData(result)
       setError(null)
       const knownSourceIds = (result.alert_sources ?? []).map((source) => source.id)
@@ -310,7 +315,7 @@ export default function SentinelFlowAlertsPage() {
         setLoading(false)
       }
     }
-  }, [selectedSourceId])
+  }, [reloadPollStore, selectedSourceId])
 
   useEffect(() => {
     void loadTasks()
@@ -479,7 +484,7 @@ export default function SentinelFlowAlertsPage() {
         status: isApprovalPending ? 'pending_approval' : result.success ? 'success' : 'failed',
         timestamp: new Date().toISOString(),
       })
-      await loadTasks()
+      await loadTasks({ force: true })
     } catch (runError) {
       setActionNotice({ tone: 'error', text: runError instanceof Error ? runError.message : 'Unknown error' })
       publishRuntimeActivity({
@@ -505,7 +510,7 @@ export default function SentinelFlowAlertsPage() {
       if (!result.success) {
         setActionNotice({ tone: 'error', text: result.error ?? '审批处理失败。' })
       }
-      await loadTasks()
+      await loadTasks({ force: true })
     } catch (approvalError) {
       setActionNotice({ tone: 'error', text: approvalError instanceof Error ? approvalError.message : '审批处理失败。' })
     } finally {

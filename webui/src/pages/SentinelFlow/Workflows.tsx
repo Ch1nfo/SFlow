@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, GitBranch, Plus, Radar, RefreshCw, Save, ShieldCheck, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react'
-import { createWorkflow, deleteWorkflow, fetchAgents, fetchPollAlerts, fetchRuntimeSettings, fetchWorkflowDetail, fetchWorkflows, saveWorkflow, type AgentSummary, type WorkflowDetail } from '@/api/sentinelflow'
+import { createWorkflow, deleteWorkflow, fetchAgents, fetchRuntimeSettings, fetchWorkflowDetail, fetchWorkflows, saveWorkflow, type AgentSummary, type WorkflowDetail } from '@/api/sentinelflow'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import PageHeader from '@/components/common/PageHeader'
 import { brand, withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
+import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 
 type WorkflowCard = {
   id: string
@@ -75,7 +76,7 @@ function draftToPayload(draft: WorkflowDraft) {
 
 export default function SentinelFlowWorkflowsPage() {
   const { data: settings, reload: reloadSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
-  const { data: poll, reload: reloadPoll } = useSentinelFlowAsyncData(fetchPollAlerts, [])
+  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore()
   const { data: workflowsData, reload: reloadWorkflows } = useSentinelFlowAsyncData(fetchWorkflows, [])
   const { data: agentsData, reload: reloadAgents } = useSentinelFlowAsyncData(fetchAgents, [])
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
@@ -197,7 +198,7 @@ export default function SentinelFlowWorkflowsPage() {
   }
 
   const refreshWorkflowRuntime = useCallback(() => {
-    void reloadPoll()
+    void reloadPoll({ silent: true })
   }, [reloadPoll])
 
   useSentinelFlowLiveRefresh(refreshWorkflowRuntime, { intervalMs: 5000 })
@@ -243,7 +244,7 @@ export default function SentinelFlowWorkflowsPage() {
         ? await createWorkflow(payload)
         : await saveWorkflow(editingId ?? draft.name.trim(), payload)
       const workflowResult = result as WorkflowDetail
-      await Promise.all([reloadWorkflows(), reloadPoll(), reloadAgents()])
+      await Promise.all([reloadWorkflows(), reloadPoll({ force: true, silent: true }), reloadAgents()])
       setSelectedWorkflowId(workflowResult.id)
       setDetail(workflowResult)
       setEditingId(null)
@@ -262,7 +263,7 @@ export default function SentinelFlowWorkflowsPage() {
     setDeleting(true)
     try {
       await deleteWorkflow(detail.id)
-      await Promise.all([reloadWorkflows(), reloadPoll()])
+      await Promise.all([reloadWorkflows(), reloadPoll({ force: true, silent: true })])
       const remaining = workflows.filter((item) => item.id !== detail.id)
       setSelectedWorkflowId(remaining[0]?.id ?? null)
       setDetail(null)
@@ -283,7 +284,7 @@ export default function SentinelFlowWorkflowsPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => void Promise.all([reloadSettings(), reloadPoll(), reloadWorkflows(), reloadAgents()])}
+              onClick={() => void Promise.all([reloadSettings(), reloadPoll({ force: true, silent: true }), reloadWorkflows(), reloadAgents()])}
               className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50"
             >
               <RefreshCw className="w-4 h-4" />
