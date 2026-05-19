@@ -185,6 +185,7 @@ class AlertDispatchService:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_source_status ON alert_tasks(source_id, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_status ON alert_tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_event_status ON alert_tasks(event_ids, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_updated_at ON alert_tasks(updated_at)")
 
     def _get_conn(self) -> sqlite3.Connection:
         return open_sqlite_connection(DB_PATH)
@@ -612,6 +613,150 @@ class AlertDispatchService:
             else:
                 rows = conn.execute("SELECT * FROM alert_tasks").fetchall()
             return [self._row_to_task(row) for row in rows]
+
+    def list_task_summaries(
+        self,
+        source_id: str | None = None,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        normalized_limit = max(1, min(int(limit or 500), 1000))
+        normalized_offset = max(0, int(offset or 0))
+        columns = """
+            task_id, event_ids, workflow_name, title, description, source_id, source_name,
+            alert_time, updated_at, status, retry_count, last_action, last_result_success,
+            last_result_error, last_result_data, payload
+        """
+        with self.lock, self._get_conn() as conn:
+            if source_id:
+                total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks WHERE source_id = ?", (source_id,)).fetchone()[0])
+                rows = conn.execute(
+                    f"""
+                    SELECT {columns}
+                    FROM alert_tasks
+                    WHERE source_id = ?
+                    ORDER BY COALESCE(NULLIF(alert_time, ''), updated_at) DESC, updated_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (source_id, normalized_limit, normalized_offset),
+                ).fetchall()
+            else:
+                total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks").fetchone()[0])
+                rows = conn.execute(
+                    f"""
+                    SELECT {columns}
+                    FROM alert_tasks
+                    ORDER BY COALESCE(NULLIF(alert_time, ''), updated_at) DESC, updated_at DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (normalized_limit, normalized_offset),
+                ).fetchall()
+        return [self._row_to_task_summary(row) for row in rows], total
+
+    def task_status_counts(self, source_id: str | None = None) -> dict[str, int]:
+        query = "SELECT status, COUNT(*) AS count FROM alert_tasks"
+        params: tuple[Any, ...] = ()
+        if source_id:
+            query += " WHERE source_id = ?"
+            params = (source_id,)
+        query += " GROUP BY status"
+        with self.lock, self._get_conn() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def _compact_result_data(self, raw: str | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(result, dict):
+            return {}
+        compact: dict[str, Any] = {}
+        for key in (
+            "success",
+            "approval_pending",
+            "approval_request",
+            "final_facts",
+            "disposition",
+            "summary",
+            "workflow_selection",
+            "effective_closure_step",
+            "closure_step",
+        ):
+            if key in result:
+                compact[key] = result.get(key)
+        workflow_runs = result.get("workflow_runs")
+        if isinstance(workflow_runs, list) and workflow_runs:
+            compact["workflow_runs"] = [
+                {
+                    key: item.get(key)
+                    for key in ("workflow_id", "workflow_name", "summary", "reason", "success")
+                    if isinstance(item, dict) and key in item
+                }
+                for item in workflow_runs[:3]
+                if isinstance(item, dict)
+            ]
+        return compact
+
+    def _compact_payload(self, raw: str | None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        compact: dict[str, Any] = {}
+        alert_data = payload.get("alert_data")
+        if isinstance(alert_data, dict):
+            compact_alert = {
+                key: alert_data.get(key)
+                for key in (
+                    "eventIds",
+                    "event_ids",
+                    "alert_name",
+                    "alert_time",
+                    "alert_source",
+                    "alert_source_id",
+                    "alert_source_name",
+                    "sip",
+                    "dip",
+                    "current_judgment",
+                    "history_judgment",
+                )
+                if key in alert_data
+            }
+            compact["alert_data"] = compact_alert
+        workflow_selection = payload.get("workflow_selection")
+        if isinstance(workflow_selection, dict):
+            compact["workflow_selection"] = workflow_selection
+        return compact
+
+    def _row_to_task_summary(self, row) -> dict[str, Any]:
+        result_success = row["last_result_success"]
+        return {
+            "task_id": row["task_id"],
+            "event_ids": row["event_ids"],
+            "workflow_name": row["workflow_name"],
+            "title": row["title"],
+            "description": row["description"],
+            "source_id": row["source_id"] if "source_id" in row.keys() else "default",
+            "source_name": row["source_name"] if "source_name" in row.keys() else "默认告警源",
+            "alert_time": row["alert_time"] if "alert_time" in row.keys() else "",
+            "updated_at": row["updated_at"] if "updated_at" in row.keys() else "",
+            "status": row["status"],
+            "retry_count": row["retry_count"],
+            "last_action": row["last_action"],
+            "last_result_success": bool(result_success) if result_success is not None else None,
+            "last_result_error": row["last_result_error"],
+            "last_result_data": self._compact_result_data(row["last_result_data"] if "last_result_data" in row.keys() else None),
+            "payload": self._compact_payload(row["payload"] if "payload" in row.keys() else None),
+            "summary": True,
+        }
 
     def clear_demo_tasks(self) -> int:
         removed_keys: list[str] = []

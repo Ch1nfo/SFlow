@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Clock, ListTodo, RotateCcw, ShieldCheck, XCircle } from 'lucide-react'
 import {
   decideApproval,
+  fetchAlertTaskDetail,
   fetchAllPollAlerts,
   fetchRuntimeSettings,
   handleAlertAction,
@@ -24,6 +25,8 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 type TaskFilter = 'all' | 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'completed' | 'pending_closure' | 'failed'
 const TASK_FILTER_KEY = 'sentinelflow:tasks:filter'
+const TASK_LIST_INITIAL_RENDER_COUNT = 120
+const TASK_LIST_RENDER_INCREMENT = 120
 
 type ToolInvocationResult = {
   key: string
@@ -575,8 +578,11 @@ export default function SentinelFlowTasksPage() {
   const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [toolResultsExpanded, setToolResultsExpanded] = useState(false)
   const [processExpanded, setProcessExpanded] = useState(false)
+  const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
+  const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_LIST_INITIAL_RENDER_COUNT)
   const taskListPanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
+  const detailRequestSeq = useRef(0)
   const [taskListPanelHeight, setTaskListPanelHeight] = useState<number | null>(null)
   const [taskListMaxHeight, setTaskListMaxHeight] = useState<number | null>(null)
   const tasks = poll?.tasks ?? []
@@ -591,7 +597,7 @@ export default function SentinelFlowTasksPage() {
     return subscribeRuntimeActivity((next) => {
       if (next.type !== 'alert_action') return
       setActivity(next)
-      void reloadPoll()
+      void reloadPoll({ silent: true })
     })
   }, [reloadPoll])
 
@@ -607,6 +613,7 @@ export default function SentinelFlowTasksPage() {
         })
     return [...base].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
   }, [filter, tasks])
+  const visibleFilteredTasks = filteredTasks.slice(0, visibleTaskCount)
 
   useEffect(() => {
     setSelectedTaskId((current) => {
@@ -622,10 +629,32 @@ export default function SentinelFlowTasksPage() {
     setProcessExpanded(false)
   }, [selectedTaskId])
 
-  const selectedTask =
+  useEffect(() => {
+    setVisibleTaskCount(TASK_LIST_INITIAL_RENDER_COUNT)
+  }, [filter])
+
+  const selectedTaskSummary =
     filteredTasks.find((task) => task.task_id === selectedTaskId) ??
     filteredTasks[0] ??
     null
+  const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
+
+  useEffect(() => {
+    const taskId = selectedTaskSummary?.task_id ?? ''
+    const requestSeq = detailRequestSeq.current + 1
+    detailRequestSeq.current = requestSeq
+    setSelectedTaskDetail(null)
+    if (!taskId) return
+    void fetchAlertTaskDetail(taskId)
+      .then((response) => {
+        if (detailRequestSeq.current !== requestSeq) return
+        setSelectedTaskDetail(response.task)
+      })
+      .catch(() => {
+        if (detailRequestSeq.current !== requestSeq) return
+        setSelectedTaskDetail(null)
+      })
+  }, [selectedTaskSummary?.task_id])
 
   useEffect(() => {
     const detailNode = detailPanelRef.current
@@ -688,7 +717,7 @@ export default function SentinelFlowTasksPage() {
       }
       setActivity(next)
       publishRuntimeActivity(next)
-      void reloadPoll()
+      void reloadPoll({ silent: true })
     } finally {
       setRunningAction('')
     }
@@ -708,7 +737,7 @@ export default function SentinelFlowTasksPage() {
       }
       setActivity(next)
       publishRuntimeActivity(next)
-      void reloadPoll()
+      void reloadPoll({ silent: true })
     } finally {
       setRunningAction('')
     }
@@ -730,7 +759,7 @@ export default function SentinelFlowTasksPage() {
       }
       setActivity(next)
       publishRuntimeActivity(next)
-      void reloadPoll()
+      void reloadPoll({ silent: true })
     } finally {
       setRunningAction('')
     }
@@ -843,7 +872,7 @@ export default function SentinelFlowTasksPage() {
           <div className="sentinelflow-inline-metrics">
             <span>mode: {settings?.runtime.agent_enabled ? 'Agent' : 'Basic'}</span>
             <span>自动执行: {autoExecuteEnabled ? (autoExecuteRunning ? '自动执行中' : '已开启') : '未开启'}</span>
-            <button type="button" className="sentinelflow-ghost-button" onClick={() => void reloadPoll()}>刷新任务视图</button>
+            <button type="button" className="sentinelflow-ghost-button" onClick={() => void reloadPoll({ silent: true })}>刷新任务视图</button>
           </div>
         </div>
 
@@ -875,7 +904,7 @@ export default function SentinelFlowTasksPage() {
                 style={taskListMaxHeight ? { maxHeight: `${taskListMaxHeight}px` } : undefined}
               >
                 <div className="sentinelflow-task-list">
-                  {filteredTasks.length ? filteredTasks.map((task) => (
+                  {filteredTasks.length ? visibleFilteredTasks.map((task) => (
                     <button key={task.task_id} type="button" className={`sentinelflow-task-tile${selectedTask?.task_id === task.task_id ? ' sentinelflow-task-tile-active' : ''}`} onClick={() => setSelectedTaskId(task.task_id)}>
                       <div className="sentinelflow-response-row">
                         <strong>{task.title}</strong>
@@ -885,6 +914,15 @@ export default function SentinelFlowTasksPage() {
                       <span>{getTaskFlowLabel(task)}</span>
                     </button>
                   )) : <p className="sentinelflow-muted-text">当前筛选条件下没有任务。</p>}
+                  {visibleFilteredTasks.length < filteredTasks.length ? (
+                    <button
+                      type="button"
+                      className="sentinelflow-ghost-button w-full"
+                      onClick={() => setVisibleTaskCount((current) => current + TASK_LIST_RENDER_INCREMENT)}
+                    >
+                      显示更多任务（{visibleFilteredTasks.length}/{filteredTasks.length}）
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </div>

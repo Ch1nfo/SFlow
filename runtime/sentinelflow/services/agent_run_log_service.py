@@ -140,6 +140,7 @@ class AgentRunLogService:
                 continue
             for file_path in child.glob("*.jsonl"):
                 file_path.unlink(missing_ok=True)
+                self._meta_path(file_path).unlink(missing_ok=True)
             try:
                 child.rmdir()
             except OSError:
@@ -208,6 +209,7 @@ class AgentRunLogService:
             resolved.path.parent.mkdir(parents=True, exist_ok=True)
             with resolved.path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
+            self._update_meta_after_append(resolved, event)
 
     def record_agent_result(self, ref: RunLogRef | dict[str, Any] | None, agent_result: dict[str, Any]) -> None:
         if not isinstance(agent_result, dict):
@@ -262,14 +264,9 @@ class AgentRunLogService:
             return []
         alerts: list[dict[str, Any]] = []
         for file_path in sorted(date_dir.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True):
-            events = self._read_events(file_path, limit=1)
-            first = events[0] if events else {}
-            metadata = first.get("metadata") if isinstance(first.get("metadata"), dict) else {}
-            try:
-                with file_path.open("r", encoding="utf-8") as handle:
-                    event_count = sum(1 for _ in handle)
-            except OSError:
-                event_count = 0
+            meta = self._ensure_meta(file_path)
+            metadata = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else {}
+            event_count = int(meta.get("event_count") or 0)
             alerts.append(
                 {
                     "date": log_date,
@@ -281,20 +278,29 @@ class AgentRunLogService:
                     "alert_time": metadata.get("alert_time", ""),
                     "source_name": metadata.get("source_name", ""),
                     "event_count": event_count,
-                    "updated_at": datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(timespec="seconds"),
+                    "updated_at": str(meta.get("updated_at") or datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(timespec="seconds")),
                 }
             )
         return alerts
 
-    def read_log(self, log_date: str, log_id: str, *, limit: int | None = 500, tail: bool = True) -> dict[str, Any]:
+    def read_log(
+        self,
+        log_date: str,
+        log_id: str,
+        *,
+        limit: int | None = 500,
+        tail: bool = True,
+        offset: int = 0,
+    ) -> dict[str, Any]:
         path = self.root / _safe_name(log_date) / f"{_safe_name(log_id)}.jsonl"
         if not path.is_file():
             return {"date": log_date, "log_id": log_id, "events": []}
         normalized_limit = max(1, min(int(limit or 500), 5000)) if limit is not None else None
-        events, total_events = self._read_events_with_count(path, limit=normalized_limit, tail=tail)
-        first_events = self._read_events(path, limit=1)
-        first = first_events[0] if first_events and isinstance(first_events[0], dict) else {}
-        metadata = first.get("metadata", {}) if isinstance(first.get("metadata"), dict) else {}
+        meta = self._ensure_meta(path)
+        normalized_offset = max(0, int(offset or 0))
+        events = self._read_events_window(path, limit=normalized_limit, tail=tail, offset=normalized_offset)
+        metadata = meta.get("metadata", {}) if isinstance(meta.get("metadata"), dict) else {}
+        total_events = int(meta.get("event_count") or len(events))
         return {
             "date": log_date,
             "log_id": log_id,
@@ -304,6 +310,7 @@ class AgentRunLogService:
             "returned_events": len(events),
             "truncated": total_events > len(events),
             "tail": tail,
+            "offset": normalized_offset,
         }
 
     def _resolve_ref(self, ref: RunLogRef | dict[str, Any] | None) -> RunLogRef | None:
@@ -334,6 +341,110 @@ class AgentRunLogService:
             return []
         return events
 
+    def _meta_path(self, path: Path) -> Path:
+        return path.with_suffix(path.suffix + ".meta.json")
+
+    def _load_meta(self, path: Path) -> dict[str, Any] | None:
+        raw = self._load_meta_unchecked(path)
+        if raw is None:
+            return None
+        try:
+            log_mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        if int(raw.get("log_mtime_ns") or 0) != log_mtime_ns:
+            return None
+        return raw
+
+    def _load_meta_unchecked(self, path: Path) -> dict[str, Any] | None:
+        meta_path = self._meta_path(path)
+        if not meta_path.is_file():
+            return None
+        try:
+            raw = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        return raw
+
+    def _write_meta(self, path: Path, meta: dict[str, Any]) -> None:
+        meta_path = self._meta_path(path)
+        try:
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, default=_json_default), encoding="utf-8")
+        except OSError:
+            return
+
+    def _build_meta(self, path: Path) -> dict[str, Any]:
+        event_count = 0
+        max_seq = 0
+        metadata: dict[str, Any] = {}
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    item = self._parse_event_line(line)
+                    if item is None:
+                        continue
+                    event_count += 1
+                    if not metadata and isinstance(item.get("metadata"), dict):
+                        metadata = item.get("metadata") or {}
+                    candidate = item.get("seq")
+                    if isinstance(candidate, int) and candidate > max_seq:
+                        max_seq = candidate
+        except OSError:
+            event_count = 0
+        try:
+            stat = path.stat()
+            updated_at = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+            log_mtime_ns = stat.st_mtime_ns
+            log_size = stat.st_size
+        except OSError:
+            updated_at = ""
+            log_mtime_ns = 0
+            log_size = 0
+        meta = {
+            "version": 1,
+            "event_count": event_count,
+            "max_seq": max_seq,
+            "metadata": metadata,
+            "updated_at": updated_at,
+            "log_mtime_ns": log_mtime_ns,
+            "log_size": log_size,
+        }
+        self._write_meta(path, meta)
+        return meta
+
+    def _ensure_meta(self, path: Path) -> dict[str, Any]:
+        return self._load_meta(path) or self._build_meta(path)
+
+    def _update_meta_after_append(self, ref: RunLogRef, event: dict[str, Any]) -> None:
+        path = ref.path
+        current = self._load_meta_unchecked(path)
+        if current is None:
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            current = {
+                "version": 1,
+                "event_count": 0,
+                "max_seq": 0,
+                "metadata": metadata or {},
+            }
+        elif not isinstance(current.get("metadata"), dict) or not current.get("metadata"):
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            if metadata:
+                current["metadata"] = metadata
+        current["event_count"] = int(current.get("event_count") or 0) + 1
+        seq = event.get("seq")
+        if isinstance(seq, int):
+            current["max_seq"] = max(int(current.get("max_seq") or 0), seq)
+        try:
+            stat = path.stat()
+            current["updated_at"] = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
+            current["log_mtime_ns"] = stat.st_mtime_ns
+            current["log_size"] = stat.st_size
+        except OSError:
+            current["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self._write_meta(path, current)
+
     def _parse_event_line(self, line: str) -> dict[str, Any] | None:
         try:
             item = json.loads(line)
@@ -341,31 +452,31 @@ class AgentRunLogService:
             item = {"ts": "", "level": "error", "phase": "log_parse_error", "title": "日志行解析失败", "data": line}
         return item if isinstance(item, dict) else None
 
-    def _read_events_with_count(self, path: Path, *, limit: int | None = None, tail: bool = True) -> tuple[list[dict[str, Any]], int]:
-        total = 0
+    def _read_events_window(self, path: Path, *, limit: int | None = None, tail: bool = True, offset: int = 0) -> list[dict[str, Any]]:
         if limit is not None and tail:
             events_tail: deque[dict[str, Any]] = deque(maxlen=limit)
             try:
                 with path.open("r", encoding="utf-8") as handle:
                     for line in handle:
-                        total += 1
                         item = self._parse_event_line(line)
                         if item is not None:
                             events_tail.append(item)
             except OSError:
-                return [], 0
-            return list(events_tail), total
+                return []
+            return list(events_tail)
 
         events: list[dict[str, Any]] = []
         try:
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
-                    total += 1
-                    if limit is not None and len(events) >= limit:
+                    if offset > 0:
+                        offset -= 1
                         continue
+                    if limit is not None and len(events) >= limit:
+                        break
                     item = self._parse_event_line(line)
                     if item is not None:
                         events.append(item)
         except OSError:
-            return [], 0
-        return events, total
+            return []
+        return events

@@ -42,7 +42,7 @@ class AlertPollingService:
                 return selected
         return sources[0]
 
-    def get_latest_result(self, source_id: str | None = None) -> PollingDispatchResult:
+    def get_latest_result(self, source_id: str | None = None, *, include_tasks: bool = True) -> PollingDispatchResult:
         source = self._resolve_source(source_id)
         effective_source_id = source.id if source is not None else (source_id or "default")
         latest = self._latest_results.get(effective_source_id, self._latest_result)
@@ -56,7 +56,13 @@ class AlertPollingService:
             snapshot_complete=latest.snapshot_complete,
             auto_execute_enabled=latest.auto_execute_enabled,
             auto_execute_running=latest.auto_execute_running,
-            tasks=self.dispatch_service.list_tasks(source_id=effective_source_id) if effective_source_id else self.dispatch_service.list_tasks(),
+            tasks=(
+                self.dispatch_service.list_tasks(source_id=effective_source_id)
+                if include_tasks and effective_source_id
+                else self.dispatch_service.list_tasks()
+                if include_tasks
+                else []
+            ),
             errors=list(latest.errors),
         )
 

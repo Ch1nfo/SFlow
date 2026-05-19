@@ -122,6 +122,9 @@ export type PollAlertsResponse = {
   auto_execute_enabled: boolean
   auto_execute_running: boolean
   tasks: AlertTask[]
+  tasks_total?: number
+  tasks_limit?: number
+  tasks_offset?: number
   errors: string[]
 }
 
@@ -502,6 +505,10 @@ export async function fetchAllPollAlerts(): Promise<PollAlertsResponse> {
 
 export async function handleAlertAction(action: string, task?: AlertTask, alert?: Record<string, unknown>, sourceId?: string) {
   return postJson<AlertActionResponse>('/api/sentinelflow/alerts/handle', { action, task, alert, sourceId })
+}
+
+export async function fetchAlertTaskDetail(taskId: string): Promise<{ task: AlertTask | null }> {
+  return getJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}`)
 }
 
 export async function fetchSkills(): Promise<{ skills: SkillSummary[] }> {
@@ -892,6 +899,7 @@ export type RunLogDetail = {
   returned_events?: number
   truncated?: boolean
   tail?: boolean
+  offset?: number
 }
 
 export async function fetchRunLogDates(): Promise<{ retention_days: number; dates: RunLogDateSummary[] }> {
@@ -906,8 +914,10 @@ export async function fetchRunLogAlerts(date: string): Promise<{ date: string; a
   return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts`)
 }
 
-export async function fetchRunLogDetail(date: string, logId: string, limit = 500): Promise<RunLogDetail> {
-  return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts/${encodeURIComponent(logId)}?limit=${encodeURIComponent(String(limit))}&tail=true`)
+export async function fetchRunLogDetail(date: string, logId: string, limit = 500, options?: { tail?: boolean; offset?: number }): Promise<RunLogDetail> {
+  const tail = options?.tail ?? true
+  const offset = options?.offset ?? 0
+  return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts/${encodeURIComponent(logId)}?limit=${encodeURIComponent(String(limit))}&tail=${encodeURIComponent(String(tail))}&offset=${encodeURIComponent(String(offset))}`)
 }
 
 export async function resetRuntimeSettings() {

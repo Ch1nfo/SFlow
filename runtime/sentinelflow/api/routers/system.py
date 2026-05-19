@@ -169,8 +169,9 @@ def read_run_log(
     log_id: str,
     limit: int = Query(500, ge=1, le=5000),
     tail: bool = True,
+    offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
-    return agent_run_log_service.read_log(log_date, log_id, limit=limit, tail=tail)
+    return agent_run_log_service.read_log(log_date, log_id, limit=limit, tail=tail, offset=offset)
 
 
 @router.post("/runtime/settings/alert-source/test-fetch")

@@ -7,7 +7,7 @@ import time
 from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from sentinelflow.agent.registry import list_agent_definitions
 from sentinelflow.agent.run_log_tracer import activate_run_log_tracer, deactivate_run_log_tracer
@@ -65,24 +65,40 @@ def _save_source_auto_execute(source_id: str, enabled: bool) -> None:
     save_runtime_config({"alert_sources": next_sources})
 
 
-def _all_alerts_state() -> dict[str, Any]:
+def _state_tasks_payload(source_id: str | None, *, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
+    return dispatch_service.list_task_summaries(
+        None if source_id in {None, "", "all"} else source_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _task_status_counts_payload(source_id: str | None) -> dict[str, int]:
+    return dispatch_service.task_status_counts(None if source_id in {None, "", "all"} else source_id)
+
+
+def _all_alerts_state(*, limit: int = 500, offset: int = 0) -> dict[str, Any]:
     source_ids = _all_source_ids()
-    tasks = dispatch_service.list_tasks()
-    latest_results = [polling_service.get_latest_result(source_id) for source_id in source_ids]
+    tasks, total_tasks = _state_tasks_payload(None, limit=limit, offset=offset)
+    status_counts = _task_status_counts_payload(None)
+    latest_results = [polling_service.get_latest_result(source_id, include_tasks=False) for source_id in source_ids]
     auto_states = [auto_execution_service.state(source_id) for source_id in source_ids]
     return {
         "source_id": "all",
         "alert_sources": _alert_sources_payload(),
         "fetched_count": sum(result.fetched_count for result in latest_results),
-        "queued_count": len([task for task in tasks if task.status == "queued"]),
+        "queued_count": status_counts.get("queued", 0),
         "updated_count": sum(result.updated_count for result in latest_results),
-        "completed_count": len([task for task in tasks if task.status == "completed"]),
+        "completed_count": status_counts.get("completed", 0),
         "skipped_count": sum(result.skipped_count for result in latest_results),
-        "failed_count": len([task for task in tasks if task.status == "failed"]),
+        "failed_count": status_counts.get("failed", 0),
         "snapshot_complete": all(result.snapshot_complete for result in latest_results) if latest_results else False,
         "auto_execute_enabled": any(state.get("enabled", False) for state in auto_states),
         "auto_execute_running": any(state.get("running", False) for state in auto_states),
-        "tasks": _serialize(tasks),
+        "tasks": tasks,
+        "tasks_total": total_tasks,
+        "tasks_limit": limit,
+        "tasks_offset": offset,
         "errors": [error for result in latest_results for error in result.errors],
     }
 
@@ -375,35 +391,69 @@ def dashboard_summary() -> dict[str, Any]:
 
 
 @router.get("/alerts/poll")
-async def poll_alerts(sourceId: str | None = None) -> dict[str, Any]:
+async def poll_alerts(
+    sourceId: str | None = None,
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
     source_id = _resolve_source_id(sourceId)
     if source_id == "all":
         for current_source_id in _all_source_ids():
             await polling_service.poll_once(current_source_id)
-        return _all_alerts_state()
+        return _all_alerts_state(limit=limit, offset=offset)
     result = await polling_service.poll_once(source_id)
     auto_state = auto_execution_service.state(source_id)
-    result.auto_execute_enabled = auto_state["enabled"]
-    result.auto_execute_running = auto_state["running"]
+    tasks, total_tasks = _state_tasks_payload(source_id, limit=limit, offset=offset)
+    status_counts = _task_status_counts_payload(source_id)
     payload = _serialize(result)
+    payload["tasks"] = tasks
+    payload["tasks_total"] = total_tasks
+    payload["tasks_limit"] = limit
+    payload["tasks_offset"] = offset
+    payload["queued_count"] = status_counts.get("queued", 0)
+    payload["completed_count"] = status_counts.get("completed", 0)
+    payload["failed_count"] = status_counts.get("failed", 0)
+    payload["auto_execute_enabled"] = auto_state["enabled"]
+    payload["auto_execute_running"] = auto_state["running"]
     payload["source_id"] = source_id
     payload["alert_sources"] = _alert_sources_payload()
     return payload
 
 
 @router.get("/alerts/state")
-def alerts_state(sourceId: str | None = None) -> dict[str, Any]:
+def alerts_state(
+    sourceId: str | None = None,
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
     source_id = _resolve_source_id(sourceId)
     if source_id == "all":
-        return _all_alerts_state()
-    result = polling_service.get_latest_result(source_id)
+        return _all_alerts_state(limit=limit, offset=offset)
+    result = polling_service.get_latest_result(source_id, include_tasks=False)
     auto_state = auto_execution_service.state(source_id)
-    result.auto_execute_enabled = auto_state["enabled"]
-    result.auto_execute_running = auto_state["running"]
+    tasks, total_tasks = _state_tasks_payload(source_id, limit=limit, offset=offset)
+    status_counts = _task_status_counts_payload(source_id)
     payload = _serialize(result)
+    payload["tasks"] = tasks
+    payload["tasks_total"] = total_tasks
+    payload["tasks_limit"] = limit
+    payload["tasks_offset"] = offset
+    payload["queued_count"] = status_counts.get("queued", 0)
+    payload["completed_count"] = status_counts.get("completed", 0)
+    payload["failed_count"] = status_counts.get("failed", 0)
+    payload["auto_execute_enabled"] = auto_state["enabled"]
+    payload["auto_execute_running"] = auto_state["running"]
     payload["source_id"] = source_id
     payload["alert_sources"] = _alert_sources_payload()
     return payload
+
+
+@router.get("/alerts/tasks/{task_id}")
+def alert_task_detail(task_id: str) -> dict[str, Any]:
+    task = dispatch_service.get_task(task_id)
+    if task is None:
+        return {"task": None}
+    return {"task": _serialize(task)}
 
 
 

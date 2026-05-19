@@ -5,16 +5,21 @@ export function useSentinelFlowAsyncData<T>(loader: () => Promise<T>, deps: unkn
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const reload = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+  const reload = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
     try {
       const next = await loader()
       setData(next)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }, [loader])
 

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, RefreshCw, Siren } from 'lucide-react'
 import {
   decideApproval,
-  fetchDashboardSummary,
+  fetchAlertTaskDetail,
   fetchPollAlerts,
   handleAlertAction,
   type AlertActionResponse,
@@ -19,6 +19,8 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
+const ALERT_QUEUE_INITIAL_RENDER_COUNT = 120
+const ALERT_QUEUE_RENDER_INCREMENT = 120
 type AlertTimeRange = 'today' | 'week'
 
 function readStoredSelectedSourceId(): string | null {
@@ -46,6 +48,51 @@ function getDispositionLabel(value: string) {
   if (value === 'business_trigger') return '业务触发'
   if (value === 'false_positive') return '误报'
   return value || '未明确'
+}
+
+function buildAlertsSummary(tasks: AlertTask[]) {
+  const judgment = {
+    business_trigger: 0,
+    false_positive: 0,
+    true_attack: 0,
+    unknown: 0,
+  }
+  const bannedIps = new Set<string>()
+  let manualCompleted = 0
+  for (const task of tasks) {
+    const result = (task.last_result_data ?? {}) as Record<string, unknown>
+    const finalFacts = (result.final_facts as Record<string, unknown> | undefined) ?? {}
+    const finalJudgment = (finalFacts.judgment as Record<string, unknown> | undefined) ?? {}
+    const disposition = String(finalJudgment.disposition ?? result.disposition ?? 'unknown').trim()
+    if (disposition === 'business_trigger' || disposition === 'false_positive' || disposition === 'true_attack') {
+      judgment[disposition] += 1
+    } else {
+      judgment.unknown += 1
+    }
+    if (getEffectiveTaskStatus(task) === 'completed') {
+      manualCompleted += 1
+    }
+    const disposal = (finalFacts.disposal as Record<string, unknown> | undefined) ?? {}
+    const actions = Array.isArray(disposal.actions) ? disposal.actions : []
+    for (const action of actions) {
+      if (!action || typeof action !== 'object') continue
+      const record = action as Record<string, unknown>
+      if (String(record.kind ?? '').trim() === 'ban_ip' && record.success === true) {
+        const target = String(record.target ?? '').trim()
+        if (target) bannedIps.add(target)
+      }
+    }
+  }
+  return {
+    judgment,
+    operations: {
+      closed_success: 0,
+      disposed_success: 0,
+      manual_completed: manualCompleted,
+      banned_ip_count: bannedIps.size,
+      banned_ips: Array.from(bannedIps).sort(),
+    },
+  }
 }
 
 function isApprovalPendingAction(result: AlertActionResponse): boolean {
@@ -217,21 +264,6 @@ function getTaskFlowLabel(task: AlertTask): string {
 
 export default function SentinelFlowAlertsPage() {
   const [data, setData] = useState<PollAlertsResponse | null>(null)
-  const [summary, setSummary] = useState<{
-    judgment: {
-      business_trigger: number
-      false_positive: number
-      true_attack: number
-      unknown: number
-    }
-    operations: {
-      closed_success: number
-      disposed_success: number
-      manual_completed: number
-      banned_ip_count: number
-      banned_ips: string[]
-    }
-  } | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
@@ -241,8 +273,11 @@ export default function SentinelFlowAlertsPage() {
   const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [actionState, setActionState] = useState<{ action: string; running: boolean }>({ action: '', running: false })
   const [actionNotice, setActionNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
+  const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
+  const [visibleTaskCount, setVisibleTaskCount] = useState(ALERT_QUEUE_INITIAL_RENDER_COUNT)
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
+  const detailRequestSeq = useRef(0)
   const [queuePanelHeight, setQueuePanelHeight] = useState<number | null>(null)
   const [queueListMaxHeight, setQueueListMaxHeight] = useState<number | null>(null)
   const autoExecuteEnabled = Boolean(data?.auto_execute_enabled)
@@ -269,16 +304,6 @@ export default function SentinelFlowAlertsPage() {
       if (!silent) {
         setLoading(false)
       }
-      void fetchDashboardSummary()
-        .then((dashboard) => {
-          setSummary({
-            judgment: dashboard.judgment,
-            operations: dashboard.operations,
-          })
-        })
-        .catch(() => {
-          // Keep the queue responsive even if the summary request is slower.
-        })
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Unknown error')
       if (!silent) {
@@ -299,6 +324,7 @@ export default function SentinelFlowAlertsPage() {
   const allTasks = [...(data?.tasks ?? [])].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
   const now = new Date()
   const tasks = allTasks.filter((task) => matchesAlertTimeRange(task, timeRange, now))
+  const visibleTasks = tasks.slice(0, visibleTaskCount)
   const alertSources = data?.alert_sources ?? []
   const selectedSource = alertSources.find((source) => source.id === (selectedSourceId ?? data?.source_id)) ?? alertSources[0] ?? null
 
@@ -316,7 +342,30 @@ export default function SentinelFlowAlertsPage() {
     setActionNotice(null)
   }, [selectedTaskId])
 
-  const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
+  useEffect(() => {
+    setVisibleTaskCount(ALERT_QUEUE_INITIAL_RENDER_COUNT)
+  }, [timeRange, selectedSourceId])
+
+  const selectedTaskSummary = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
+  const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
+  const summary = useMemo(() => buildAlertsSummary(tasks), [tasks])
+
+  useEffect(() => {
+    const taskId = selectedTaskSummary?.task_id ?? ''
+    const requestSeq = detailRequestSeq.current + 1
+    detailRequestSeq.current = requestSeq
+    setSelectedTaskDetail(null)
+    if (!taskId) return
+    void fetchAlertTaskDetail(taskId)
+      .then((response) => {
+        if (detailRequestSeq.current !== requestSeq) return
+        setSelectedTaskDetail(response.task)
+      })
+      .catch(() => {
+        if (detailRequestSeq.current !== requestSeq) return
+        setSelectedTaskDetail(null)
+      })
+  }, [selectedTaskSummary?.task_id])
   const selectedPayload = getSelectedAlertPayload(selectedTask)
   const selectedPayloadText = String(selectedPayload.payload ?? '').trim()
   const shouldCollapsePayload = payloadNeedsCollapse(selectedPayloadText)
@@ -584,7 +633,7 @@ export default function SentinelFlowAlertsPage() {
                   {loading ? <tr><td colSpan={4}>正在加载...</td></tr> : null}
                   {error ? <tr><td colSpan={4}>加载失败：{error}</td></tr> : null}
                   {!loading && !error && tasks.length === 0 ? <tr><td colSpan={4}>{timeRange === 'today' ? '今日暂无告警任务。' : '本周暂无告警任务。'}</td></tr> : null}
-                  {!loading && !error ? tasks.map((task) => (
+                  {!loading && !error ? visibleTasks.map((task) => (
                     <tr
                       key={task.task_id}
                       className={[
@@ -599,6 +648,19 @@ export default function SentinelFlowAlertsPage() {
                       <td>{getTaskFlowLabel(task)}</td>
                     </tr>
                   )) : null}
+                  {!loading && !error && visibleTasks.length < tasks.length ? (
+                    <tr>
+                      <td colSpan={4}>
+                        <button
+                          type="button"
+                          className="sentinelflow-ghost-button w-full"
+                          onClick={() => setVisibleTaskCount((current) => current + ALERT_QUEUE_RENDER_INCREMENT)}
+                        >
+                          显示更多告警（{visibleTasks.length}/{tasks.length}）
+                        </button>
+                      </td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>

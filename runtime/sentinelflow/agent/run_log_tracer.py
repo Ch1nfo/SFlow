@@ -9,7 +9,6 @@ from sentinelflow.agent.message_trace import (
     compute_prompt_digest,
     count_react_turns,
     extract_skill_tool_calls,
-    extract_system_prompt_text,
     parse_tool_payload,
     serialize_message,
     serialize_messages_for_prompt_audit,
@@ -51,6 +50,39 @@ class RunLogTracer:
             str(node or ""),
             int(turn),
         )
+
+    @staticmethod
+    def _summarize_prompt_messages(prompt_messages: list[dict[str, Any]], *, preview_chars: int = 240) -> list[dict[str, Any]]:
+        summary: list[dict[str, Any]] = []
+        for item in prompt_messages:
+            content = str(item.get("content", "") or "")
+            preview = content[:preview_chars]
+            summary.append(
+                {
+                    "message_index": item.get("message_index"),
+                    "role": item.get("role") or item.get("type"),
+                    "type": item.get("type"),
+                    "content_chars": item.get("content_chars", len(content)),
+                    "content_truncated": item.get("content_truncated", False),
+                    "preview": preview,
+                    "preview_truncated": len(content) > len(preview),
+                    "tool_call_count": len(item.get("tool_calls") or []) if isinstance(item.get("tool_calls"), list) else 0,
+                }
+            )
+        return summary
+
+    @staticmethod
+    def _system_prompt_summary(prompt_messages: list[dict[str, Any]]) -> dict[str, Any]:
+        for item in prompt_messages:
+            role = str(item.get("role") or item.get("type") or "").strip().lower()
+            if role not in {"system", "systemmessage"}:
+                continue
+            return {
+                "message_index": item.get("message_index"),
+                "content_chars": item.get("content_chars", 0),
+                "content_truncated": item.get("content_truncated", False),
+            }
+        return {"message_index": None, "content_chars": 0, "content_truncated": False}
 
     def log(
         self,
@@ -102,7 +134,6 @@ class RunLogTracer:
         alert_data: dict[str, Any] | None = None,
     ) -> int:
         prompt_messages, window_info = serialize_messages_for_prompt_audit(messages)
-        system_prompt = extract_system_prompt_text(messages)
         digest = compute_prompt_digest(prompt_messages)
         prompt_stats = summarize_prompt_stats(messages, prompt_messages, window_info=window_info)
         truncated = bool(prompt_stats.get("window_truncated")) or bool(prompt_stats.get("content_truncated_any"))
@@ -118,8 +149,9 @@ class RunLogTracer:
                 "turn": turn,
                 "prompt_digest": digest,
                 "audit_strip": ["additional_kwargs", "response_metadata"],
-                "system_prompt": system_prompt,
-                "prompt_messages": prompt_messages,
+                "prompt_storage": "summary_only",
+                "system_prompt": self._system_prompt_summary(prompt_messages),
+                "prompt_message_summaries": self._summarize_prompt_messages(prompt_messages),
                 "prompt_stats": prompt_stats,
                 "alert_data_keys": sorted(str(key) for key in (alert_data or {}).keys()) if isinstance(alert_data, dict) else [],
             },

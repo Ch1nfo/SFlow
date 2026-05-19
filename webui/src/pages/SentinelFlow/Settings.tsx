@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef, type ChangeEvent } from 'react'
 import { Bug, RotateCcw, Save, Settings as SettingsIcon, X } from 'lucide-react'
 import {
   fetchHealth,
@@ -29,6 +29,8 @@ import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalSt
 
 const SETTINGS_DRAFT_KEY = 'sentinelflow:settings:draft'
 const DEBUG_LOG_UNLOCK_CLICKS = 5
+const RUN_LOG_INITIAL_RENDER_COUNT = 80
+const RUN_LOG_RENDER_INCREMENT = 80
 
 type SettingsDraft = {
   pollIntervalSeconds: string
@@ -444,6 +446,7 @@ export default function SentinelFlowSettingsPage() {
   const [debugLogDetail, setDebugLogDetail] = useState<RunLogDetail | null>(null)
   const [selectedDebugDate, setSelectedDebugDate] = useState('')
   const [selectedDebugLogId, setSelectedDebugLogId] = useState('')
+  const [visibleRunLogEventCount, setVisibleRunLogEventCount] = useState(RUN_LOG_INITIAL_RENDER_COUNT)
   const [highlightedRunLogEventId, setHighlightedRunLogEventId] = useState<string | null>(null)
   const [activeRunLogRetentionDays, setActiveRunLogRetentionDays] = useState<number>(1)
   const [savingRunLogRetention, setSavingRunLogRetention] = useState(false)
@@ -456,8 +459,21 @@ export default function SentinelFlowSettingsPage() {
     const match = findLlmRequestForPromptReference(debugLogDetail.events, ref)
     if (!match) return
     const eventId = runLogEventDomId(match.event, match.index)
-    const element = runLogEventRefs.current[eventId]
-    if (!element) return
+    let element = runLogEventRefs.current[eventId]
+    if (!element) {
+      setVisibleRunLogEventCount((current) => Math.max(current, match.index + RUN_LOG_RENDER_INCREMENT))
+      window.setTimeout(() => {
+        const nextElement = runLogEventRefs.current[eventId]
+        if (!nextElement) return
+        setHighlightedRunLogEventId(eventId)
+        nextElement.open = true
+        nextElement.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        window.setTimeout(() => {
+          setHighlightedRunLogEventId((current) => (current === eventId ? null : current))
+        }, 2800)
+      }, 0)
+      return
+    }
     setHighlightedRunLogEventId(eventId)
     element.open = true
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -465,6 +481,12 @@ export default function SentinelFlowSettingsPage() {
       setHighlightedRunLogEventId((current) => (current === eventId ? null : current))
     }, 2800)
   }, [debugLogDetail?.events])
+
+  const sortedDebugLogEvents = useMemo(
+    () => [...(debugLogDetail?.events ?? [])].sort((left, right) => runLogEventSeq(left) - runLogEventSeq(right)),
+    [debugLogDetail?.events],
+  )
+  const visibleDebugLogEvents = sortedDebugLogEvents.slice(0, visibleRunLogEventCount)
 
   const fetchPreviewStr = fetchPreview ? JSON.stringify(fetchPreview, null, 2) : ''
   const fetchPreviewLines = fetchPreviewStr.split('\n')
@@ -762,6 +784,7 @@ export default function SentinelFlowSettingsPage() {
     const requestSeq = debugLogRequestSeq.current + 1
     debugLogRequestSeq.current = requestSeq
     setDebugLogOpen(true)
+    setVisibleRunLogEventCount(RUN_LOG_INITIAL_RENDER_COUNT)
     setHighlightedRunLogEventId(null)
     runLogEventRefs.current = {}
     setDebugLogLoading(true)
@@ -833,6 +856,7 @@ export default function SentinelFlowSettingsPage() {
     const requestSeq = debugLogRequestSeq.current + 1
     debugLogRequestSeq.current = requestSeq
     setSelectedDebugLogId(logId)
+    setVisibleRunLogEventCount(RUN_LOG_INITIAL_RENDER_COUNT)
     setHighlightedRunLogEventId(null)
     runLogEventRefs.current = {}
     setDebugLogDetail(null)
@@ -1231,8 +1255,7 @@ export default function SentinelFlowSettingsPage() {
                     </div>
                   </div>
                   <div className="max-h-[520px] space-y-3 overflow-y-auto overflow-x-auto pr-1">
-                    {[...(debugLogDetail?.events ?? [])]
-                      .sort((left, right) => runLogEventSeq(left) - runLogEventSeq(right))
+                    {visibleDebugLogEvents
                       .map((event, index) => {
                         const eventId = runLogEventDomId(event, index)
                         const isHighlighted = highlightedRunLogEventId === eventId
@@ -1273,6 +1296,15 @@ export default function SentinelFlowSettingsPage() {
                       </details>
                         )
                       })}
+                    {visibleDebugLogEvents.length < sortedDebugLogEvents.length ? (
+                      <button
+                        type="button"
+                        className="w-full rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                        onClick={() => setVisibleRunLogEventCount((current) => current + RUN_LOG_RENDER_INCREMENT)}
+                      >
+                        加载更多事件（{visibleDebugLogEvents.length}/{sortedDebugLogEvents.length}）
+                      </button>
+                    ) : null}
                     {debugLogDetail && !debugLogDetail.events.length ? <div className="text-sm text-slate-500">该告警日志为空</div> : null}
                     {!debugLogDetail && !debugLogLoading ? <div className="text-sm text-slate-500">请选择左侧日期和告警。</div> : null}
                   </div>
