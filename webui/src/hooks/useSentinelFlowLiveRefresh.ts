@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 type LiveRefreshOptions = {
   enabled?: boolean
@@ -10,6 +10,7 @@ export function useSentinelFlowLiveRefresh(
   options: LiveRefreshOptions = {},
 ) {
   const { enabled = true, intervalMs = 5000 } = options
+  const inFlightRef = useRef(false)
 
   useEffect(() => {
     if (!enabled) return
@@ -18,7 +19,18 @@ export function useSentinelFlowLiveRefresh(
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
         return
       }
-      void callback()
+      if (inFlightRef.current) return
+      inFlightRef.current = true
+      let result: void | Promise<void>
+      try {
+        result = callback()
+      } catch {
+        inFlightRef.current = false
+        return
+      }
+      void Promise.resolve(result).finally(() => {
+        inFlightRef.current = false
+      })
     }
 
     const timer = window.setInterval(run, intervalMs)
@@ -32,6 +44,7 @@ export function useSentinelFlowLiveRefresh(
     return () => {
       window.clearInterval(timer)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
+      inFlightRef.current = false
     }
   }, [callback, enabled, intervalMs])
 }

@@ -793,7 +793,19 @@ class AlertDispatchService:
             expected_statuses=["running"],
         )
         if not updated_task:
-            return self.get_task(task_id)
+            current_task = self.get_task(task_id)
+            self.audit_service.record(
+                "task_finish_conflict",
+                f"Task {task_id} could not be finalized because its status changed.",
+                {
+                    "taskId": task_id,
+                    "expectedStatuses": ["running"],
+                    "action": action,
+                    "success": success,
+                    "currentStatus": current_task.status if current_task else "",
+                },
+            )
+            return None
         
         if success:
             self.dedup.mark_done(f"{updated_task.source_id}:{updated_task.event_ids}")

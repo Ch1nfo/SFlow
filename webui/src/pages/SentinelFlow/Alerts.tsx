@@ -240,6 +240,7 @@ export default function SentinelFlowAlertsPage() {
   const [payloadExpanded, setPayloadExpanded] = useState(false)
   const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [actionState, setActionState] = useState<{ action: string; running: boolean }>({ action: '', running: false })
+  const [actionNotice, setActionNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
   const [queuePanelHeight, setQueuePanelHeight] = useState<number | null>(null)
@@ -257,6 +258,7 @@ export default function SentinelFlowAlertsPage() {
     try {
       const result = await fetchPollAlerts(selectedSourceId ?? undefined)
       setData(result)
+      setError(null)
       const knownSourceIds = (result.alert_sources ?? []).map((source) => source.id)
       const selectedSourceExists = selectedSourceId && (knownSourceIds.length === 0 || knownSourceIds.includes(selectedSourceId))
       const nextSelectedSourceId = selectedSourceExists ? selectedSourceId : result.source_id
@@ -311,6 +313,7 @@ export default function SentinelFlowAlertsPage() {
   useEffect(() => {
     setPayloadExpanded(false)
     setFinalJudgmentExpanded(false)
+    setActionNotice(null)
   }, [selectedTaskId])
 
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
@@ -337,6 +340,12 @@ export default function SentinelFlowAlertsPage() {
   const selectedTaskOutcomeStatus = String(selectedTaskOutcome.status ?? '').trim()
   const selectedWorkflowRuns = normalizeWorkflowRuns(selectedResult.workflow_runs)
   const selectedApprovalRequest = (selectedResult.approval_request as Record<string, unknown> | undefined) ?? {}
+  const selectedApprovalId = String(selectedApprovalRequest.approval_id ?? '').trim()
+  const selectedApprovalStatus = String(selectedApprovalRequest.status ?? '').trim()
+  const selectedApprovalCanResolve = Boolean(selectedTask)
+    && getEffectiveTaskStatus(selectedTask) === 'awaiting_approval'
+    && Boolean(selectedApprovalId)
+    && (!selectedApprovalStatus || selectedApprovalStatus === 'pending')
   const selectedWorkflowRun = selectedWorkflowRuns[0] ?? null
   const selectedClosureStep = (
     (selectedResult.effective_closure_step as Record<string, unknown> | undefined)
@@ -395,6 +404,7 @@ export default function SentinelFlowAlertsPage() {
 
   async function runAction(action: string) {
     setActionState({ action, running: true })
+    setActionNotice(null)
     void loadTasks({ silent: true })
     try {
       const result = action === 'refresh_poll' || action === 'auto_run_pending' || action === 'auto_execute_start' || action === 'auto_execute_stop'
@@ -402,8 +412,16 @@ export default function SentinelFlowAlertsPage() {
         : selectedTask
           ? await handleAlertAction(action, selectedTask, undefined, selectedSourceId ?? data?.source_id)
           : null
-      if (!result) return
+      if (!result) {
+        setActionNotice({ tone: 'error', text: '当前没有可执行的告警任务。' })
+        return
+      }
       const isApprovalPending = isApprovalPendingAction(result)
+      if (isApprovalPending) {
+        setActionNotice({ tone: 'info', text: '任务已暂停，等待技能审批。' })
+      } else if (!result.success) {
+        setActionNotice({ tone: 'error', text: result.error ?? '动作执行失败。' })
+      }
       publishRuntimeActivity({
         type: 'alert_action',
         title: selectedTask ? `${selectedTask.title} / ${action}` : action,
@@ -414,6 +432,7 @@ export default function SentinelFlowAlertsPage() {
       })
       await loadTasks()
     } catch (runError) {
+      setActionNotice({ tone: 'error', text: runError instanceof Error ? runError.message : 'Unknown error' })
       publishRuntimeActivity({
         type: 'alert_action',
         title: selectedTask ? `${selectedTask.title} / ${action}` : action,
@@ -428,12 +447,18 @@ export default function SentinelFlowAlertsPage() {
   }
 
   async function resolveApproval(decision: 'approve' | 'reject') {
-    const approvalId = String(selectedApprovalRequest.approval_id ?? '').trim()
+    const approvalId = selectedApprovalId
     if (!approvalId) return
     setActionState({ action: decision, running: true })
+    setActionNotice(null)
     try {
-      await decideApproval(approvalId, decision)
+      const result = await decideApproval(approvalId, decision)
+      if (!result.success) {
+        setActionNotice({ tone: 'error', text: result.error ?? '审批处理失败。' })
+      }
       await loadTasks()
+    } catch (approvalError) {
+      setActionNotice({ tone: 'error', text: approvalError instanceof Error ? approvalError.message : '审批处理失败。' })
     } finally {
       setActionState({ action: '', running: false })
     }
@@ -534,6 +559,11 @@ export default function SentinelFlowAlertsPage() {
             </button>
           </div>
         </div>
+        {actionNotice ? (
+          <div className={`mb-4 rounded-xl border p-4 text-sm ${actionNotice.tone === 'error' ? 'border-red-200 bg-red-50 text-red-800' : 'border-amber-200 bg-amber-50 text-amber-900'}`}>
+            {actionNotice.text}
+          </div>
+        ) : null}
 
         <div className="sentinelflow-grid-2 items-start">
           <div
@@ -665,7 +695,7 @@ export default function SentinelFlowAlertsPage() {
                         </button>
                       ) : null}
                     </div>
-                    {String(selectedApprovalRequest.approval_id ?? '').trim() ? (
+                    {selectedApprovalCanResolve ? (
                       <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
                         <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">待审批 Skill</div>
                         <div className="mt-2 text-sm font-semibold text-amber-950">{String(selectedApprovalRequest.skill_name ?? '').trim() || '未命名 Skill'}</div>

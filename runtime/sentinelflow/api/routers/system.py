@@ -2,7 +2,7 @@ import json
 import re
 from typing import Any
 from dataclasses import asdict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sentinelflow.api.schemas import RagConfigRequest, RuntimeConfigRequest, AlertSourceParserGenerateRequest, AlertSourceParserPreviewRequest
 from sentinelflow.config.runtime import _normalize_config, load_runtime_config, read_persisted_runtime_config, reset_runtime_config, save_runtime_config
 from sentinelflow.api.deps import agent_service, branding, audit_service, polling_service, alert_parser_generator, _serialize, auto_execution_service, agent_run_log_service, PROJECT_ROOT
@@ -164,8 +164,13 @@ def list_run_log_alerts(log_date: str) -> dict[str, Any]:
 
 
 @router.get("/runtime/run-logs/{log_date}/alerts/{log_id}")
-def read_run_log(log_date: str, log_id: str) -> dict[str, Any]:
-    return agent_run_log_service.read_log(log_date, log_id)
+def read_run_log(
+    log_date: str,
+    log_id: str,
+    limit: int = Query(500, ge=1, le=5000),
+    tail: bool = True,
+) -> dict[str, Any]:
+    return agent_run_log_service.read_log(log_date, log_id, limit=limit, tail=tail)
 
 
 @router.post("/runtime/settings/alert-source/test-fetch")

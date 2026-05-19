@@ -66,6 +66,9 @@ class AlertTaskRunnerService:
         return isinstance(closure_step, dict) and bool(closure_step.get("attempted")) and bool(closure_step.get("success"))
 
     def _agent_result_failure_reason(self, agent_result: dict[str, Any], selected_action: str) -> str:
+        explicit_error = str(agent_result.get("error", "")).strip()
+        if explicit_error:
+            return explicit_error
         final_facts = agent_result.get("final_facts", {})
         if isinstance(final_facts, dict):
             task_outcome = final_facts.get("task_outcome", {})
@@ -82,12 +85,24 @@ class AlertTaskRunnerService:
         return "主 Agent 未返回成功结果。"
 
     def _finalize_success(self, task, selected_action: str, result_data: dict[str, Any]) -> dict[str, Any]:
+        original_task_id = task.task_id
         result_payload = self._normalize_success_result_payload(result_data)
         if isinstance(task.payload, dict):
             workflow_selection = task.payload.get("workflow_selection")
             if isinstance(workflow_selection, dict) and "workflow_selection" not in result_payload:
                 result_payload["workflow_selection"] = workflow_selection
         task = self.dispatch_service.finalize_task(task.task_id, selected_action, True, result_payload, None)
+        if task is None:
+            current_task = self.dispatch_service.get_task(original_task_id)
+            return {
+                "action": selected_action,
+                "success": False,
+                "task_id": current_task.task_id if current_task else "",
+                "event_ids": str(result_payload.get("event_ids", "")).strip(),
+                "data": result_payload,
+                "task": current_task,
+                "error": "任务完成写库失败：任务状态已变化。",
+            }
         return {
             "action": selected_action,
             "success": True,
@@ -128,6 +143,7 @@ class AlertTaskRunnerService:
         return result_payload
 
     def _finalize_failure(self, task, selected_action: str, error: str, result_data: dict[str, Any] | None = None) -> dict[str, Any]:
+        original_task_id = task.task_id
         workflow_selection = {}
         alert_data = {}
         if isinstance(task.payload, dict):
@@ -185,6 +201,17 @@ class AlertTaskRunnerService:
         )
         failure_payload["success"] = False
         task = self.dispatch_service.finalize_task(task.task_id, selected_action, False, failure_payload, error)
+        if task is None:
+            current_task = self.dispatch_service.get_task(original_task_id)
+            return {
+                "action": selected_action,
+                "success": False,
+                "task_id": current_task.task_id if current_task else "",
+                "event_ids": current_task.event_ids if current_task else "",
+                "data": failure_payload,
+                "task": current_task,
+                "error": f"任务失败写库失败：任务状态已变化。原始错误：{error}",
+            }
         return {
             "action": selected_action,
             "success": False,
@@ -200,6 +227,18 @@ class AlertTaskRunnerService:
         if agent_result.get("approval_pending"):
             pending_payload = dict(agent_result)
             task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
+            if task is None:
+                result = {
+                    "action": selected_action,
+                    "success": False,
+                    "task_id": "",
+                    "event_ids": "",
+                    "data": pending_payload,
+                    "task": None,
+                    "error": "任务等待审批写库失败：任务状态已变化。",
+                }
+                self._log_event(run_log_ref, "task_finished", "任务等待审批写库失败", result, level="error")
+                return result
             result = {
                 "action": selected_action,
                 "success": False,
@@ -453,6 +492,18 @@ class AlertTaskRunnerService:
         if agent_result.get("approval_pending"):
             pending_payload = dict(agent_result)
             task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
+            if task is None:
+                result = {
+                    "action": selected_action,
+                    "success": False,
+                    "task_id": task_id,
+                    "event_ids": "",
+                    "data": pending_payload,
+                    "task": None,
+                    "error": "任务等待审批写库失败：任务状态已变化。",
+                }
+                self._log_event(run_log_ref, "task_finished", "任务再次等待审批写库失败", result, level="error")
+                return result
             result = {
                 "action": selected_action,
                 "success": False,
@@ -465,3 +516,30 @@ class AlertTaskRunnerService:
             self._log_event(run_log_ref, "task_finished", "任务再次等待技能审批", result, level="warn")
             return result
         return self._finish_agent_result(task, selected_action, agent_result, run_log_ref)
+
+    def fail_after_approval_resume(
+        self,
+        task_id: str,
+        error: str,
+        *,
+        prepared_task: Any = None,
+        run_log_ref: RunLogRef | None = None,
+        selected_action: str = "",
+    ) -> dict[str, Any]:
+        task = prepared_task if prepared_task is not None else self.dispatch_service.get_task(task_id)
+        if not task:
+            return {
+                "action": selected_action or "approval",
+                "success": False,
+                "task_id": task_id,
+                "event_ids": "",
+                "data": {"success": False, "error": error},
+                "task": None,
+                "error": "待恢复任务不存在。",
+            }
+        selected_action = selected_action or task.last_action or "triage_close"
+        if run_log_ref is None:
+            run_log_ref = self.resolve_run_log_ref(task)
+        result = self._finalize_failure(task, selected_action, error, {"success": False, "error": error})
+        self._log_event(run_log_ref, "task_finished", "审批恢复失败，任务已标记失败", result, level="error")
+        return result

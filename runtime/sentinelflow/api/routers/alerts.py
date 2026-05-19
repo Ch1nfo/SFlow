@@ -722,6 +722,7 @@ async def _resolve_approval_json(
                 status_callback=status_callback,
             )
         except Exception as exc:
+            finalized = None
             if tracer_activated and run_log_ref is not None:
                 agent_run_log_service.append(
                     run_log_ref,
@@ -730,12 +731,20 @@ async def _resolve_approval_json(
                     {"error": str(exc), "approval_id": approval_id},
                     level="error",
                 )
+            if approval.scope_type == "alert_task":
+                finalized = task_runner_service.fail_after_approval_resume(
+                    approval.scope_ref,
+                    f"审批恢复执行失败：{exc}",
+                    prepared_task=prepared_task,
+                    run_log_ref=run_log_ref,
+                    selected_action=prepared_selected_action,
+                )
             return _build_approval_resolution_response(
                 success=False,
                 route="approval_resolution_failed",
                 approval=skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval),
-                data={},
-                task=None,
+                data=finalized.get("data", {}) if finalized else {},
+                task=_serialize(finalized.get("task")) if finalized else None,
                 error=f"审批恢复执行失败：{exc}",
             )
         payload = result.get("data", {})

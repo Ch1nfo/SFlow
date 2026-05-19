@@ -449,6 +449,7 @@ export default function SentinelFlowSettingsPage() {
   const [savingRunLogRetention, setSavingRunLogRetention] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const runLogEventRefs = useRef<Record<string, HTMLDetailsElement | null>>({})
+  const debugLogRequestSeq = useRef(0)
 
   const jumpToRunLogPrompt = useCallback((ref: Record<string, unknown>) => {
     if (!debugLogDetail?.events?.length) return
@@ -758,6 +759,8 @@ export default function SentinelFlowSettingsPage() {
   }
 
   async function openDetailedRuntimeLog() {
+    const requestSeq = debugLogRequestSeq.current + 1
+    debugLogRequestSeq.current = requestSeq
     setDebugLogOpen(true)
     setHighlightedRunLogEventId(null)
     runLogEventRefs.current = {}
@@ -765,6 +768,7 @@ export default function SentinelFlowSettingsPage() {
     setDebugLogError(null)
     try {
       const data = await fetchRunLogDates()
+      if (debugLogRequestSeq.current !== requestSeq) return
       setDebugLogDates(data.dates ?? [])
       setActiveRunLogRetentionDays(data.retention_days ?? 1)
       updateDraft('runLogRetentionDays', String(data.retention_days ?? 1))
@@ -772,11 +776,14 @@ export default function SentinelFlowSettingsPage() {
       setSelectedDebugDate(nextDate)
       if (nextDate) {
         const alertData = await fetchRunLogAlerts(nextDate)
+        if (debugLogRequestSeq.current !== requestSeq) return
         setDebugLogAlerts(alertData.alerts ?? [])
         const nextLogId = selectedDebugLogId || alertData.alerts?.[0]?.log_id || ''
         setSelectedDebugLogId(nextLogId)
         if (nextLogId) {
-          setDebugLogDetail(await fetchRunLogDetail(nextDate, nextLogId))
+          const detail = await fetchRunLogDetail(nextDate, nextLogId)
+          if (debugLogRequestSeq.current !== requestSeq) return
+          setDebugLogDetail(detail)
         } else {
           setDebugLogDetail(null)
         }
@@ -785,14 +792,17 @@ export default function SentinelFlowSettingsPage() {
         setDebugLogDetail(null)
       }
     } catch (error) {
+      if (debugLogRequestSeq.current !== requestSeq) return
       setDebugLogDetail(null)
       setDebugLogError(error instanceof Error ? error.message : '读取详细运行日志失败')
     } finally {
-      setDebugLogLoading(false)
+      if (debugLogRequestSeq.current === requestSeq) setDebugLogLoading(false)
     }
   }
 
   async function selectDebugDate(date: string) {
+    const requestSeq = debugLogRequestSeq.current + 1
+    debugLogRequestSeq.current = requestSeq
     setHighlightedRunLogEventId(null)
     runLogEventRefs.current = {}
     setSelectedDebugDate(date)
@@ -802,18 +812,26 @@ export default function SentinelFlowSettingsPage() {
     setDebugLogError(null)
     try {
       const data = await fetchRunLogAlerts(date)
+      if (debugLogRequestSeq.current !== requestSeq) return
       setDebugLogAlerts(data.alerts ?? [])
       const firstLogId = data.alerts?.[0]?.log_id || ''
       setSelectedDebugLogId(firstLogId)
-      if (firstLogId) setDebugLogDetail(await fetchRunLogDetail(date, firstLogId))
+      if (firstLogId) {
+        const detail = await fetchRunLogDetail(date, firstLogId)
+        if (debugLogRequestSeq.current !== requestSeq) return
+        setDebugLogDetail(detail)
+      }
     } catch (error) {
+      if (debugLogRequestSeq.current !== requestSeq) return
       setDebugLogError(error instanceof Error ? error.message : '读取告警日志列表失败')
     } finally {
-      setDebugLogLoading(false)
+      if (debugLogRequestSeq.current === requestSeq) setDebugLogLoading(false)
     }
   }
 
   async function selectDebugLog(date: string, logId: string) {
+    const requestSeq = debugLogRequestSeq.current + 1
+    debugLogRequestSeq.current = requestSeq
     setSelectedDebugLogId(logId)
     setHighlightedRunLogEventId(null)
     runLogEventRefs.current = {}
@@ -821,11 +839,14 @@ export default function SentinelFlowSettingsPage() {
     setDebugLogLoading(true)
     setDebugLogError(null)
     try {
-      setDebugLogDetail(await fetchRunLogDetail(date, logId))
+      const detail = await fetchRunLogDetail(date, logId)
+      if (debugLogRequestSeq.current !== requestSeq) return
+      setDebugLogDetail(detail)
     } catch (error) {
+      if (debugLogRequestSeq.current !== requestSeq) return
       setDebugLogError(error instanceof Error ? error.message : '读取告警运行日志失败')
     } finally {
-      setDebugLogLoading(false)
+      if (debugLogRequestSeq.current === requestSeq) setDebugLogLoading(false)
     }
   }
 
@@ -1157,7 +1178,7 @@ export default function SentinelFlowSettingsPage() {
                   {savingRunLogRetention ? '保存中...' : '保存保留策略'}
                 </button>
                 <div className="text-xs leading-5 text-slate-500">
-                  当前生效：保留 {activeRunLogRetentionDays} 天。默认保留 1 天。保留多天时，下方按日期分组；每个日期内按告警选择完整运行日志。
+                  当前生效：保留 {activeRunLogRetentionDays} 天。默认保留 1 天。保留多天时，下方按日期分组；每个日期内按告警选择运行日志，详情默认读取最近 500 个事件。
                 </div>
               </div>
               {debugLogLoading && !debugLogDetail ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">正在读取详细运行日志...</div> : null}
@@ -1203,7 +1224,11 @@ export default function SentinelFlowSettingsPage() {
                       <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">模型数据流转记录</div>
                       <div className="mt-1 text-sm text-slate-300">{debugLogDetail?.metadata?.title as string || selectedDebugLogId || '未选择告警'}</div>
                     </div>
-                    <div className="text-xs text-slate-500">{debugLogDetail?.events?.length ?? 0} 个事件</div>
+                    <div className="text-xs text-slate-500">
+                      {debugLogDetail?.truncated
+                        ? `${debugLogDetail.returned_events ?? debugLogDetail.events.length}/${debugLogDetail.total_events ?? debugLogDetail.events.length} 个事件`
+                        : `${debugLogDetail?.events?.length ?? 0} 个事件`}
+                    </div>
                   </div>
                   <div className="max-h-[520px] space-y-3 overflow-y-auto overflow-x-auto pr-1">
                     {[...(debugLogDetail?.events ?? [])]

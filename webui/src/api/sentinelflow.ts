@@ -888,6 +888,10 @@ export type RunLogDetail = {
   log_id: string
   metadata?: Record<string, unknown>
   events: RunLogEvent[]
+  total_events?: number
+  returned_events?: number
+  truncated?: boolean
+  tail?: boolean
 }
 
 export async function fetchRunLogDates(): Promise<{ retention_days: number; dates: RunLogDateSummary[] }> {
@@ -902,8 +906,8 @@ export async function fetchRunLogAlerts(date: string): Promise<{ date: string; a
   return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts`)
 }
 
-export async function fetchRunLogDetail(date: string, logId: string): Promise<RunLogDetail> {
-  return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts/${encodeURIComponent(logId)}`)
+export async function fetchRunLogDetail(date: string, logId: string, limit = 500): Promise<RunLogDetail> {
+  return getJson(`/api/sentinelflow/runtime/run-logs/${encodeURIComponent(date)}/alerts/${encodeURIComponent(logId)}?limit=${encodeURIComponent(String(limit))}&tail=true`)
 }
 
 export async function resetRuntimeSettings() {

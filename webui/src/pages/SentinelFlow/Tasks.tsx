@@ -22,7 +22,7 @@ import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalSt
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, publishRuntimeActivity, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
-type TaskFilter = 'all' | 'queued' | 'running' | 'succeeded' | 'completed' | 'failed'
+type TaskFilter = 'all' | 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'completed' | 'pending_closure' | 'failed'
 const TASK_FILTER_KEY = 'sentinelflow:tasks:filter'
 
 type ToolInvocationResult = {
@@ -41,8 +41,10 @@ const TASK_FILTER_LABELS: Record<TaskFilter, string> = {
   all: '全部',
   queued: '排队中',
   running: '执行中',
+  awaiting_approval: '待审批',
   succeeded: '已完成',
   completed: '已被人工处置',
+  pending_closure: '待结单',
   failed: '失败',
 }
 
@@ -600,6 +602,7 @@ export default function SentinelFlowTasksPage() {
           const status = String(getEffectiveTaskStatus(task))
           if (filter === 'failed') return isFailedBucketStatus(status)
           if (filter === 'succeeded') return status === 'succeeded' || status === 'pending_manual_closure'
+          if (filter === 'pending_closure') return status === 'pending_closure' || status === 'pending_manual_closure'
           return status === filter
         })
     return [...base].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
@@ -662,6 +665,8 @@ export default function SentinelFlowTasksPage() {
   const refreshTasks = useCallback(() => {
     void fetchAllPollAlerts().then((next) => {
       setPollData(next)
+    }).catch(() => {
+      // Keep the current list visible when a background refresh fails.
     })
   }, [setPollData])
 
@@ -829,7 +834,7 @@ export default function SentinelFlowTasksPage() {
 
         <div className="mb-4 mt-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex gap-1 rounded-lg bg-gray-100 p-1">
-            {(['all', 'queued', 'running', 'succeeded', 'completed', 'failed'] as TaskFilter[]).map((item) => (
+            {(['all', 'queued', 'running', 'awaiting_approval', 'succeeded', 'completed', 'pending_closure', 'failed'] as TaskFilter[]).map((item) => (
               <button key={item} type="button" className={`rounded-md px-4 py-2 text-sm transition-colors ${filter === item ? 'bg-white font-medium text-slate-800 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`} onClick={() => setFilter(item)}>
                 {TASK_FILTER_LABELS[item]}
               </button>

@@ -1065,6 +1065,14 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             state_payload=serialize_graph_state(state),
         )
         updated = self.approval_service.set_decision(approval_id, "approved" if decision == "approve" else "rejected")
+        if updated is None:
+            latest = self.approval_service.get_by_id(approval_id)
+            return {
+                "success": False,
+                "route": "approval_not_pending",
+                "error": "该审批已处理。",
+                "data": {"approval": self.approval_service.serialize_approval(latest or approval)},
+            }
         approval_record = updated or approval
         current_checkpoint, resume_error = self._reload_checkpoint_for_resume(
             approval.checkpoint_thread_id,

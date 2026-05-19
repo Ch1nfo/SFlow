@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -285,17 +286,24 @@ class AgentRunLogService:
             )
         return alerts
 
-    def read_log(self, log_date: str, log_id: str) -> dict[str, Any]:
+    def read_log(self, log_date: str, log_id: str, *, limit: int | None = 500, tail: bool = True) -> dict[str, Any]:
         path = self.root / _safe_name(log_date) / f"{_safe_name(log_id)}.jsonl"
         if not path.is_file():
             return {"date": log_date, "log_id": log_id, "events": []}
-        events = self._read_events(path)
-        metadata = events[0].get("metadata", {}) if events and isinstance(events[0], dict) else {}
+        normalized_limit = max(1, min(int(limit or 500), 5000)) if limit is not None else None
+        events, total_events = self._read_events_with_count(path, limit=normalized_limit, tail=tail)
+        first_events = self._read_events(path, limit=1)
+        first = first_events[0] if first_events and isinstance(first_events[0], dict) else {}
+        metadata = first.get("metadata", {}) if isinstance(first.get("metadata"), dict) else {}
         return {
             "date": log_date,
             "log_id": log_id,
             "metadata": metadata if isinstance(metadata, dict) else {},
             "events": events,
+            "total_events": total_events,
+            "returned_events": len(events),
+            "truncated": total_events > len(events),
+            "tail": tail,
         }
 
     def _resolve_ref(self, ref: RunLogRef | dict[str, Any] | None) -> RunLogRef | None:
@@ -325,3 +333,39 @@ class AgentRunLogService:
         except OSError:
             return []
         return events
+
+    def _parse_event_line(self, line: str) -> dict[str, Any] | None:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            item = {"ts": "", "level": "error", "phase": "log_parse_error", "title": "日志行解析失败", "data": line}
+        return item if isinstance(item, dict) else None
+
+    def _read_events_with_count(self, path: Path, *, limit: int | None = None, tail: bool = True) -> tuple[list[dict[str, Any]], int]:
+        total = 0
+        if limit is not None and tail:
+            events_tail: deque[dict[str, Any]] = deque(maxlen=limit)
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        total += 1
+                        item = self._parse_event_line(line)
+                        if item is not None:
+                            events_tail.append(item)
+            except OSError:
+                return [], 0
+            return list(events_tail), total
+
+        events: list[dict[str, Any]] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    total += 1
+                    if limit is not None and len(events) >= limit:
+                        continue
+                    item = self._parse_event_line(line)
+                    if item is not None:
+                        events.append(item)
+        except OSError:
+            return [], 0
+        return events, total
