@@ -284,6 +284,7 @@ export default function SentinelFlowAlertsPage() {
   const autoExecuteRunning = Boolean(data?.auto_execute_running)
   const liveRefreshing = autoExecuteEnabled || actionState.running || (data?.tasks ?? []).some((task) => task.status === 'running')
   const { reload: reloadPollStore } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: false })
+  const { data: allSourcesPoll, reload: reloadAllSourcesPoll } = useSentinelFlowPollStore('all')
 
   const loadTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
     const silent = options?.silent ?? false
@@ -299,6 +300,7 @@ export default function SentinelFlowAlertsPage() {
       }
       setData(result)
       setError(null)
+      void reloadAllSourcesPoll({ silent: true })
       const knownSourceIds = (result.alert_sources ?? []).map((source) => source.id)
       const selectedSourceExists = selectedSourceId && (knownSourceIds.length === 0 || knownSourceIds.includes(selectedSourceId))
       const nextSelectedSourceId = selectedSourceExists ? selectedSourceId : result.source_id
@@ -315,7 +317,7 @@ export default function SentinelFlowAlertsPage() {
         setLoading(false)
       }
     }
-  }, [reloadPollStore, selectedSourceId])
+  }, [reloadAllSourcesPoll, reloadPollStore, selectedSourceId])
 
   useEffect(() => {
     void loadTasks()
@@ -354,6 +356,10 @@ export default function SentinelFlowAlertsPage() {
   const selectedTaskSummary = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
   const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
   const summary = useMemo(() => buildAlertsSummary(tasks), [tasks])
+  const weekSummary = useMemo(() => {
+    const allSourceTasks = (allSourcesPoll?.tasks ?? []).filter((task) => matchesAlertTimeRange(task, 'week', now))
+    return buildAlertsSummary(allSourceTasks)
+  }, [allSourcesPoll?.tasks, now])
 
   useEffect(() => {
     const taskId = selectedTaskSummary?.task_id ?? ''
@@ -829,47 +835,50 @@ export default function SentinelFlowAlertsPage() {
         </div>
       </Surface>
 
-      <Surface title="研判与封禁摘要" subtitle="把业务触发、误报、真实攻击和封禁结果直接展示到告警工作台，便于值班时快速判断当前态势。">
+      <Surface
+        title="研判与封禁摘要"
+        subtitle="统计本周全部告警源的数据，不受上方「当前告警源」与「今日/本周」筛选影响。"
+      >
         <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-xl border border-gray-200 bg-white p-5">
-            <div className="mb-3 text-sm font-semibold text-gray-900">研判结果概览</div>
+            <div className="mb-3 text-sm font-semibold text-gray-900">研判结果概览（本周 · 全部告警源）</div>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
                 <div className="text-xs text-emerald-800">业务触发</div>
-                <div className="mt-1 text-2xl font-bold text-emerald-950">{summary?.judgment.business_trigger ?? 0}</div>
+                <div className="mt-1 text-2xl font-bold text-emerald-950">{weekSummary.judgment.business_trigger}</div>
               </div>
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <div className="text-xs text-slate-700">误报</div>
-                <div className="mt-1 text-2xl font-bold text-slate-950">{summary?.judgment.false_positive ?? 0}</div>
+                <div className="mt-1 text-2xl font-bold text-slate-950">{weekSummary.judgment.false_positive}</div>
               </div>
               <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                 <div className="text-xs text-red-800">真实攻击</div>
-                <div className="mt-1 text-2xl font-bold text-red-950">{summary?.judgment.true_attack ?? 0}</div>
+                <div className="mt-1 text-2xl font-bold text-red-950">{weekSummary.judgment.true_attack}</div>
               </div>
               <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                 <div className="text-xs text-gray-700">人工处置</div>
-                <div className="mt-1 text-2xl font-bold text-gray-950">{summary?.operations.manual_completed ?? 0}</div>
+                <div className="mt-1 text-2xl font-bold text-gray-950">{weekSummary.operations.manual_completed}</div>
               </div>
             </div>
           </div>
 
           <div className="rounded-xl border border-gray-200 bg-white p-5">
-            <div className="mb-3 text-sm font-semibold text-gray-900">封禁与处置</div>
+            <div className="mb-3 text-sm font-semibold text-gray-900">封禁与处置（本周 · 全部告警源）</div>
             <div className="grid gap-3">
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
                 <div className="text-xs text-amber-800">封禁 IP 数</div>
-                <div className="mt-1 text-2xl font-bold text-amber-950">{summary?.operations.banned_ip_count ?? 0}</div>
+                <div className="mt-1 text-2xl font-bold text-amber-950">{weekSummary.operations.banned_ip_count}</div>
               </div>
             </div>
             <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
               <div className="text-xs text-slate-700">已封禁 IP</div>
               <div className="sentinelflow-quick-actions">
-                {(summary?.operations.banned_ips ?? []).length > 0 ? (
-                  (summary?.operations.banned_ips ?? []).map((ip) => (
+                {weekSummary.operations.banned_ips.length > 0 ? (
+                  weekSummary.operations.banned_ips.map((ip) => (
                     <span key={ip} className="sentinelflow-chip-button sentinelflow-chip-button-active">{ip}</span>
                   ))
                 ) : (
-                  <span className="sentinelflow-muted-text">当前还没有封禁记录。</span>
+                  <span className="sentinelflow-muted-text">本周还没有封禁记录。</span>
                 )}
               </div>
             </div>
