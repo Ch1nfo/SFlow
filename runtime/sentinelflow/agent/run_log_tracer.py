@@ -4,7 +4,17 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any
 
-from sentinelflow.agent.message_trace import count_react_turns, parse_tool_payload, serialize_message
+from sentinelflow.agent.message_trace import (
+    build_skill_input_audit_record,
+    compute_prompt_digest,
+    count_react_turns,
+    extract_skill_tool_calls,
+    extract_system_prompt_text,
+    parse_tool_payload,
+    serialize_message,
+    serialize_messages_for_prompt_audit,
+    summarize_prompt_stats,
+)
 from sentinelflow.services.agent_run_log_service import AgentRunLogService, RunLogRef
 
 _active_tracer: contextvars.ContextVar["RunLogTracer | None"] = contextvars.ContextVar(
@@ -17,6 +27,30 @@ _active_tracer: contextvars.ContextVar["RunLogTracer | None"] = contextvars.Cont
 class RunLogTracer:
     service: AgentRunLogService
     ref: RunLogRef | dict[str, Any]
+
+    def __post_init__(self) -> None:
+        self._last_prompt_digest_by_turn: dict[tuple[str, str, str, str, int], str] = {}
+        self._last_prompt_stats_by_turn: dict[tuple[str, str, str, str, int], dict[str, Any]] = {}
+
+    @staticmethod
+    def _prompt_cache_key(
+        *,
+        scope: str,
+        graph: str,
+        agent_name: str,
+        node: str,
+        turn: int,
+    ) -> tuple[str, str, str, str, int]:
+        # 同一次 run 里可能出现同名 scope（例如主 Agent 名字与某个 worker 名字重合），
+        # 所以缓存键必须把 graph / agent_name / node 也纳入，避免后写者覆盖前者，
+        # 导致 skill_call_decision 引到错误的 llm_request。
+        return (
+            str(graph or ""),
+            str(agent_name or ""),
+            str(scope or ""),
+            str(node or ""),
+            int(turn),
+        )
 
     def log(
         self,
@@ -56,6 +90,110 @@ class RunLogTracer:
             },
         )
 
+    def log_llm_request(
+        self,
+        *,
+        scope: str,
+        graph: str,
+        agent_name: str,
+        turn: int,
+        messages: list[Any],
+        node: str,
+        alert_data: dict[str, Any] | None = None,
+    ) -> int:
+        prompt_messages, window_info = serialize_messages_for_prompt_audit(messages)
+        system_prompt = extract_system_prompt_text(messages)
+        digest = compute_prompt_digest(prompt_messages)
+        prompt_stats = summarize_prompt_stats(messages, prompt_messages, window_info=window_info)
+        truncated = bool(prompt_stats.get("window_truncated")) or bool(prompt_stats.get("content_truncated_any"))
+        title_suffix = "提示词审计（已截断）" if truncated else "提示词审计"
+        self.log(
+            event_type="llm_request",
+            title=f"{scope} · ReAct 第 {turn} 轮 · {title_suffix}",
+            data={
+                "scope": scope,
+                "graph": graph,
+                "agent_name": agent_name,
+                "node": node,
+                "turn": turn,
+                "prompt_digest": digest,
+                "audit_strip": ["additional_kwargs", "response_metadata"],
+                "system_prompt": system_prompt,
+                "prompt_messages": prompt_messages,
+                "prompt_stats": prompt_stats,
+                "alert_data_keys": sorted(str(key) for key in (alert_data or {}).keys()) if isinstance(alert_data, dict) else [],
+            },
+        )
+        cache_key = self._prompt_cache_key(
+            scope=scope,
+            graph=graph,
+            agent_name=agent_name,
+            node=node,
+            turn=turn,
+        )
+        self._last_prompt_digest_by_turn[cache_key] = digest
+        self._last_prompt_stats_by_turn[cache_key] = prompt_stats
+        return prompt_stats.get("logged_message_count", len(prompt_messages))
+
+    def log_skill_call_decision(
+        self,
+        *,
+        scope: str,
+        graph: str,
+        agent_name: str,
+        turn: int,
+        request_messages: list[Any],
+        response_message: Any,
+        node: str,
+    ) -> None:
+        """Reference the llm_request prompt by digest instead of duplicating it."""
+        serialized_response = serialize_message(response_message)
+        constructed_calls = extract_skill_tool_calls(serialized_response.get("tool_calls") or [])
+        if not constructed_calls:
+            return
+        skill_names = ", ".join(
+            str(item.get("skill_name", "")).strip() for item in constructed_calls if str(item.get("skill_name", "")).strip()
+        )
+        cache_key = self._prompt_cache_key(
+            scope=scope,
+            graph=graph,
+            agent_name=agent_name,
+            node=node,
+            turn=turn,
+        )
+        digest = self._last_prompt_digest_by_turn.get(cache_key, "")
+        prompt_stats = self._last_prompt_stats_by_turn.get(cache_key, {})
+        prompt_ref_source = "llm_request_cache" if digest else "recomputed_from_messages"
+        if not digest:
+            prompt_messages, window_info = serialize_messages_for_prompt_audit(request_messages)
+            digest = compute_prompt_digest(prompt_messages)
+            prompt_stats = summarize_prompt_stats(request_messages, prompt_messages, window_info=window_info)
+        self.log(
+            event_type="skill_call_decision",
+            title=f"{scope} · Skill 调用决策 · {skill_names or 'execute_skill'}",
+            data={
+                "scope": scope,
+                "graph": graph,
+                "agent_name": agent_name,
+                "node": node,
+                "turn": turn,
+                "prompt_reference": {
+                    "event_type": "llm_request",
+                    "turn": turn,
+                    "scope": scope,
+                    "graph": graph,
+                    "agent_name": agent_name,
+                    "node": node,
+                    "prompt_digest": digest,
+                    "source": prompt_ref_source,
+                    "note": "完整提示词请打开同 (graph, agent_name, node, turn) 的 llm_request 事件，避免重复落盘。",
+                },
+                "prompt_stats": prompt_stats,
+                "model_content": str(serialized_response.get("content", "")).strip(),
+                "constructed_tool_calls": constructed_calls,
+            },
+        )
+
     def log_llm_response(
         self,
         *,
@@ -65,8 +203,21 @@ class RunLogTracer:
         turn: int,
         message: Any,
         node: str,
+        request_messages: list[Any] | None = None,
+        alert_data: dict[str, Any] | None = None,
     ) -> None:
         serialized = serialize_message(message)
+        tool_calls = serialized.get("tool_calls") or []
+        if request_messages and extract_skill_tool_calls(tool_calls):
+            self.log_skill_call_decision(
+                scope=scope,
+                graph=graph,
+                agent_name=agent_name,
+                turn=turn,
+                request_messages=request_messages,
+                response_message=message,
+                node=node,
+            )
         self.log(
             event_type="llm_response",
             title=f"{scope} · ReAct 第 {turn} 轮 · 模型输出",
@@ -77,9 +228,40 @@ class RunLogTracer:
                 "node": node,
                 "turn": turn,
                 "message": serialized,
-                "has_tool_calls": bool(serialized.get("tool_calls")),
+                "has_tool_calls": bool(tool_calls),
                 "has_reasoning": bool(str(serialized.get("reasoning", "")).strip()),
             },
+        )
+
+    def log_skill_input_validation(
+        self,
+        *,
+        scope: str,
+        graph: str,
+        agent_name: str,
+        audit: dict[str, Any],
+        node: str = "execute_skill",
+    ) -> None:
+        skill_name = str(audit.get("skill_name", "")).strip() or "skill"
+        compliant = bool(audit.get("compliant"))
+        outcome = str(audit.get("outcome", "")).strip()
+        level = "info" if compliant else "warn"
+        title = (
+            f"{scope} · Skill 入参合规 · {skill_name} · 通过"
+            if compliant
+            else f"{scope} · Skill 入参不合规 · {skill_name} · {outcome}"
+        )
+        self.log(
+            event_type="skill_input_validation",
+            title=title,
+            data={
+                "scope": scope,
+                "graph": graph,
+                "agent_name": agent_name,
+                "node": node,
+                "audit": audit,
+            },
+            level=level,
         )
 
     def log_tool_results(

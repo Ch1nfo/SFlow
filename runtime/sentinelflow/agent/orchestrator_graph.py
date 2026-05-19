@@ -748,13 +748,25 @@ def build_orchestrator_graph(
                 node="supervisor",
             )
 
+        turn = count_react_turns(current_messages) + 1
+        alert_data = state.get("alert_data", {}) if isinstance(state.get("alert_data", {}), dict) else {}
+        if tracer is not None:
+            tracer.log_llm_request(
+                scope=primary_scope,
+                graph="orchestrator",
+                agent_name=primary_name,
+                turn=turn,
+                messages=messages_to_send,
+                node="supervisor",
+                alert_data=alert_data,
+            )
+
         response = await supervisor_llm.ainvoke(messages_to_send)
 
         if cancel is not None and getattr(cancel, "is_set", lambda: False)():
             raise RuntimeError("用户已停止当前任务。")
 
         if tracer is not None:
-            turn = count_react_turns(current_messages) + 1
             tracer.log_llm_response(
                 scope=primary_scope,
                 graph="orchestrator",
@@ -762,6 +774,8 @@ def build_orchestrator_graph(
                 turn=turn,
                 message=response,
                 node="supervisor",
+                request_messages=messages_to_send,
+                alert_data=alert_data,
             )
 
         return {"messages": new_messages + [response]}

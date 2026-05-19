@@ -139,11 +139,21 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
             node="agent_node",
         )
 
+    turn = count_react_turns(current_messages) + 1
+    if tracer is not None:
+        tracer.log_llm_request(
+            scope=scope,
+            graph="agent_react",
+            agent_name=agent_name,
+            turn=turn,
+            messages=messages_to_send,
+            node="agent_node",
+            alert_data=alert_data if isinstance(alert_data, dict) else {},
+        )
     response = await llm.ainvoke(messages_to_send)
     if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
         raise RuntimeError("用户已停止当前任务。")
     if tracer is not None:
-        turn = count_react_turns(current_messages) + 1
         tracer.log_llm_response(
             scope=scope,
             graph="agent_react",
@@ -151,6 +161,8 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
             turn=turn,
             message=response,
             node="agent_node",
+            request_messages=messages_to_send,
+            alert_data=alert_data if isinstance(alert_data, dict) else {},
         )
     return {"messages": seeded_messages + [response], "input_seeded": seeded_flag}
 

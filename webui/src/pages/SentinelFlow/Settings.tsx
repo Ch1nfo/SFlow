@@ -201,6 +201,72 @@ function shortEventData(value: unknown): string {
         if (names.length) return `工具调用：${names.join(', ')}`
       }
     }
+    const promptStats = record.prompt_stats as Record<string, unknown> | undefined
+    const constructed = record.constructed_tool_calls
+    if (Array.isArray(constructed) && constructed.length) {
+      const first = constructed[0] as Record<string, unknown>
+      const skillName = String(first.skill_name || '')
+      const ref = record.prompt_reference as Record<string, unknown> | undefined
+      const digest = ref?.prompt_digest ? `prompt_digest=${String(ref.prompt_digest).slice(0, 12)}` : '同 turn llm_request'
+      return `构造入参: ${skillName} · 提示词原文见${digest}`
+    }
+    const systemPrompt = record.system_prompt
+    if (systemPrompt && typeof systemPrompt === 'object') {
+      const promptRecord = systemPrompt as Record<string, unknown>
+      const chars = Number(promptRecord.content_chars || 0)
+      const truncated = promptRecord.content_truncated === true
+      const windowTrunc = promptStats?.window_truncated === true
+      const dropped = Number(promptStats?.dropped_message_count || 0)
+      const flag = truncated || windowTrunc ? `（已截断${dropped > 0 ? `，丢弃 ${dropped} 条` : ''}）` : ''
+      const hint = `系统提示词 ${chars} 字${flag}`
+      return hint.length > 160 ? `${hint.slice(0, 160)}...` : hint
+    }
+    const promptMessages = record.prompt_messages
+    if (Array.isArray(promptMessages) && promptMessages.length) {
+      const windowTrunc = promptStats?.window_truncated === true
+      const dropped = Number(promptStats?.dropped_message_count || 0)
+      const suffix = windowTrunc ? `（窗口已截断，丢弃 ${dropped} 条历史消息）` : ''
+      return `提示词审计 ${promptMessages.length} 条消息${suffix}`
+    }
+    const audit = record.audit
+    if (audit && typeof audit === 'object') {
+      const auditRecord = audit as Record<string, unknown>
+      const skillName = String(auditRecord.skill_name || '')
+      const outcome = String(auditRecord.outcome || '')
+      const compliant = auditRecord.compliant === true
+      const reasons = auditRecord.failure_reasons
+      if (!compliant && Array.isArray(reasons) && reasons.length) {
+        const line = `${skillName} 不合规: ${reasons.slice(0, 2).join('; ')}`
+        return line.length > 160 ? `${line.slice(0, 160)}...` : line
+      }
+      if (compliant && outcome.startsWith('executed')) {
+        return `${skillName} 入参合规并已执行`
+      }
+      if (outcome === 'blocked_approval_required') {
+        return `${skillName} 入参合规，等待审批`
+      }
+    }
+    const provenance = record.argument_provenance
+    if (Array.isArray(provenance) && provenance.length) {
+      const first = provenance[0] as Record<string, unknown>
+      const sources = first.argument_sources
+      if (Array.isArray(sources) && sources.length) {
+        const hit = sources[0] as Record<string, unknown>
+        const path = String(hit.argument_path || '')
+        const value = String(hit.value || '')
+        const srcList = hit.sources
+        const srcHint =
+          Array.isArray(srcList) && srcList.length
+            ? String((srcList[0] as Record<string, unknown>).path || (srcList[0] as Record<string, unknown>).kind || '')
+            : '未匹配到上下文'
+        const line = `入参 ${path}=${value} ← ${srcHint}`
+        return line.length > 160 ? `${line.slice(0, 160)}...` : line
+      }
+    }
+    const requestCount = record.request_messages
+    if (Array.isArray(requestCount) && requestCount.length) {
+      return `模型输入 ${requestCount.length} 条上下文消息`
+    }
     const taskPrompt = typeof record.task_prompt === 'string' ? record.task_prompt.trim() : ''
     if (taskPrompt) return taskPrompt.length > 160 ? `${taskPrompt.slice(0, 160)}...` : taskPrompt
     const hit = [record.summary, record.content, record.final_response, record.error, record.title].find(

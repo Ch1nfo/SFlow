@@ -9,6 +9,8 @@ from sentinelflow.agent.context_utils import (
     validate_execution_inputs,
     validate_skill_input_schema,
 )
+from sentinelflow.agent.message_trace import build_skill_input_audit_record
+from sentinelflow.agent.run_log_tracer import get_active_tracer, scope_label
 from sentinelflow.agent.state import SentinelFlowAgentState
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
 from sentinelflow.services.skill_approval_service import SkillApprovalService
@@ -103,6 +105,41 @@ def build_agent_tools(
         return json.dumps(
             {"success": False, "data": data, "error": error_message},
             ensure_ascii=False,
+        )
+
+    def _audit_skill_input(
+        state: SentinelFlowAgentState,
+        *,
+        skill_name: str,
+        arguments: dict[str, Any] | None,
+        outcome: str,
+        compliant: bool,
+        error: str = "",
+        validation: dict[str, Any] | None = None,
+        input_schema: dict[str, Any] | None = None,
+        suggested_arguments: dict[str, Any] | None = None,
+        execution_result: dict[str, Any] | None = None,
+    ) -> None:
+        tracer = get_active_tracer()
+        if tracer is None:
+            return
+        agent_name = str(state.get("agent_name", "")).strip()
+        audit = build_skill_input_audit_record(
+            skill_name=skill_name,
+            arguments=arguments,
+            outcome=outcome,
+            compliant=compliant,
+            error=error,
+            validation=validation,
+            input_schema=input_schema,
+            suggested_arguments=suggested_arguments,
+            execution_result=execution_result,
+        )
+        tracer.log_skill_input_validation(
+            scope=scope_label(agent_name, default="Agent"),
+            graph="agent_react",
+            agent_name=agent_name,
+            audit=audit,
         )
 
     def _suggest_skill_arguments(skill_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -325,6 +362,14 @@ def build_agent_tools(
         ) -> str:
             normalized_arguments, argument_error = _normalize_skill_arguments(arguments)
             if argument_error is not None:
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    outcome="rejected_arguments_shape",
+                    compliant=False,
+                    error=argument_error,
+                )
                 return _invalid_arguments_payload(skill_name, argument_error)
             cancel_event = state.get("cancel_event")
             if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
@@ -335,6 +380,14 @@ def build_agent_tools(
             executable_skills_raw = state.get("executable_skills")
             executable_skills = set(executable_skills_raw or [])
             if executable_skills_raw is not None and skill_name not in executable_skills:
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    outcome="rejected_unauthorized",
+                    compliant=False,
+                    error=f"当前 Agent 未被授权执行技能 {skill_name}。",
+                )
                 return json.dumps(
                     {"success": False, "data": {}, "error": f"当前 Agent 未被授权执行技能 {skill_name}。"},
                     ensure_ascii=False,
@@ -342,12 +395,26 @@ def build_agent_tools(
             skill, resolve_error = _resolve_skill_or_error(skill_name)
             if resolve_error is not None:
                 return resolve_error
+            input_schema = getattr(skill.spec, "input_schema", {})
+            input_schema = input_schema if isinstance(input_schema, dict) else {}
             schema_validation = validate_skill_input_schema(
                 skill_name=skill_name,
                 arguments=normalized_arguments,
-                input_schema=getattr(skill.spec, "input_schema", {}),
+                input_schema=input_schema,
             )
             if not schema_validation.get("valid"):
+                suggested = _suggest_skill_arguments(skill_name, normalized_arguments)
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    outcome="rejected_schema",
+                    compliant=False,
+                    error="Skill 调用参数不符合 input_schema，请修正后再执行。",
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                    suggested_arguments=suggested or None,
+                )
                 return _build_validation_payload(
                     skill_name=skill_name,
                     arguments=normalized_arguments,
@@ -357,17 +424,58 @@ def build_agent_tools(
                     include_invalid_inputs=True,
                 )
             if not _has_input_schema(skill):
-                validation_payload = _input_validation_payload(
+                alert_data = state.get("alert_data", {})
+                task_prompt = ""
+                if isinstance(alert_data, dict):
+                    task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
+                execution_validation = validate_execution_inputs(
                     skill_name=skill_name,
                     arguments=normalized_arguments,
-                    state=state,
+                    task_prompt=task_prompt,
                 )
-                if validation_payload is not None:
-                    return validation_payload
+                if not execution_validation.get("valid"):
+                    _audit_skill_input(
+                        state,
+                        skill_name=skill_name,
+                        arguments=normalized_arguments,
+                        outcome="rejected_execution_inputs",
+                        compliant=False,
+                        error="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                        validation=execution_validation,
+                        input_schema=input_schema,
+                    )
+                    return _build_validation_payload(
+                        skill_name=skill_name,
+                        arguments=normalized_arguments,
+                        validation=execution_validation,
+                        state=state,
+                        error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                        include_invalid_inputs=False,
+                    )
             execution_entry = str(state.get("execution_entry", "")).strip()
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments=normalized_arguments, state=state):
+                    _audit_skill_input(
+                        state,
+                        skill_name=skill_name,
+                        arguments=normalized_arguments,
+                        outcome="blocked_user_rejected",
+                        compliant=False,
+                        error=f"Skill「{skill_name}」已被用户拒绝，本轮相同参数不会再次发起审批。",
+                        validation=schema_validation,
+                        input_schema=input_schema,
+                    )
                     return _rejected_payload(skill_name=skill_name, arguments=normalized_arguments)
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    outcome="blocked_approval_required",
+                    compliant=True,
+                    error="等待人工审批后执行。",
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                )
                 return _approval_payload(skill_name=skill_name, arguments=normalized_arguments, state=state)
             context = {
                 "event_id_ref": state.get("event_id_ref", ""),
@@ -376,6 +484,17 @@ def build_agent_tools(
             try:
                 result = skill_runtime.execute_skill(skill_name, normalized_arguments, context)
                 payload = result.data if isinstance(result.data, dict) else {"result": result.data}
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    outcome="executed_success" if result.success else "executed_failure",
+                    compliant=True,
+                    error=str(result.error or "").strip(),
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                    execution_result={"success": result.success, "data": payload, "error": result.error},
+                )
                 return json.dumps(
                     {
                         "success": result.success,
@@ -385,6 +504,16 @@ def build_agent_tools(
                     ensure_ascii=False,
                 )
             except Exception as exc:
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    outcome="executed_exception",
+                    compliant=True,
+                    error=f"Tool Execution Exception: {exc}",
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                )
                 return json.dumps(
                     {
                         "success": False,
@@ -417,40 +546,95 @@ def build_agent_tools(
             skill, resolve_error = _resolve_skill_or_error(skill_name)
             if resolve_error is not None:
                 return resolve_error
+            no_args: dict[str, Any] = {}
+            input_schema = getattr(skill.spec, "input_schema", {})
+            input_schema = input_schema if isinstance(input_schema, dict) else {}
             schema_validation = validate_skill_input_schema(
                 skill_name=skill_name,
-                arguments={},
-                input_schema=getattr(skill.spec, "input_schema", {}),
+                arguments=no_args,
+                input_schema=input_schema,
             )
             if not schema_validation.get("valid"):
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=no_args,
+                    outcome="rejected_schema",
+                    compliant=False,
+                    error="Skill 调用参数不符合 input_schema，请修正后再执行。",
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                )
                 return _build_validation_payload(
                     skill_name=skill_name,
-                    arguments={},
+                    arguments=no_args,
                     validation=schema_validation,
                     state=state,
                     error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
                     include_invalid_inputs=True,
                 )
             if not _has_input_schema(skill):
-                validation_payload = _input_validation_payload(
+                alert_data = state.get("alert_data", {})
+                task_prompt = ""
+                if isinstance(alert_data, dict):
+                    task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
+                execution_validation = validate_execution_inputs(
                     skill_name=skill_name,
-                    arguments={},
-                    state=state,
+                    arguments=no_args,
+                    task_prompt=task_prompt,
                 )
-                if validation_payload is not None:
-                    return validation_payload
+                if not execution_validation.get("valid"):
+                    _audit_skill_input(
+                        state,
+                        skill_name=skill_name,
+                        arguments=no_args,
+                        outcome="rejected_execution_inputs",
+                        compliant=False,
+                        error="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                        validation=execution_validation,
+                        input_schema=input_schema,
+                    )
+                    return _build_validation_payload(
+                        skill_name=skill_name,
+                        arguments=no_args,
+                        validation=execution_validation,
+                        state=state,
+                        error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                        include_invalid_inputs=False,
+                    )
             execution_entry = str(state.get("execution_entry", "")).strip()
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
-                if _is_rejected_in_current_run(skill_name=skill_name, arguments={}, state=state):
-                    return _rejected_payload(skill_name=skill_name, arguments={})
-                return _approval_payload(skill_name=skill_name, arguments={}, state=state)
+                if _is_rejected_in_current_run(skill_name=skill_name, arguments=no_args, state=state):
+                    return _rejected_payload(skill_name=skill_name, arguments=no_args)
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=no_args,
+                    outcome="blocked_approval_required",
+                    compliant=True,
+                    error="等待人工审批后执行。",
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                )
+                return _approval_payload(skill_name=skill_name, arguments=no_args, state=state)
             context = {
                 "event_id_ref": state.get("event_id_ref", ""),
                 "alert_data": state.get("alert_data", {}),
             }
             try:
-                result = skill_runtime.execute_skill(skill_name, {}, context)
+                result = skill_runtime.execute_skill(skill_name, no_args, context)
                 payload = result.data if isinstance(result.data, dict) else {"result": result.data}
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=no_args,
+                    outcome="executed_success" if result.success else "executed_failure",
+                    compliant=True,
+                    error=str(result.error or "").strip(),
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                    execution_result={"success": result.success, "data": payload, "error": result.error},
+                )
                 return json.dumps(
                     {
                         "success": result.success,
@@ -460,6 +644,16 @@ def build_agent_tools(
                     ensure_ascii=False,
                 )
             except Exception as exc:
+                _audit_skill_input(
+                    state,
+                    skill_name=skill_name,
+                    arguments=no_args,
+                    outcome="executed_exception",
+                    compliant=True,
+                    error=f"Tool Execution Exception: {exc}",
+                    validation=schema_validation,
+                    input_schema=input_schema,
+                )
                 return json.dumps(
                     {
                         "success": False,
