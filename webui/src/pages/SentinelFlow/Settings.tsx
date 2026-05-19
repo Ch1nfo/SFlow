@@ -1135,7 +1135,7 @@ export default function SentinelFlowSettingsPage() {
                 </button>
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-5">
+            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-auto p-5">
               {debugLogError ? <div className="mb-4 rounded-xl border border-red-800 bg-red-950/60 p-4 text-sm text-red-100">{debugLogError}</div> : null}
               <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
                 <label className="flex flex-col gap-1 text-sm text-slate-300">
@@ -1205,7 +1205,7 @@ export default function SentinelFlowSettingsPage() {
                     </div>
                     <div className="text-xs text-slate-500">{debugLogDetail?.events?.length ?? 0} 个事件</div>
                   </div>
-                  <div className="max-h-[520px] space-y-3 overflow-auto pr-1">
+                  <div className="max-h-[520px] space-y-3 overflow-y-auto overflow-x-auto pr-1">
                     {[...(debugLogDetail?.events ?? [])]
                       .sort((left, right) => runLogEventSeq(left) - runLogEventSeq(right))
                       .map((event, index) => {
@@ -1242,7 +1242,7 @@ export default function SentinelFlowSettingsPage() {
                             onJumpToPrompt={jumpToRunLogPrompt}
                           />
                         </summary>
-                        <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900 p-3 text-slate-100">
+                        <div className="mt-3 min-w-0 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-slate-100">
                           <JsonPreview value={event} />
                         </div>
                       </details>

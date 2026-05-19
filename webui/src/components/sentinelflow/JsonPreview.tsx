@@ -13,7 +13,9 @@ export default function JsonPreview({ value }: JsonPreviewProps) {
 
   return (
     <div className="min-w-0 w-full space-y-3">
-      <pre className="sentinelflow-code-block">{preview}</pre>
+      <div className="max-w-full overflow-x-auto overscroll-x-contain">
+        <pre className="sentinelflow-code-block">{preview}</pre>
+      </div>
       {exceedsLimit ? (
         <button type="button" className="sentinelflow-ghost-button" onClick={() => setExpanded((current) => !current)}>
           {expanded ? '收起动作结果' : '展开更多'}

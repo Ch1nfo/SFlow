@@ -531,7 +531,7 @@
   }
 
   .sentinelflow-code-block {
-    @apply block w-full min-w-0 max-w-full overflow-x-auto rounded-2xl bg-slate-900 p-4 text-xs leading-6 text-slate-100;
+    @apply block w-max min-w-full max-w-none whitespace-pre rounded-2xl bg-slate-900 p-4 text-xs leading-6 text-slate-100;
   }
 
   .sentinelflow-key-value-list {
