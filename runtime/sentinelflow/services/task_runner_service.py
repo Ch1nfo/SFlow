@@ -5,6 +5,7 @@ from typing import Any
 
 from sentinelflow.agent.service import SentinelFlowAgentService
 from sentinelflow.services.audit_service import AuditService
+from sentinelflow.agent.run_log_tracer import activate_run_log_tracer, deactivate_run_log_tracer
 from sentinelflow.services.agent_run_log_service import AgentRunLogService, RunLogRef
 from sentinelflow.services.dispatch_service import AlertDispatchService
 from sentinelflow.workflows.agent_workflow_registry import load_agent_workflow
@@ -37,6 +38,23 @@ class AlertTaskRunnerService:
         if self.run_log_service is None:
             return
         self.run_log_service.record_agent_result(run_log_ref, agent_result)
+
+    def resolve_run_log_ref(self, task) -> RunLogRef | None:
+        if self.run_log_service is None or task is None:
+            return None
+        alert_data: dict[str, Any] = {}
+        if isinstance(task.payload, dict):
+            payload_alert = task.payload.get("alert_data")
+            if isinstance(payload_alert, dict):
+                alert_data = payload_alert
+        try:
+            return self.run_log_service.derive_ref(
+                task_id=task.task_id,
+                event_ids=task.event_ids or str(alert_data.get("eventIds") or ""),
+                alert_data=alert_data,
+            )
+        except Exception:
+            return None
 
     def _agent_result_is_success(self, agent_result: dict[str, Any], selected_action: str) -> bool:
         final_facts = agent_result.get("final_facts", {})
@@ -309,15 +327,105 @@ class AlertTaskRunnerService:
         if not agent_available:
             self._log_event(run_log_ref, "task_finished", "Agent Runtime 不可用", {"error": _agent_error or "unknown"}, level="error")
             return self._finalize_failure(task, selected_action, f"当前 Agent Runtime 不可用：{_agent_error or 'unknown'}")
-        if task.workflow_name == "agent_react":
-            if not self.agent_service.is_configured():
-                self._log_event(run_log_ref, "task_finished", "主 Agent 未配置", {}, level="error")
-                return self._finalize_failure(task, selected_action, "当前未完成系统主 Agent 配置。")
-            return await self._run_agent_react(task, alert, selected_action, execution_context, run_log_ref)
-        return await self._run_workflow_or_fallback(task, alert, selected_action, execution_context, run_log_ref)
 
-    def finalize_after_approval(self, task_id: str, agent_result: dict[str, Any]) -> dict[str, Any]:
+        activate_run_log_tracer(self.run_log_service, run_log_ref)
+        try:
+            if task.workflow_name == "agent_react":
+                if not self.agent_service.is_configured():
+                    self._log_event(run_log_ref, "task_finished", "主 Agent 未配置", {}, level="error")
+                    return self._finalize_failure(task, selected_action, "当前未完成系统主 Agent 配置。")
+                return await self._run_agent_react(task, alert, selected_action, execution_context, run_log_ref)
+            return await self._run_workflow_or_fallback(task, alert, selected_action, execution_context, run_log_ref)
+        finally:
+            deactivate_run_log_tracer()
+
+    def prepare_approval_resume(
+        self,
+        task_id: str,
+        *,
+        approval_id: str = "",
+        decision: str = "",
+        skill_name: str = "",
+    ) -> dict[str, Any]:
+        """Switch task to running and log task_running BEFORE replaying the graph.
+
+        Returns ``{"ok": bool, "task", "run_log_ref", "selected_action", "error",
+        "current_status"}``. Callers MUST abort the resume (do not call
+        ``resolve_skill_approval``) when ``ok`` is ``False`` to avoid
+        "log says resumed, DB still awaiting_approval" inconsistency.
+        """
         task = self.dispatch_service.get_task(task_id)
+        if task is None:
+            return {
+                "ok": False,
+                "task": None,
+                "run_log_ref": None,
+                "selected_action": "",
+                "error": "待恢复任务不存在。",
+                "current_status": "",
+            }
+        selected_action = task.last_action or "triage_close"
+        prior_status = task.status
+        resumed = self.dispatch_service.mark_task_running_from_approval(task_id, selected_action)
+        if resumed is None:
+            run_log_ref = self.resolve_run_log_ref(task)
+            self._log_event(
+                run_log_ref,
+                "task_finished",
+                "审批恢复中止：任务状态已变化",
+                {
+                    "task_id": task_id,
+                    "approval_id": approval_id,
+                    "decision": decision,
+                    "skill_name": skill_name,
+                    "expected_status": "awaiting_approval",
+                    "current_status": prior_status,
+                    "selected_action": selected_action,
+                },
+                level="error",
+            )
+            return {
+                "ok": False,
+                "task": task,
+                "run_log_ref": run_log_ref,
+                "selected_action": selected_action,
+                "error": f"任务状态已变化（当前 {prior_status}），无法恢复执行。",
+                "current_status": prior_status,
+            }
+        task = resumed
+        run_log_ref = self.resolve_run_log_ref(task)
+        if run_log_ref is not None:
+            self._log_event(
+                run_log_ref,
+                "task_running",
+                "审批已处理，任务恢复运行",
+                {
+                    "task_id": task.task_id,
+                    "selected_action": selected_action,
+                    "approval_id": approval_id,
+                    "decision": decision,
+                    "skill_name": skill_name,
+                },
+            )
+        return {
+            "ok": True,
+            "task": task,
+            "run_log_ref": run_log_ref,
+            "selected_action": selected_action,
+            "error": None,
+            "current_status": "running",
+        }
+
+    def finalize_after_approval(
+        self,
+        task_id: str,
+        agent_result: dict[str, Any],
+        *,
+        prepared_task: Any = None,
+        run_log_ref: RunLogRef | None = None,
+        selected_action: str = "",
+    ) -> dict[str, Any]:
+        task = prepared_task if prepared_task is not None else self.dispatch_service.get_task(task_id)
         if not task:
             return {
                 "action": "approval",
@@ -328,13 +436,24 @@ class AlertTaskRunnerService:
                 "task": None,
                 "error": "待恢复任务不存在。",
             }
-        resumed = self.dispatch_service.mark_task_running_from_approval(task_id, task.last_action or "triage_close")
-        task = resumed or task
-        selected_action = task.last_action or "triage_close"
+        if prepared_task is None:
+            resumed = self.dispatch_service.mark_task_running_from_approval(task_id, task.last_action or "triage_close")
+            task = resumed or task
+        if not selected_action:
+            selected_action = task.last_action or "triage_close"
+        if run_log_ref is None:
+            run_log_ref = self.resolve_run_log_ref(task)
+        if prepared_task is None and run_log_ref is not None:
+            self._log_event(
+                run_log_ref,
+                "task_running",
+                "审批已处理，任务恢复运行",
+                {"task_id": task.task_id, "selected_action": selected_action},
+            )
         if agent_result.get("approval_pending"):
             pending_payload = dict(agent_result)
             task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
-            return {
+            result = {
                 "action": selected_action,
                 "success": False,
                 "task_id": task.task_id if task else task_id,
@@ -343,6 +462,6 @@ class AlertTaskRunnerService:
                 "task": task,
                 "error": "任务等待技能审批。",
             }
-        if self._agent_result_is_success(agent_result, selected_action):
-            return self._finalize_success(task, selected_action, agent_result)
-        return self._finalize_failure(task, selected_action, self._agent_result_failure_reason(agent_result, selected_action), agent_result)
+            self._log_event(run_log_ref, "task_finished", "任务再次等待技能审批", result, level="warn")
+            return result
+        return self._finish_agent_result(task, selected_action, agent_result, run_log_ref)

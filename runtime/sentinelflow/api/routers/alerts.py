@@ -10,8 +10,9 @@ from uuid import uuid4
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from sentinelflow.agent.registry import list_agent_definitions
+from sentinelflow.agent.run_log_tracer import activate_run_log_tracer, deactivate_run_log_tracer
 from sentinelflow.api.schemas import CommandDispatchRequest, AlertActionRequest, ApprovalDecisionRequest
-from sentinelflow.api.deps import agent_service, dispatch_service, audit_service, polling_service, skill_runtime, _serialize, auto_execution_service, task_runner_service, skill_approval_service, WORKFLOW_ROOT, AGENT_ROOT
+from sentinelflow.api.deps import agent_service, dispatch_service, audit_service, polling_service, skill_runtime, _serialize, agent_run_log_service, auto_execution_service, task_runner_service, skill_approval_service, WORKFLOW_ROOT, AGENT_ROOT
 from sentinelflow.api.utils import _extract_alert_payload, _resolve_task
 from sentinelflow.config.runtime import load_runtime_config, save_runtime_config
 
@@ -680,35 +681,86 @@ async def _resolve_approval_json(
             task=None,
             error="找不到待审批记录。",
         )
-    try:
-        result = await agent_service.resolve_skill_approval(
-            approval_id,
-            decision,
-            status_callback=status_callback,
-        )
-    except Exception as exc:
-        return _build_approval_resolution_response(
-            success=False,
-            route="approval_resolution_failed",
-            approval=skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval),
-            data={},
-            task=None,
-            error=f"审批恢复执行失败：{exc}",
-        )
-    payload = result.get("data", {})
-    payload = payload if isinstance(payload, dict) else {}
-    serialized_approval = skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval)
-    current_approval = _select_current_approval(payload, serialized_approval)
+    prepared_task = None
+    run_log_ref = None
+    prepared_selected_action = ""
     if approval.scope_type == "alert_task":
-        finalized = task_runner_service.finalize_after_approval(approval.scope_ref, payload)
-        return _build_approval_resolution_response(
-            success=bool(finalized.get("success", False)),
-            route=str(result.get("route", "")).strip(),
-            approval=current_approval,
-            data=finalized.get("data", {}),
-            task=_serialize(finalized.get("task")),
-            error=None if bool(payload.get("approval_pending")) else finalized.get("error"),
+        prepared = task_runner_service.prepare_approval_resume(
+            approval.scope_ref,
+            approval_id=approval_id,
+            decision=decision,
+            skill_name=approval.skill_name,
         )
+        if not prepared.get("ok"):
+            return _build_approval_resolution_response(
+                success=False,
+                route="approval_resume_state_conflict",
+                approval=skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval),
+                data={
+                    "current_status": prepared.get("current_status", ""),
+                    "task": _serialize(prepared.get("task")),
+                },
+                task=_serialize(prepared.get("task")),
+                error=prepared.get("error") or "审批恢复中止：任务状态已变化。",
+            )
+        prepared_task = prepared["task"]
+        run_log_ref = prepared["run_log_ref"]
+        prepared_selected_action = prepared["selected_action"]
+    tracer_activated = activate_run_log_tracer(agent_run_log_service, run_log_ref) is not None
+    if tracer_activated and run_log_ref is not None:
+        agent_run_log_service.append(
+            run_log_ref,
+            "approval_resolution",
+            f"审批决定：{decision}",
+            {"approval_id": approval_id, "decision": decision, "skill_name": approval.skill_name},
+        )
+    try:
+        try:
+            result = await agent_service.resolve_skill_approval(
+                approval_id,
+                decision,
+                status_callback=status_callback,
+            )
+        except Exception as exc:
+            if tracer_activated and run_log_ref is not None:
+                agent_run_log_service.append(
+                    run_log_ref,
+                    "agent_exception",
+                    "审批恢复执行异常",
+                    {"error": str(exc), "approval_id": approval_id},
+                    level="error",
+                )
+            return _build_approval_resolution_response(
+                success=False,
+                route="approval_resolution_failed",
+                approval=skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval),
+                data={},
+                task=None,
+                error=f"审批恢复执行失败：{exc}",
+            )
+        payload = result.get("data", {})
+        payload = payload if isinstance(payload, dict) else {}
+        serialized_approval = skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval)
+        current_approval = _select_current_approval(payload, serialized_approval)
+        if approval.scope_type == "alert_task":
+            finalized = task_runner_service.finalize_after_approval(
+                approval.scope_ref,
+                payload,
+                prepared_task=prepared_task,
+                run_log_ref=run_log_ref,
+                selected_action=prepared_selected_action,
+            )
+            return _build_approval_resolution_response(
+                success=bool(finalized.get("success", False)),
+                route=str(result.get("route", "")).strip(),
+                approval=current_approval,
+                data=finalized.get("data", {}),
+                task=_serialize(finalized.get("task")),
+                error=None if bool(payload.get("approval_pending")) else finalized.get("error"),
+            )
+    finally:
+        if tracer_activated:
+            deactivate_run_log_tracer()
     return _build_approval_resolution_response(
         success=bool(result.get("success", False)),
         route=str(result.get("route", "")).strip(),

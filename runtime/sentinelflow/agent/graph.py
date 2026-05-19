@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 from sentinelflow.agent.nodes import agent_node, should_continue
+from sentinelflow.agent.run_log_tracer import get_active_tracer, make_logged_tool_node
 from sentinelflow.agent.state import SentinelFlowAgentState
 from sentinelflow.agent.tools import build_agent_tools
 from sentinelflow.config.runtime import SentinelFlowRuntimeConfig
@@ -26,7 +27,6 @@ def build_agent_graph(
 ):
     try:
         from langgraph.graph import END, START, StateGraph
-        from langgraph.prebuilt import ToolNode
         from langchain_openai import ChatOpenAI
     except ModuleNotFoundError as exc:  # pragma: no cover
         raise ModuleNotFoundError(
@@ -92,7 +92,16 @@ def build_agent_graph(
 
     builder = StateGraph(SentinelFlowAgentState)
     builder.add_node("agent_node", _agent)
-    builder.add_node("tools_node", ToolNode(tools))
+    builder.add_node(
+        "tools_node",
+        make_logged_tool_node(
+            tools,
+            scope="Agent",
+            graph="agent_react",
+            agent_name="",
+            node="tools_node",
+        ),
+    )
     builder.add_node("approval_gate", _approval_gate)
     builder.add_node("synthesis_node", _build_synthesis_node(runtime_config))
     builder.add_edge(START, "agent_node")
@@ -163,6 +172,22 @@ def _build_synthesis_node(runtime_config: SentinelFlowRuntimeConfig):
                 timeout=runtime_config.llm_timeout,
             )
             response = await llm.ainvoke(synthesis_messages)
+            tracer = get_active_tracer()
+            if tracer is not None:
+                tracer.log(
+                    event_type="synthesis_llm_response",
+                    title="研判合成 · 模型输出",
+                    data={
+                        "scope": "synthesis",
+                        "graph": "agent_react",
+                        "agent_name": "synthesis_node",
+                        "node": "synthesis_node",
+                        "message": {
+                            "type": "ai",
+                            "content": stringify_llm_content(getattr(response, "content", response)),
+                        },
+                    },
+                )
             content = stringify_llm_content(getattr(response, "content", response))
             result = parse_alert_judgment_content(content)
             return {"structured_judgment": result.model_dump()}

@@ -186,12 +186,37 @@ function shortEventData(value: unknown): string {
   if (typeof value === 'string') return value.length > 160 ? `${value.slice(0, 160)}...` : value
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>
+    const message = record.message
+    if (message && typeof message === 'object') {
+      const messageRecord = message as Record<string, unknown>
+      const reasoning = typeof messageRecord.reasoning === 'string' ? messageRecord.reasoning.trim() : ''
+      if (reasoning) return reasoning.length > 160 ? `${reasoning.slice(0, 160)}...` : reasoning
+      const content = typeof messageRecord.content === 'string' ? messageRecord.content.trim() : ''
+      if (content) return content.length > 160 ? `${content.slice(0, 160)}...` : content
+      const toolCalls = messageRecord.tool_calls
+      if (Array.isArray(toolCalls) && toolCalls.length) {
+        const names = toolCalls
+          .map((item) => (item && typeof item === 'object' ? String((item as Record<string, unknown>).name || '') : ''))
+          .filter(Boolean)
+        if (names.length) return `工具调用：${names.join(', ')}`
+      }
+    }
+    const taskPrompt = typeof record.task_prompt === 'string' ? record.task_prompt.trim() : ''
+    if (taskPrompt) return taskPrompt.length > 160 ? `${taskPrompt.slice(0, 160)}...` : taskPrompt
     const hit = [record.summary, record.content, record.final_response, record.error, record.title].find(
       (item) => typeof item === 'string' && item.trim(),
     )
     if (typeof hit === 'string') return hit.length > 160 ? `${hit.slice(0, 160)}...` : hit
   }
   return ''
+}
+
+function runLogEventSeq(event: { seq?: number; data?: unknown }): number {
+  if (typeof event.seq === 'number') return event.seq
+  if (event.data && typeof event.data === 'object' && typeof (event.data as Record<string, unknown>).seq === 'number') {
+    return Number((event.data as Record<string, unknown>).seq)
+  }
+  return Number.MAX_SAFE_INTEGER
 }
 
 export default function SentinelFlowSettingsPage() {
@@ -991,13 +1016,20 @@ export default function SentinelFlowSettingsPage() {
                     <div className="text-xs text-slate-500">{debugLogDetail?.events?.length ?? 0} 个事件</div>
                   </div>
                   <div className="max-h-[520px] space-y-3 overflow-auto pr-1">
-                    {debugLogDetail?.events?.map((event, index) => (
-                      <details key={`${event.ts}-${index}`} className="rounded-lg border border-slate-800 bg-slate-950 p-3" open={index < 3}>
+                    {[...(debugLogDetail?.events ?? [])]
+                      .sort((left, right) => runLogEventSeq(left) - runLogEventSeq(right))
+                      .map((event, index) => (
+                      <details key={`${event.ts}-${event.seq ?? index}`} className="rounded-lg border border-slate-800 bg-slate-950 p-3" open={index < 3}>
                         <summary className="cursor-pointer list-none">
                           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                            <span>#{index + 1}</span>
+                            <span>#{typeof event.seq === 'number' ? event.seq : index + 1}</span>
                             <span>{event.ts}</span>
                             <span className="rounded-full bg-slate-800 px-2 py-0.5 text-slate-300">{event.phase}</span>
+                            {event.phase === 'react_trace' && event.data && typeof event.data === 'object' ? (
+                              <span className="rounded-full bg-indigo-900/60 px-2 py-0.5 text-indigo-200">
+                                {String((event.data as Record<string, unknown>).event_type || 'react')}
+                              </span>
+                            ) : null}
                             <span className={event.level === 'error' ? 'text-red-300' : event.level === 'warn' ? 'text-amber-300' : 'text-slate-400'}>{event.level}</span>
                           </div>
                           <div className="mt-1 text-sm font-medium text-slate-100">{event.title}</div>

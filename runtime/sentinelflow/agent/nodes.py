@@ -6,6 +6,8 @@ from typing import Literal
 from sentinelflow.agent.catalog import load_skill_catalog
 from sentinelflow.agent.context_utils import build_context_envelope, build_context_manifest, format_context_manifest_header
 from sentinelflow.agent.prompt_builder import PromptBuildContext, build_prompt
+from sentinelflow.agent.message_trace import count_react_turns
+from sentinelflow.agent.run_log_tracer import get_active_tracer, scope_label
 from sentinelflow.agent.state import SentinelFlowAgentState
 
 try:
@@ -125,9 +127,31 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
         seeded_messages = []
         seeded_flag = True
 
+    agent_name = str(state.get("agent_name", "")).strip()
+    scope = scope_label(agent_name, default="子 Agent")
+    tracer = get_active_tracer()
+    if tracer is not None and not current_messages:
+        tracer.log_system_prompt(
+            scope=scope,
+            graph="agent_react",
+            agent_name=agent_name,
+            content=str(getattr(system_msg, "content", "")),
+            node="agent_node",
+        )
+
     response = await llm.ainvoke(messages_to_send)
     if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
         raise RuntimeError("用户已停止当前任务。")
+    if tracer is not None:
+        turn = count_react_turns(current_messages) + 1
+        tracer.log_llm_response(
+            scope=scope,
+            graph="agent_react",
+            agent_name=agent_name,
+            turn=turn,
+            message=response,
+            node="agent_node",
+        )
     return {"messages": seeded_messages + [response], "input_seeded": seeded_flag}
 
 

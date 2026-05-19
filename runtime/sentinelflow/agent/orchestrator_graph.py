@@ -36,6 +36,8 @@ from sentinelflow.agent.context_utils import (
     summarize_tool_calls,
 )
 from sentinelflow.agent.graph import build_agent_graph
+from sentinelflow.agent.message_trace import count_react_turns
+from sentinelflow.agent.run_log_tracer import get_active_tracer, make_logged_tool_node, scope_label
 from sentinelflow.agent.orchestrator_state import OrchestratorState
 from sentinelflow.agent.policy import can_agent_execute_skill, can_agent_read_skill
 from sentinelflow.agent.tools import build_agent_tools
@@ -214,6 +216,16 @@ def _build_worker_subgraph_tool(
             "rejected_fingerprints": list(state.get("rejected_fingerprints") or []),
             "executed_skill_cache": dict(state.get("executed_skill_cache", {}) or {}),
         }
+        tracer = get_active_tracer()
+        if tracer is not None:
+            tracer.log_worker_boundary(
+                worker=worker_agent_def.name,
+                step=step_idx,
+                event_type="worker_started",
+                title=f"子 Agent {worker_agent_def.name} · 开始执行",
+                extra={"task_prompt": task_prompt},
+            )
+
         worker_config = worker_agent_def.resolve_runtime_config(runtime_config)
         subgraph = build_agent_graph(
             project_root,
@@ -227,6 +239,14 @@ def _build_worker_subgraph_tool(
         try:
             worker_state = await subgraph.ainvoke(child_state)
         except Exception as exc:
+            if tracer is not None:
+                tracer.log_worker_boundary(
+                    worker=worker_agent_def.name,
+                    step=step_idx,
+                    event_type="worker_failed",
+                    title=f"子 Agent {worker_agent_def.name} · 执行异常",
+                    extra={"error": str(exc)},
+                )
             return {
                 "step": step_idx,
                 "worker": worker_agent_def.name,
@@ -267,6 +287,19 @@ def _build_worker_subgraph_tool(
             tool_calls,
             tool_messages=list(worker_state.get("messages", [])),
         )
+        if tracer is not None:
+            tracer.log_worker_boundary(
+                worker=worker_agent_def.name,
+                step=step_idx,
+                event_type="worker_finished",
+                title=f"子 Agent {worker_agent_def.name} · 执行完成",
+                extra={
+                    "success": bool(final_text),
+                    "skills_used": skills_used,
+                    "final_response": final_text,
+                    "approval_pending": bool(worker_state.get("approval_pending")),
+                },
+            )
         result = {
             "step": step_idx,
             "worker": worker_agent_def.name,
@@ -703,10 +736,33 @@ def build_orchestrator_graph(
             messages_to_send = [system_msg] + current_messages
             new_messages = []
 
+        primary_name = str(getattr(primary_agent, "name", "")).strip()
+        primary_scope = scope_label(primary_name, default="主 Agent")
+        tracer = get_active_tracer()
+        if tracer is not None and not current_messages:
+            tracer.log_system_prompt(
+                scope=primary_scope,
+                graph="orchestrator",
+                agent_name=primary_name,
+                content=system_prompt,
+                node="supervisor",
+            )
+
         response = await supervisor_llm.ainvoke(messages_to_send)
 
         if cancel is not None and getattr(cancel, "is_set", lambda: False)():
             raise RuntimeError("用户已停止当前任务。")
+
+        if tracer is not None:
+            turn = count_react_turns(current_messages) + 1
+            tracer.log_llm_response(
+                scope=primary_scope,
+                graph="orchestrator",
+                agent_name=primary_name,
+                turn=turn,
+                message=response,
+                node="supervisor",
+            )
 
         return {"messages": new_messages + [response]}
 
@@ -739,7 +795,16 @@ def build_orchestrator_graph(
     # ── Assemble the graph ────────────────────────────────────────────────────
     builder: StateGraph = StateGraph(OrchestratorState)
     builder.add_node("supervisor", _supervisor_node)
-    builder.add_node("tools", ToolNode(supervisor_tools))
+    builder.add_node(
+        "tools",
+        make_logged_tool_node(
+            supervisor_tools,
+            scope="主 Agent",
+            graph="orchestrator",
+            agent_name=str(getattr(primary_agent, "name", "")).strip(),
+            node="supervisor_tools",
+        ),
+    )
     builder.add_node("approval_gate", _approval_gate)
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges(

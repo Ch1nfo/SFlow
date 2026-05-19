@@ -64,6 +64,56 @@ class AgentRunLogService:
     def __init__(self, root: Path = RUN_LOG_ROOT) -> None:
         self.root = root
         self._lock = threading.Lock()
+        self._seq_counters: dict[str, int] = {}
+
+    def _seq_key(self, ref: RunLogRef) -> str:
+        return f"{ref.date}/{ref.log_id}"
+
+    def _max_seq_on_disk(self, path: Path) -> int:
+        if not path.is_file():
+            return 0
+        max_seq = 0
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = item.get("seq")
+                    if isinstance(candidate, int) and candidate > max_seq:
+                        max_seq = candidate
+                        continue
+                    nested = item.get("data") if isinstance(item.get("data"), dict) else {}
+                    nested_seq = nested.get("seq") if isinstance(nested, dict) else None
+                    if isinstance(nested_seq, int) and nested_seq > max_seq:
+                        max_seq = nested_seq
+        except OSError:
+            return max_seq
+        return max_seq
+
+    def _next_seq_locked(self, ref: RunLogRef) -> int:
+        key = self._seq_key(ref)
+        if key not in self._seq_counters:
+            self._seq_counters[key] = self._max_seq_on_disk(ref.path)
+        self._seq_counters[key] += 1
+        return self._seq_counters[key]
+
+    def derive_ref(
+        self,
+        *,
+        task_id: str,
+        event_ids: str,
+        alert_data: dict[str, Any] | None = None,
+    ) -> RunLogRef:
+        alert_data = alert_data or {}
+        log_date = _event_date(alert_data)
+        safe_event = _safe_name(event_ids or alert_data.get("eventIds") or task_id, "event")
+        safe_task = _safe_name(task_id, "task")
+        log_id = f"{safe_event}_{safe_task}"
+        return RunLogRef(date=log_date, log_id=log_id, path=self.root / log_date / f"{log_id}.jsonl")
 
     def retention_days(self) -> int:
         return max(int(getattr(load_runtime_config(), "run_log_retention_days", 1) or 1), 1)
@@ -134,20 +184,26 @@ class AgentRunLogService:
         *,
         level: str = "info",
         metadata: dict[str, Any] | None = None,
+        seq: int | None = None,
     ) -> None:
         resolved = self._resolve_ref(ref)
         if resolved is None:
             return
-        event = {
-            "ts": datetime.now().isoformat(timespec="milliseconds"),
-            "level": level,
-            "phase": phase,
-            "title": title,
-            "metadata": metadata or {},
-            "data": data,
-        }
-        line = json.dumps(event, ensure_ascii=False, default=_json_default)
         with self._lock:
+            resolved_seq = seq if seq is not None else self._next_seq_locked(resolved)
+            payload = data
+            if isinstance(payload, dict) and "seq" not in payload:
+                payload = {**payload, "seq": resolved_seq}
+            event = {
+                "ts": datetime.now().isoformat(timespec="milliseconds"),
+                "seq": resolved_seq,
+                "level": level,
+                "phase": phase,
+                "title": title,
+                "metadata": metadata or {},
+                "data": payload,
+            }
+            line = json.dumps(event, ensure_ascii=False, default=_json_default)
             resolved.path.parent.mkdir(parents=True, exist_ok=True)
             with resolved.path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
@@ -155,14 +211,8 @@ class AgentRunLogService:
     def record_agent_result(self, ref: RunLogRef | dict[str, Any] | None, agent_result: dict[str, Any]) -> None:
         if not isinstance(agent_result, dict):
             return
-        for index, message in enumerate(agent_result.get("messages") or []):
-            self.append(ref, "model_message", f"主 Agent 消息 #{index + 1}", message)
-        for index, tool_call in enumerate(agent_result.get("tool_calls") or []):
-            self.append(ref, "tool_call", f"主 Agent 工具调用 #{index + 1}", tool_call)
         for index, workflow in enumerate(agent_result.get("workflow_runs") or []):
             self.append(ref, "workflow", f"Workflow 调用 #{index + 1}", workflow)
-        for index, worker in enumerate(agent_result.get("worker_results") or []):
-            self.append(ref, "worker", f"子 Agent 返回 #{index + 1}", worker)
         for index, step in enumerate(agent_result.get("execution_trace") or []):
             self.append(ref, "execution_trace", f"处置全流程 #{index + 1}", step)
         for key in (
@@ -178,6 +228,19 @@ class AgentRunLogService:
                 self.append(ref, key, key, agent_result.get(key))
         if agent_result.get("final_response"):
             self.append(ref, "final_response", "最终响应", agent_result.get("final_response"))
+        summary_keys = (
+            "agent_name",
+            "primary_agent",
+            "orchestrated",
+            "orchestration_strategy",
+            "success",
+            "approval_pending",
+            "approval_request",
+            "route",
+        )
+        summary = {key: agent_result.get(key) for key in summary_keys if key in agent_result}
+        if summary:
+            self.append(ref, "run_summary", "运行摘要", summary)
 
     def list_dates(self) -> list[dict[str, Any]]:
         self.cleanup()
