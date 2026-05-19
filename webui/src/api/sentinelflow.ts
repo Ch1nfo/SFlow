@@ -875,6 +875,7 @@ export type RunLogAlertSummary = {
 
 export type RunLogEvent = {
   ts: string
+  seq?: number
   level: string
   phase: string
   title: string

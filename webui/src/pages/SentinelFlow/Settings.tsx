@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useState, useRef, type ChangeEvent } from 'react'
 import { Bug, RotateCcw, Save, Settings as SettingsIcon, X } from 'lucide-react'
 import {
   fetchHealth,
@@ -15,6 +15,7 @@ import {
   type RunLogAlertSummary,
   type RunLogDateSummary,
   type RunLogDetail,
+  type RunLogEvent,
   type RuntimeSettingsResponse,
 } from '@/api/sentinelflow'
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
@@ -202,14 +203,6 @@ function shortEventData(value: unknown): string {
       }
     }
     const promptStats = record.prompt_stats as Record<string, unknown> | undefined
-    const constructed = record.constructed_tool_calls
-    if (Array.isArray(constructed) && constructed.length) {
-      const first = constructed[0] as Record<string, unknown>
-      const skillName = String(first.skill_name || '')
-      const ref = record.prompt_reference as Record<string, unknown> | undefined
-      const digest = ref?.prompt_digest ? `prompt_digest=${String(ref.prompt_digest).slice(0, 12)}` : '同 turn llm_request'
-      return `构造入参: ${skillName} · 提示词原文见${digest}`
-    }
     const systemPrompt = record.system_prompt
     if (systemPrompt && typeof systemPrompt === 'object') {
       const promptRecord = systemPrompt as Record<string, unknown>
@@ -285,6 +278,114 @@ function runLogEventSeq(event: { seq?: number; data?: unknown }): number {
   return Number.MAX_SAFE_INTEGER
 }
 
+function runLogEventDomId(event: { seq?: number; ts: string }, index: number): string {
+  const seq = runLogEventSeq(event)
+  if (seq !== Number.MAX_SAFE_INTEGER) return `run-log-event-${seq}`
+  return `run-log-event-${index}-${event.ts}`
+}
+
+function runLogEventDataRecord(event: { data?: unknown }): Record<string, unknown> | null {
+  if (!event.data || typeof event.data !== 'object') return null
+  return event.data as Record<string, unknown>
+}
+
+function llmRequestMatchesPromptReference(
+  record: Record<string, unknown>,
+  ref: Record<string, unknown>,
+  strict: boolean,
+): boolean {
+  const digest = String(ref.prompt_digest || '').trim()
+  if (!digest || String(record.prompt_digest || '').trim() !== digest) return false
+  if (!strict) return true
+  if (ref.turn !== undefined && ref.turn !== null && record.turn !== ref.turn) return false
+  if (ref.graph && String(record.graph || '') !== String(ref.graph)) return false
+  if (ref.agent_name && String(record.agent_name || '') !== String(ref.agent_name)) return false
+  if (ref.node && String(record.node || '') !== String(ref.node)) return false
+  if (ref.scope && String(record.scope || '') !== String(ref.scope)) return false
+  return true
+}
+
+function findLlmRequestForPromptReference(
+  events: RunLogEvent[],
+  ref: Record<string, unknown>,
+): { event: RunLogEvent; index: number } | null {
+  const digest = String(ref.prompt_digest || '').trim()
+  if (!digest) return null
+  const sorted = [...events].sort((left, right) => runLogEventSeq(left) - runLogEventSeq(right))
+  for (const strict of [true, false]) {
+    for (let index = 0; index < sorted.length; index++) {
+      const event = sorted[index]
+      const record = runLogEventDataRecord(event)
+      if (!record || record.event_type !== 'llm_request') continue
+      if (!llmRequestMatchesPromptReference(record, ref, strict)) continue
+      return { event, index }
+    }
+  }
+  return null
+}
+
+function RunLogEventSummary({
+  event,
+  events,
+  onJumpToPrompt,
+}: {
+  event: RunLogEvent
+  events: RunLogEvent[]
+  onJumpToPrompt: (ref: Record<string, unknown>) => void
+}) {
+  const record = runLogEventDataRecord(event)
+  if (record) {
+    const constructed = record.constructed_tool_calls
+    const promptRef = record.prompt_reference
+    if (Array.isArray(constructed) && constructed.length && promptRef && typeof promptRef === 'object') {
+      const first = constructed[0] as Record<string, unknown>
+      const skillName = String(first.skill_name || '')
+      const refRecord = promptRef as Record<string, unknown>
+      const digest = String(refRecord.prompt_digest || '').trim()
+      const match = findLlmRequestForPromptReference(events, refRecord)
+      const turnLabel = refRecord.turn !== undefined && refRecord.turn !== null ? String(refRecord.turn) : '?'
+      return (
+        <div className="mt-1 text-xs text-slate-400">
+          <span>构造入参: {skillName}</span>
+          <span className="mx-1">·</span>
+          {match ? (
+            <button
+              type="button"
+              className="text-indigo-300 underline decoration-indigo-500/50 underline-offset-2 hover:text-indigo-200"
+              onClick={(clickEvent) => {
+                clickEvent.preventDefault()
+                clickEvent.stopPropagation()
+                onJumpToPrompt(refRecord)
+              }}
+            >
+              跳转到提示词原文（llm_request #{runLogEventSeq(match.event)}，第 {turnLabel} 轮）
+            </button>
+          ) : (
+            <span className="text-amber-300">
+              未找到对应 llm_request{digest ? `（digest=${digest.slice(0, 12)}…）` : ''}
+            </span>
+          )}
+        </div>
+      )
+    }
+    if (record.event_type === 'llm_request' && Array.isArray(record.prompt_messages) && record.prompt_messages.length) {
+      const promptStats = record.prompt_stats as Record<string, unknown> | undefined
+      const windowTrunc = promptStats?.window_truncated === true
+      const dropped = Number(promptStats?.dropped_message_count || 0)
+      const suffix = windowTrunc ? `（窗口已截断，丢弃 ${dropped} 条）` : ''
+      return (
+        <div className="mt-1 text-xs text-slate-400">
+          提示词审计 {record.prompt_messages.length} 条消息{suffix}
+          <span className="ml-1 text-indigo-300/90">· 本条为技能入参构造时的模型输入</span>
+        </div>
+      )
+    }
+  }
+  const text = shortEventData(event.data)
+  if (!text) return null
+  return <div className="mt-1 text-xs text-slate-400">{text}</div>
+}
+
 export default function SentinelFlowSettingsPage() {
   const { data: settings, loading, error, reload: reloadSettings, setData: setSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const { data: health } = useSentinelFlowAsyncData(fetchHealth, [])
@@ -343,9 +444,26 @@ export default function SentinelFlowSettingsPage() {
   const [debugLogDetail, setDebugLogDetail] = useState<RunLogDetail | null>(null)
   const [selectedDebugDate, setSelectedDebugDate] = useState('')
   const [selectedDebugLogId, setSelectedDebugLogId] = useState('')
+  const [highlightedRunLogEventId, setHighlightedRunLogEventId] = useState<string | null>(null)
   const [activeRunLogRetentionDays, setActiveRunLogRetentionDays] = useState<number>(1)
   const [savingRunLogRetention, setSavingRunLogRetention] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const runLogEventRefs = useRef<Record<string, HTMLDetailsElement | null>>({})
+
+  const jumpToRunLogPrompt = useCallback((ref: Record<string, unknown>) => {
+    if (!debugLogDetail?.events?.length) return
+    const match = findLlmRequestForPromptReference(debugLogDetail.events, ref)
+    if (!match) return
+    const eventId = runLogEventDomId(match.event, match.index)
+    const element = runLogEventRefs.current[eventId]
+    if (!element) return
+    setHighlightedRunLogEventId(eventId)
+    element.open = true
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    window.setTimeout(() => {
+      setHighlightedRunLogEventId((current) => (current === eventId ? null : current))
+    }, 2800)
+  }, [debugLogDetail?.events])
 
   const fetchPreviewStr = fetchPreview ? JSON.stringify(fetchPreview, null, 2) : ''
   const fetchPreviewLines = fetchPreviewStr.split('\n')
@@ -641,6 +759,8 @@ export default function SentinelFlowSettingsPage() {
 
   async function openDetailedRuntimeLog() {
     setDebugLogOpen(true)
+    setHighlightedRunLogEventId(null)
+    runLogEventRefs.current = {}
     setDebugLogLoading(true)
     setDebugLogError(null)
     try {
@@ -673,6 +793,8 @@ export default function SentinelFlowSettingsPage() {
   }
 
   async function selectDebugDate(date: string) {
+    setHighlightedRunLogEventId(null)
+    runLogEventRefs.current = {}
     setSelectedDebugDate(date)
     setSelectedDebugLogId('')
     setDebugLogDetail(null)
@@ -693,6 +815,8 @@ export default function SentinelFlowSettingsPage() {
 
   async function selectDebugLog(date: string, logId: string) {
     setSelectedDebugLogId(logId)
+    setHighlightedRunLogEventId(null)
+    runLogEventRefs.current = {}
     setDebugLogDetail(null)
     setDebugLogLoading(true)
     setDebugLogError(null)
@@ -1084,8 +1208,21 @@ export default function SentinelFlowSettingsPage() {
                   <div className="max-h-[520px] space-y-3 overflow-auto pr-1">
                     {[...(debugLogDetail?.events ?? [])]
                       .sort((left, right) => runLogEventSeq(left) - runLogEventSeq(right))
-                      .map((event, index) => (
-                      <details key={`${event.ts}-${event.seq ?? index}`} className="rounded-lg border border-slate-800 bg-slate-950 p-3" open={index < 3}>
+                      .map((event, index) => {
+                        const eventId = runLogEventDomId(event, index)
+                        const isHighlighted = highlightedRunLogEventId === eventId
+                        return (
+                      <details
+                        key={eventId}
+                        id={eventId}
+                        ref={(node) => {
+                          runLogEventRefs.current[eventId] = node
+                        }}
+                        className={`rounded-lg border bg-slate-950 p-3 transition-shadow ${
+                          isHighlighted ? 'border-indigo-500/70 ring-2 ring-indigo-400/80' : 'border-slate-800'
+                        }`}
+                        open={index < 3}
+                      >
                         <summary className="cursor-pointer list-none">
                           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
                             <span>#{typeof event.seq === 'number' ? event.seq : index + 1}</span>
@@ -1099,13 +1236,18 @@ export default function SentinelFlowSettingsPage() {
                             <span className={event.level === 'error' ? 'text-red-300' : event.level === 'warn' ? 'text-amber-300' : 'text-slate-400'}>{event.level}</span>
                           </div>
                           <div className="mt-1 text-sm font-medium text-slate-100">{event.title}</div>
-                          {shortEventData(event.data) ? <div className="mt-1 text-xs text-slate-400">{shortEventData(event.data)}</div> : null}
+                          <RunLogEventSummary
+                            event={event}
+                            events={debugLogDetail?.events ?? []}
+                            onJumpToPrompt={jumpToRunLogPrompt}
+                          />
                         </summary>
                         <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900 p-3 text-slate-100">
                           <JsonPreview value={event} />
                         </div>
                       </details>
-                    ))}
+                        )
+                      })}
                     {debugLogDetail && !debugLogDetail.events.length ? <div className="text-sm text-slate-500">该告警日志为空</div> : null}
                     {!debugLogDetail && !debugLogLoading ? <div className="text-sm text-slate-500">请选择左侧日期和告警。</div> : null}
                   </div>
