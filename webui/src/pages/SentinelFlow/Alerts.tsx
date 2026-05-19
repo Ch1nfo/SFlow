@@ -106,28 +106,15 @@ function formatAlertTitle(value: unknown, limit = 30): { text: string; fullText:
   }
 }
 
-function buildPayloadPreview(text: string, maxLines = 10, maxCharsPerLine = 120): { text: string; truncated: boolean } {
-  const rawLines = text ? text.split(/\r?\n/) : []
-  const visualLines: string[] = []
-  for (const rawLine of rawLines) {
-    if (!rawLine) {
-      visualLines.push('')
-      continue
-    }
-    let remaining = rawLine
-    while (remaining.length > maxCharsPerLine) {
-      visualLines.push(remaining.slice(0, maxCharsPerLine))
-      remaining = remaining.slice(maxCharsPerLine)
-    }
-    visualLines.push(remaining)
-  }
-  if (visualLines.length <= maxLines) {
-    return { text, truncated: false }
-  }
-  return {
-    text: visualLines.slice(0, maxLines).join('\n'),
-    truncated: true,
-  }
+const PAYLOAD_COLLAPSED_MAX_LINES = 10
+
+/** 判断是否需要收起：按真实换行或超长单行，不再做 120 字硬断行。 */
+function payloadNeedsCollapse(text: string, maxLines = PAYLOAD_COLLAPSED_MAX_LINES): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (trimmed.split(/\r?\n/).length > maxLines) return true
+  // 压缩 JSON 等单行超长内容
+  return trimmed.length > maxLines * 100
 }
 
 function getTaskStatusClass(task: AlertTask): string {
@@ -329,9 +316,7 @@ export default function SentinelFlowAlertsPage() {
   const selectedTask = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
   const selectedPayload = getSelectedAlertPayload(selectedTask)
   const selectedPayloadText = String(selectedPayload.payload ?? '').trim()
-  const payloadPreview = buildPayloadPreview(selectedPayloadText, 10, 120)
-  const shouldCollapsePayload = payloadPreview.truncated
-  const collapsedPayloadText = payloadPreview.text
+  const shouldCollapsePayload = payloadNeedsCollapse(selectedPayloadText)
   const workflowSelection = (selectedTask?.payload?.workflow_selection as Record<string, unknown> | undefined) ?? {}
   const selectedResult = (selectedTask?.last_result_data ?? {}) as Record<string, unknown>
   const selectedFinalFacts = (selectedResult.final_facts as Record<string, unknown> | undefined) ?? {}
@@ -664,9 +649,11 @@ export default function SentinelFlowAlertsPage() {
                           ) : null}
                         </div>
                         <pre
-                          className="overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-700"
+                          className={`overflow-x-auto whitespace-pre-wrap text-xs leading-6 text-slate-700 ${
+                            shouldCollapsePayload && !payloadExpanded ? 'max-h-[15rem] overflow-y-hidden' : ''
+                          }`}
                         >
-                          {shouldCollapsePayload && !payloadExpanded ? collapsedPayloadText : selectedPayloadText}
+                          {selectedPayloadText}
                         </pre>
                       </div>
                     ) : null}
