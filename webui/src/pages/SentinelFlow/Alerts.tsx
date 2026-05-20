@@ -59,8 +59,16 @@ function buildAlertsSummary(tasks: AlertTask[]) {
   }
   const bannedIps = new Set<string>()
   let manualCompleted = 0
+  const addBannedIp = (value: unknown) => {
+    const text = String(value ?? '').trim()
+    if (!text) return
+    text.split(/[,\n，;；\s]+/).map((item) => item.trim()).filter(Boolean).forEach((ip) => bannedIps.add(ip))
+  }
   for (const task of tasks) {
     const result = (task.last_result_data ?? {}) as Record<string, unknown>
+    if (Array.isArray(result.banned_ips)) {
+      result.banned_ips.forEach(addBannedIp)
+    }
     const finalFacts = (result.final_facts as Record<string, unknown> | undefined) ?? {}
     const finalJudgment = (finalFacts.judgment as Record<string, unknown> | undefined) ?? {}
     const disposition = String(finalJudgment.disposition ?? result.disposition ?? 'unknown').trim()
@@ -77,9 +85,12 @@ function buildAlertsSummary(tasks: AlertTask[]) {
     for (const action of actions) {
       if (!action || typeof action !== 'object') continue
       const record = action as Record<string, unknown>
-      if (String(record.kind ?? '').trim() === 'ban_ip' && record.success === true) {
-        const target = String(record.target ?? '').trim()
-        if (target) bannedIps.add(target)
+      const kind = String(record.kind ?? '').trim()
+      const effect = String(record.completion_effect ?? '').trim()
+      const skillName = String(record.skill_name ?? '').trim().toLowerCase()
+      const looksLikeBan = kind === 'ban_ip' || effect === 'containment' || /ban|block|封禁|阻断|遏制/.test(skillName)
+      if (looksLikeBan && record.success === true) {
+        addBannedIp(record.target)
       }
     }
   }

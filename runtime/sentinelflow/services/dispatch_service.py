@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+import re
 import threading
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -14,10 +15,131 @@ from sentinelflow.config.runtime import CONFIG_DIR
 
 DB_PATH = CONFIG_DIR / "sys_queue.db"
 DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
+BAN_IP_FIELDS = {"ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "name"}
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _split_ip_values(value: Any) -> set[str]:
+    if isinstance(value, list):
+        values: set[str] = set()
+        for item in value:
+            values.update(_split_ip_values(item))
+        return values
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    return {item.strip() for item in re.split(r"[,，;；\s]+", text) if item.strip()}
+
+
+def _collect_ip_values(payload: Any) -> set[str]:
+    values: set[str] = set()
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).strip() in BAN_IP_FIELDS:
+                values.update(_split_ip_values(value))
+            elif isinstance(value, (dict, list)):
+                values.update(_collect_ip_values(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            values.update(_collect_ip_values(item))
+    return values
+
+
+def _looks_like_successful_ban_action(action_name: str, payload: dict[str, Any], *, completion_effect: str = "") -> bool:
+    combined_text = " ".join(
+        [
+            str(action_name or "").strip().lower(),
+            str(completion_effect or "").strip().lower(),
+            str(payload.get("kind", "")).strip().lower(),
+            str(payload.get("action", "")).strip().lower(),
+            str(payload.get("result", "")).strip().lower(),
+            str(payload.get("message", "")).strip().lower(),
+        ]
+    )
+    if not any(token in combined_text for token in ("ban", "block", "containment", "封禁", "阻断", "遏制")):
+        return False
+    if bool(payload.get("error")):
+        return False
+    success_value = payload.get("success")
+    if isinstance(success_value, bool):
+        return success_value
+    status_value = str(payload.get("status", "")).strip().lower()
+    return status_value not in {"fail", "failed", "error"}
+
+
+def _collect_banned_ips_from_result(result: dict[str, Any]) -> set[str]:
+    banned_ips: set[str] = set()
+    final_facts = result.get("final_facts")
+    if isinstance(final_facts, dict):
+        disposal = final_facts.get("disposal", {})
+        if isinstance(disposal, dict):
+            actions = disposal.get("actions", [])
+            if isinstance(actions, list):
+                for action in actions:
+                    if not isinstance(action, dict) or not bool(action.get("success")):
+                        continue
+                    kind = str(action.get("kind", "")).strip()
+                    completion_effect = str(action.get("completion_effect", "")).strip()
+                    if kind != "ban_ip" and completion_effect not in {"containment", "closure"} and not _looks_like_successful_ban_action(str(action.get("skill_name", "")), action, completion_effect=completion_effect):
+                        continue
+                    banned_ips.update(_split_ip_values(action.get("target", "")))
+    aggregated_action_steps = result.get("aggregated_action_steps")
+    if isinstance(aggregated_action_steps, list):
+        for step in aggregated_action_steps:
+            if not isinstance(step, dict):
+                continue
+            payload = step.get("result", {})
+            payload = payload if isinstance(payload, dict) else {}
+            arguments = step.get("arguments", {})
+            arguments = arguments if isinstance(arguments, dict) else {}
+            combined_payload = {**arguments, **payload}
+            if _looks_like_successful_ban_action(str(step.get("skill_name", "")), combined_payload, completion_effect=str(step.get("completion_effect", ""))):
+                banned_ips.update(_collect_ip_values(combined_payload))
+    actions = result.get("actions")
+    if isinstance(actions, dict):
+        for action_name, item in actions.items():
+            if action_name == "tool_runs" and isinstance(item, list):
+                for run in item:
+                    if isinstance(run, dict):
+                        banned_ips.update(_collect_banned_ips_from_tool_summaries(run.get("tool_calls_summary", []), step_success=bool(run.get("success", True))))
+                continue
+            if isinstance(item, dict) and _looks_like_successful_ban_action(str(action_name), item):
+                banned_ips.update(_collect_ip_values(item))
+    worker_results = result.get("worker_results")
+    if isinstance(worker_results, list):
+        for worker_result in worker_results:
+            if isinstance(worker_result, dict):
+                banned_ips.update(_collect_banned_ips_from_tool_summaries(worker_result.get("tool_calls_summary", []), step_success=bool(worker_result.get("success", True))))
+    workflow_runs = result.get("workflow_runs")
+    if isinstance(workflow_runs, list):
+        for workflow_run in workflow_runs:
+            if isinstance(workflow_run, dict):
+                banned_ips.update(_collect_banned_ips_from_result(workflow_run))
+    return banned_ips
+
+
+def _collect_banned_ips_from_tool_summaries(tool_summaries: Any, *, step_success: bool = True) -> set[str]:
+    banned_ips: set[str] = set()
+    if not step_success or not isinstance(tool_summaries, list):
+        return banned_ips
+    for item in tool_summaries:
+        if not isinstance(item, dict):
+            continue
+        args = item.get("args", {})
+        args = args if isinstance(args, dict) else {}
+        arguments = args.get("arguments", {})
+        arguments = arguments if isinstance(arguments, dict) else {}
+        payload = {
+            **arguments,
+            **(item.get("key_facts", {}) if isinstance(item.get("key_facts"), dict) else {}),
+        }
+        skill_name = str(args.get("skill_name") or item.get("skill_name") or item.get("name") or "").strip()
+        if _looks_like_successful_ban_action(skill_name, payload):
+            banned_ips.update(_collect_ip_values(payload))
+    return banned_ips
 
 
 def _stale_running_timeout_seconds() -> int:
@@ -786,6 +908,10 @@ class AlertDispatchService:
         if not isinstance(result, dict):
             return {}
         compact: dict[str, Any] = {}
+        banned_ips = sorted(_collect_banned_ips_from_result(result))
+        if banned_ips:
+            compact["banned_ips"] = banned_ips
+            compact["banned_ip_count"] = len(banned_ips)
         preserved_keys = (
             "success",
             "approval_pending",

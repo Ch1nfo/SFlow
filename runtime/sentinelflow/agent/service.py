@@ -2473,7 +2473,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         return ""
 
     def _extract_action_target(self, payload: dict[str, Any], arguments: dict[str, Any]) -> str:
-        for candidate in ("ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "dip"):
+        for candidate in ("ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "name", "dip"):
             value = str(payload.get(candidate) or arguments.get(candidate) or "").strip()
             if value:
                 return value
