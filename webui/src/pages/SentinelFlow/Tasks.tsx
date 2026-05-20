@@ -579,6 +579,7 @@ export default function SentinelFlowTasksPage() {
   const [toolResultsExpanded, setToolResultsExpanded] = useState(false)
   const [processExpanded, setProcessExpanded] = useState(false)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_LIST_INITIAL_RENDER_COUNT)
   const taskListPanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
@@ -607,7 +608,7 @@ export default function SentinelFlowTasksPage() {
       : tasks.filter((task) => {
           const status = String(getEffectiveTaskStatus(task))
           if (filter === 'failed') return isFailedBucketStatus(status)
-          if (filter === 'succeeded') return status === 'succeeded' || status === 'pending_manual_closure'
+          if (filter === 'succeeded') return status === 'succeeded'
           if (filter === 'pending_closure') return status === 'pending_closure' || status === 'pending_manual_closure'
           return status === filter
         })
@@ -644,15 +645,18 @@ export default function SentinelFlowTasksPage() {
     const requestSeq = detailRequestSeq.current + 1
     detailRequestSeq.current = requestSeq
     setSelectedTaskDetail(null)
+    setDetailError(null)
     if (!taskId) return
     void fetchAlertTaskDetail(taskId)
       .then((response) => {
         if (detailRequestSeq.current !== requestSeq) return
         setSelectedTaskDetail(response.task)
+        setDetailError(null)
       })
-      .catch(() => {
+      .catch((detailLoadError) => {
         if (detailRequestSeq.current !== requestSeq) return
         setSelectedTaskDetail(null)
+        setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
       })
   }, [selectedTaskSummary?.task_id])
 
@@ -845,7 +849,7 @@ export default function SentinelFlowTasksPage() {
             </div>
             <div className="text-3xl font-bold text-gray-900">{tasks.filter((task) => {
               const status = getEffectiveTaskStatus(task)
-              return status === 'succeeded' || status === 'completed' || status === 'pending_manual_closure'
+              return status === 'succeeded' || status === 'completed'
             }).length}</div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-5">
@@ -887,6 +891,11 @@ export default function SentinelFlowTasksPage() {
       <Surface title="任务工作面" subtitle="左侧选择任务，右侧查看详情与完整处置全流程。">
         {loading ? <p className="sentinelflow-muted-text">正在读取任务分发结果...</p> : null}
         {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
+        {poll && typeof poll.tasks_total === 'number' && poll.tasks_total > (poll.tasks?.length ?? 0) ? (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            当前接口仅返回前 {poll.tasks?.length ?? 0} 条任务，共 {poll.tasks_total} 条；筛选和统计可能只覆盖已加载任务。
+          </div>
+        ) : null}
         {!loading && !error ? (
           <div className="sentinelflow-grid-2 items-start">
             <div
@@ -927,6 +936,9 @@ export default function SentinelFlowTasksPage() {
               <h3>任务详情</h3>
               {selectedTask ? (
                 <div className="sentinelflow-response-stack">
+                  {detailError ? (
+                    <div className="sentinelflow-message-block sentinelflow-message-error">{detailError}</div>
+                  ) : null}
                   <div className="sentinelflow-response-row">
                     <StatusBadge tone={getTone(selectedTask)}>{getTaskStatusLabel(getEffectiveTaskStatus(selectedTask))}</StatusBadge>
                     <span>{selectedTask.alert_time || '未提供告警时间'}</span>

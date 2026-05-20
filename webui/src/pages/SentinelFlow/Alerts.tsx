@@ -234,7 +234,7 @@ function getStartOfWeek(value: Date): Date {
 
 function matchesAlertTimeRange(task: AlertTask, range: AlertTimeRange, now: Date): boolean {
   const alertDate = parseAlertDate(task.alert_time)
-  if (!alertDate) return false
+  if (!alertDate) return true
   if (range === 'today') {
     return alertDate >= getStartOfDay(now)
   }
@@ -274,9 +274,11 @@ export default function SentinelFlowAlertsPage() {
   const [actionState, setActionState] = useState<{ action: string; running: boolean }>({ action: '', running: false })
   const [actionNotice, setActionNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
+  const [detailError, setDetailError] = useState<string | null>(null)
   const [visibleTaskCount, setVisibleTaskCount] = useState(ALERT_QUEUE_INITIAL_RENDER_COUNT)
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
+  const loadRequestSeq = useRef(0)
   const detailRequestSeq = useRef(0)
   const [queuePanelHeight, setQueuePanelHeight] = useState<number | null>(null)
   const [queueListMaxHeight, setQueueListMaxHeight] = useState<number | null>(null)
@@ -288,12 +290,15 @@ export default function SentinelFlowAlertsPage() {
 
   const loadTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
     const silent = options?.silent ?? false
+    const requestSeq = loadRequestSeq.current + 1
+    loadRequestSeq.current = requestSeq
     if (!silent) {
       setLoading(true)
       setError(null)
     }
     try {
       const result = await reloadPollStore({ force: options?.force, silent })
+      if (loadRequestSeq.current !== requestSeq) return
       if (!result) {
         if (!silent) setLoading(false)
         return
@@ -312,6 +317,7 @@ export default function SentinelFlowAlertsPage() {
         setLoading(false)
       }
     } catch (loadError) {
+      if (loadRequestSeq.current !== requestSeq) return
       setError(loadError instanceof Error ? loadError.message : 'Unknown error')
       if (!silent) {
         setLoading(false)
@@ -366,15 +372,18 @@ export default function SentinelFlowAlertsPage() {
     const requestSeq = detailRequestSeq.current + 1
     detailRequestSeq.current = requestSeq
     setSelectedTaskDetail(null)
+    setDetailError(null)
     if (!taskId) return
     void fetchAlertTaskDetail(taskId)
       .then((response) => {
         if (detailRequestSeq.current !== requestSeq) return
         setSelectedTaskDetail(response.task)
+        setDetailError(null)
       })
-      .catch(() => {
+      .catch((detailLoadError) => {
         if (detailRequestSeq.current !== requestSeq) return
         setSelectedTaskDetail(null)
+        setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
       })
   }, [selectedTaskSummary?.task_id])
   const selectedPayload = getSelectedAlertPayload(selectedTask)
@@ -624,6 +633,11 @@ export default function SentinelFlowAlertsPage() {
             {actionNotice.text}
           </div>
         ) : null}
+        {data && typeof data.tasks_total === 'number' && data.tasks_total > (data.tasks?.length ?? 0) ? (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            当前接口仅返回前 {data.tasks?.length ?? 0} 条任务，共 {data.tasks_total} 条；列表统计可能只覆盖已加载任务。
+          </div>
+        ) : null}
 
         <div className="sentinelflow-grid-2 items-start">
           <div
@@ -694,6 +708,9 @@ export default function SentinelFlowAlertsPage() {
             <div className="flex-1 min-h-0">
             {selectedTask ? (
               <div className="sentinelflow-response-stack">
+                {detailError ? (
+                  <div className="sentinelflow-message-block sentinelflow-message-error">{detailError}</div>
+                ) : null}
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <div className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
                     <StatusBadge tone={getTaskTone(selectedTask)}>{getTaskStatusLabel(selectedTask)}</StatusBadge>

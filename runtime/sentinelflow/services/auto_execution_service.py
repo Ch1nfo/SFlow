@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +12,18 @@ from sentinelflow.services.dispatch_service import AlertDispatchService
 if TYPE_CHECKING:
     from sentinelflow.services.task_runner_service import AlertTaskRunnerService
 
+DEFAULT_MAX_TASKS_PER_CYCLE = 10
+
+
+def _max_tasks_per_cycle_from_env() -> int:
+    raw = str(os.getenv("SENTINELFLOW_AUTO_EXECUTION_BATCH_SIZE", "")).strip()
+    if not raw:
+        return DEFAULT_MAX_TASKS_PER_CYCLE
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_TASKS_PER_CYCLE
+
 
 class AlertAutoExecutionService:
     def __init__(
@@ -19,11 +32,13 @@ class AlertAutoExecutionService:
         task_runner_service: "AlertTaskRunnerService",
         audit_service: AuditService,
         interval_seconds: float = 1.0,
+        max_tasks_per_cycle: int | None = None,
     ) -> None:
         self.dispatch_service = dispatch_service
         self.task_runner_service = task_runner_service
         self.audit_service = audit_service
         self.interval_seconds = interval_seconds
+        self.max_tasks_per_cycle = max(1, int(max_tasks_per_cycle or _max_tasks_per_cycle_from_env()))
         self._enabled_by_source: dict[str, bool] = {}
         self._running_by_source: dict[str, bool] = {}
         self._loop_task: asyncio.Task[None] | None = None
@@ -157,11 +172,15 @@ class AlertAutoExecutionService:
         except asyncio.TimeoutError:
             return self._consume_wake_request()
 
-    def _list_tasks_for_source(self, source_id: str):
+    def _queued_tasks_for_source(self, source_id: str, limit: int):
         try:
-            return self.dispatch_service.list_tasks(source_id=source_id)
+            return self.dispatch_service.list_queued_tasks(source_id=source_id, limit=limit)
+        except (AttributeError, TypeError):
+            pass
+        try:
+            return [task for task in self.dispatch_service.list_tasks(source_id=source_id) if task.status == "queued"][:limit]
         except TypeError:
-            return self.dispatch_service.list_tasks()
+            return [task for task in self.dispatch_service.list_tasks() if task.status == "queued"][:limit]
 
     def _retry_candidates_for_source(self, retry_interval_seconds: int, source_id: str):
         try:
@@ -177,7 +196,7 @@ class AlertAutoExecutionService:
         return max(int(getattr(config, "failed_retry_interval_seconds", 0) or 0), 0)
 
     async def _run_pending_once(self, *, source_id: str = "default", allow_disabled: bool = False) -> list[dict[str, Any]]:
-        queued_tasks = [task for task in self._list_tasks_for_source(source_id) if task.status == "queued"]
+        queued_tasks = self._queued_tasks_for_source(source_id, self.max_tasks_per_cycle + 1)
         retry_interval_seconds = self._retry_interval_for_source(source_id)
         retry_tasks = self._retry_candidates_for_source(retry_interval_seconds, source_id)
         if not queued_tasks and not retry_tasks:
@@ -185,13 +204,22 @@ class AlertAutoExecutionService:
 
         self._running_by_source[source_id] = True
         results: list[dict[str, Any]] = []
+        processed_count = 0
+        limit_reached = False
         try:
             for task in queued_tasks:
                 if self._stop_event.is_set() or (not self._enabled_by_source.get(source_id, False) and not allow_disabled):
                     break
+                if processed_count >= self.max_tasks_per_cycle:
+                    limit_reached = True
+                    break
                 results.append(await self.task_runner_service.run_task(task, execution_entry="auto_alert"))
+                processed_count += 1
             for failed_task in retry_tasks:
                 if self._stop_event.is_set() or (not self._enabled_by_source.get(source_id, False) and not allow_disabled):
+                    break
+                if processed_count >= self.max_tasks_per_cycle:
+                    limit_reached = True
                     break
                 prepared = self.dispatch_service.prepare_retry(failed_task.task_id)
                 if not prepared:
@@ -208,6 +236,15 @@ class AlertAutoExecutionService:
                     },
                 )
                 results.append(await self.task_runner_service.run_task(prepared, execution_entry="auto_alert"))
+                processed_count += 1
         finally:
             self._running_by_source[source_id] = False
+        if limit_reached:
+            self.audit_service.record(
+                "auto_execution_batch_limited",
+                f"Stopped automatic alert execution cycle after {processed_count} tasks; queued work remains.",
+                {"sourceId": source_id, "processed": processed_count, "limit": self.max_tasks_per_cycle},
+            )
+            if self._enabled_by_source.get(source_id, False):
+                self._request_wake()
         return results

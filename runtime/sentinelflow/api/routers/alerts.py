@@ -39,6 +39,13 @@ def _default_source_id() -> str:
     return sources[0].id if sources else "default"
 
 
+def _stream_timeout_seconds() -> int:
+    try:
+        return max(30, int(load_runtime_config().llm_timeout or 60) + 60)
+    except Exception:
+        return 120
+
+
 def _resolve_source_id(value: str | None = None) -> str:
     candidate = str(value or "").strip()
     if candidate == "all":
@@ -484,7 +491,7 @@ async def handle_alert(payload: AlertActionRequest) -> dict[str, Any]:
         for current_source_id in target_ids:
             source_config = next((source for source in config.alert_sources if source.id == current_source_id), None)
             retry_interval_seconds = max(int(getattr(source_config, "failed_retry_interval_seconds", 0) or 0), 0)
-            queued_count += len([task for task in dispatch_service.list_tasks(source_id=current_source_id) if task.status == "queued"])
+            queued_count += dispatch_service.task_status_counts(current_source_id).get("queued", 0)
             retry_candidate_count += len(dispatch_service.list_failed_retry_candidates(retry_interval_seconds, max_retry_count=3, source_id=current_source_id))
             auto_execution_service.request_run_once(current_source_id)
         executor_state = _all_alerts_state() if source_id == "all" else auto_execution_service.state(source_id)
@@ -651,6 +658,8 @@ def _stream_command_response(payload: CommandDispatchRequest):
     status_index = 0
     last_status_at = 0.0
     last_custom_status_at = 0.0
+    started_at = time.monotonic()
+    timeout_seconds = _stream_timeout_seconds()
 
     while True:
         if cancel_event.is_set():
@@ -668,6 +677,15 @@ def _stream_command_response(payload: CommandDispatchRequest):
             break
         except queue.Empty:
             now = time.monotonic()
+            if now - started_at >= timeout_seconds:
+                cancel_event.set()
+                response = {
+                    "command_text": payload.command_text,
+                    "route": "agent_dispatch_timeout",
+                    "success": False,
+                    "error": f"主 Agent 执行超过 {timeout_seconds} 秒，已停止等待。",
+                }
+                break
             if now - last_custom_status_at < 1.5:
                 continue
             if now - last_status_at >= 0.6:
@@ -797,6 +815,34 @@ async def _resolve_approval_json(
                 task=_serialize(finalized.get("task")) if finalized else None,
                 error=f"审批恢复执行失败：{exc}",
             )
+        if approval.scope_type == "alert_task" and not bool(result.get("success", False)):
+            payload = result.get("data", {})
+            payload = payload if isinstance(payload, dict) else {}
+            if not bool(payload.get("approval_pending")):
+                error = str(result.get("error", "")).strip() or "审批恢复执行失败。"
+                if tracer_activated and run_log_ref is not None:
+                    agent_run_log_service.append(
+                        run_log_ref,
+                        "approval_resolution_failed",
+                        "审批恢复执行失败",
+                        {"error": error, "approval_id": approval_id},
+                        level="error",
+                    )
+                finalized = task_runner_service.fail_after_approval_resume(
+                    approval.scope_ref,
+                    error,
+                    prepared_task=prepared_task,
+                    run_log_ref=run_log_ref,
+                    selected_action=prepared_selected_action,
+                )
+                return _build_approval_resolution_response(
+                    success=False,
+                    route=str(result.get("route", "")).strip() or "approval_resolution_failed",
+                    approval=skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval),
+                    data=finalized.get("data", {}),
+                    task=_serialize(finalized.get("task")),
+                    error=error,
+                )
         payload = result.get("data", {})
         payload = payload if isinstance(payload, dict) else {}
         serialized_approval = skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval)
@@ -867,6 +913,8 @@ def _stream_approval_resolution(approval_id: str, decision: str):
     )
     status_index = 0
     last_status_at = time.monotonic()
+    started_at = last_status_at
+    timeout_seconds = _stream_timeout_seconds()
 
     while True:
         try:
@@ -889,6 +937,16 @@ def _stream_approval_resolution(approval_id: str, decision: str):
             break
         except queue.Empty:
             now = time.monotonic()
+            if now - started_at >= timeout_seconds:
+                response = {
+                    "route": "approval_resolution_timeout",
+                    "success": False,
+                    "data": {},
+                    "approval": skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id)) if skill_approval_service.get_by_id(approval_id) else None,
+                    "task": None,
+                    "error": f"审批恢复执行超过 {timeout_seconds} 秒，已停止等待。",
+                }
+                break
             if now - last_status_at >= 1.0:
                 yield f"data: {json.dumps({'type': 'status', 'payload': {'text': status_messages[status_index]}}, ensure_ascii=False)}\n\n"
                 last_status_at = now

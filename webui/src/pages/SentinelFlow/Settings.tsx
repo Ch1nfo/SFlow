@@ -32,6 +32,15 @@ const DEBUG_LOG_UNLOCK_CLICKS = 5
 const RUN_LOG_INITIAL_RENDER_COUNT = 80
 const RUN_LOG_RENDER_INCREMENT = 80
 
+function hasStoredSettingsDraft(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.sessionStorage.getItem(SETTINGS_DRAFT_KEY) !== null
+}
+
+function serializeSettingsDraft(draft: SettingsDraft): string {
+  return JSON.stringify(draft)
+}
+
 type SettingsDraft = {
   pollIntervalSeconds: string
   failedRetryIntervalSeconds: string
@@ -394,6 +403,7 @@ export default function SentinelFlowSettingsPage() {
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [saveMessageTone, setSaveMessageTone] = useState<'success' | 'error'>('success')
+  const [serverDraftChanged, setServerDraftChanged] = useState(false)
   const [parserSaveMessage, setParserSaveMessage] = useState<string | null>(null)
   const [parserSaveTone, setParserSaveTone] = useState<'success' | 'error'>('success')
   const [draft, setDraft] = useState<SettingsDraft>(() =>
@@ -453,6 +463,8 @@ export default function SentinelFlowSettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const runLogEventRefs = useRef<Record<string, HTMLDetailsElement | null>>({})
   const debugLogRequestSeq = useRef(0)
+  const serverDraftRef = useRef<SettingsDraft | null>(null)
+  const hadStoredDraftRef = useRef(hasStoredSettingsDraft())
 
   const jumpToRunLogPrompt = useCallback((ref: Record<string, unknown>) => {
     if (!debugLogDetail?.events?.length) return
@@ -513,9 +525,28 @@ export default function SentinelFlowSettingsPage() {
     event.target.value = ''
   }
 
+  function applyServerSettingsToDraft(nextSettings: RuntimeSettingsResponse) {
+    const nextDraft = buildDraft(nextSettings)
+    serverDraftRef.current = nextDraft
+    hadStoredDraftRef.current = false
+    setServerDraftChanged(false)
+    setDraft(nextDraft)
+  }
+
   useEffect(() => {
     if (!settings) return
-    setDraft(buildDraft(settings))
+    const nextServerDraft = buildDraft(settings)
+    const previousServerDraft = serverDraftRef.current
+    const currentDraftHasSessionEdits = hadStoredDraftRef.current && serializeSettingsDraft(draft) !== serializeSettingsDraft(nextServerDraft)
+    const currentDraftIsDirty = previousServerDraft !== null && serializeSettingsDraft(draft) !== serializeSettingsDraft(previousServerDraft)
+    serverDraftRef.current = nextServerDraft
+    if (currentDraftHasSessionEdits || currentDraftIsDirty) {
+      setServerDraftChanged(true)
+      return
+    }
+    hadStoredDraftRef.current = false
+    setServerDraftChanged(false)
+    setDraft(nextServerDraft)
   }, [settings])
 
   useEffect(() => {
@@ -657,7 +688,7 @@ export default function SentinelFlowSettingsPage() {
         alertSources: draft.alertSources.map(sourceToPayload),
       })
       setSettings(saved)
-      setDraft(buildDraft(saved))
+      applyServerSettingsToDraft(saved)
       setSaveMessageTone('success')
       setSaveMessage(withProductName('配置已保存到 SentinelFlow 项目级配置文件。'))
       void reloadSettings()
@@ -679,7 +710,7 @@ export default function SentinelFlowSettingsPage() {
         alertSources: draft.alertSources.map(sourceToPayload),
       })
       setSettings(saved)
-      setDraft(buildDraft(saved))
+      applyServerSettingsToDraft(saved)
       setParserSaveTone('success')
       setParserSaveMessage('解析规则已保存。')
       void reloadSettings()
@@ -697,7 +728,7 @@ export default function SentinelFlowSettingsPage() {
     try {
       const reset = await resetRuntimeSettings()
       setSettings(reset)
-      setDraft(buildDraft(reset))
+      applyServerSettingsToDraft(reset)
       setSaveMessageTone('success')
       setSaveMessage('项目级配置已重置为默认值。')
       setParserMessage(null)
@@ -972,6 +1003,23 @@ export default function SentinelFlowSettingsPage() {
 
       <Surface title="配置中心" subtitle="这里统一配置平台级通用参数，以及单个告警源的接入、轮询和解析规则。">
         {saveMessage ? <div className={`mb-4 sentinelflow-message-block ${saveMessageTone === 'success' ? 'sentinelflow-message-success' : 'sentinelflow-message-error'}`}>{saveMessage}</div> : null}
+        {serverDraftChanged ? (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            服务端配置已刷新，但当前页面存在未保存草稿，已保留本次会话草稿。
+            <button
+              type="button"
+              className="ml-3 font-semibold text-amber-950 underline"
+              onClick={() => {
+                if (!serverDraftRef.current) return
+                hadStoredDraftRef.current = false
+                setServerDraftChanged(false)
+                setDraft(serverDraftRef.current)
+              }}
+            >
+              使用服务端配置
+            </button>
+          </div>
+        ) : null}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white p-4">
           <div className="text-sm leading-6 text-gray-600">
             {withProductName('当前草稿会保存在浏览器会话里，同时也可以保存到 SentinelFlow 项目级配置文件。')}

@@ -76,7 +76,7 @@ function draftToPayload(draft: WorkflowDraft) {
 
 export default function SentinelFlowWorkflowsPage() {
   const { data: settings, reload: reloadSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
-  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore()
+  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all')
   const { data: workflowsData, reload: reloadWorkflows } = useSentinelFlowAsyncData(fetchWorkflows, [])
   const { data: agentsData, reload: reloadAgents } = useSentinelFlowAsyncData(fetchAgents, [])
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
@@ -194,7 +194,8 @@ export default function SentinelFlowWorkflowsPage() {
 
     const legacyWorkflowName = String(task.workflow_name ?? '').trim()
     if (!legacyWorkflowName || legacyWorkflowName === 'agent_react') continue
-    taskCountByWorkflow.set(legacyWorkflowName, (taskCountByWorkflow.get(legacyWorkflowName) ?? 0) + 1)
+    const matchingWorkflowId = workflows.find((workflow) => workflow.id === legacyWorkflowName || workflow.name === legacyWorkflowName)?.id ?? legacyWorkflowName
+    taskCountByWorkflow.set(matchingWorkflowId, (taskCountByWorkflow.get(matchingWorkflowId) ?? 0) + 1)
   }
 
   const refreshWorkflowRuntime = useCallback(() => {

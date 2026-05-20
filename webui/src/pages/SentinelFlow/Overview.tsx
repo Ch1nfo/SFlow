@@ -14,7 +14,7 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 export default function SentinelFlowOverviewPage() {
   const { data: health, reload: reloadHealth } = useSentinelFlowAsyncData(fetchHealth, [])
-  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore()
+  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all')
   const { data: skills, reload: reloadSkills } = useSentinelFlowAsyncData(fetchSkills, [])
   const { data: summary, reload: reloadSummary } = useSentinelFlowAsyncData(fetchDashboardSummary, [])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => readRuntimeActivity())

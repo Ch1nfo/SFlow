@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -12,10 +13,21 @@ from sentinelflow.services.triage_service import TriageService
 from sentinelflow.config.runtime import CONFIG_DIR
 
 DB_PATH = CONFIG_DIR / "sys_queue.db"
+DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _stale_running_timeout_seconds() -> int:
+    raw = str(os.getenv("SENTINELFLOW_STALE_RUNNING_TIMEOUT_SECONDS", "")).strip()
+    if not raw:
+        return DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS
 
 
 def _build_external_poll_final_facts(
@@ -166,6 +178,7 @@ class AlertDispatchService:
                 )
             ''')
             self._ensure_schema(conn)
+        self.recover_stale_running_tasks()
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(alert_tasks)").fetchall()}
@@ -208,9 +221,25 @@ class AlertDispatchService:
             last_action=row["last_action"],
             last_result_success=bool(row["last_result_success"]) if row["last_result_success"] is not None else None,
             last_result_error=row["last_result_error"],
-            last_result_data=json.loads(result_raw) if result_raw else {},
-            payload=json.loads(payload_raw) if payload_raw else {},
+            last_result_data=self._decode_json_object(result_raw, context="last_result_data", task_id=row["task_id"]),
+            payload=self._decode_json_object(payload_raw, context="payload", task_id=row["task_id"]),
         )
+
+    def _decode_json_object(self, raw: str | None, *, context: str, task_id: str | None = None) -> dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self.audit_service.record(
+                "alert_task_json_decode_failed",
+                f"Failed to decode {context} JSON for alert task.",
+                {"taskId": task_id, "context": context, "error": str(exc)},
+            )
+            return {}
+        if not isinstance(value, dict):
+            return {}
+        return value
 
     def _save_task(self, task: AlertHandlingTask) -> None:
         with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
@@ -298,7 +327,7 @@ class AlertDispatchService:
         workflow_selection: dict[str, Any] | None = None,
         *,
         reset_to_queued: bool = False,
-    ) -> AlertHandlingTask:
+    ) -> AlertHandlingTask | None:
         alert_name = str(alert.get("alert_name", "未知告警")).strip() or "未知告警"
         source_id = str(alert.get("alert_source_id", existing.source_id or "default")).strip() or "default"
         source_name = str(alert.get("alert_source_name", existing.source_name or "默认告警源")).strip() or "默认告警源"
@@ -318,7 +347,7 @@ class AlertDispatchService:
             "alert_time": str(alert.get("alert_time", "")).strip(),
             "payload": json.dumps(payload),
         }
-        expected_statuses = ["queued"]
+        expected_statuses = ["queued", "failed"]
         if reset_to_queued:
             expected_statuses = ["failed"]
             updates.update(
@@ -333,8 +362,12 @@ class AlertDispatchService:
             self.dedup.mark_processing(f"{source_id}:{existing.event_ids}")
         updated_task = self._update_task_columns(existing.task_id, updates, expected_statuses=expected_statuses)
         if not updated_task:
-            latest = self.get_task(existing.task_id)
-            return latest or existing
+            self.audit_service.record(
+                "alert_task_refresh_conflict",
+                f"Skipped refreshing alert task for {existing.event_ids} because its status changed.",
+                {"eventIds": existing.event_ids, "taskId": existing.task_id, "status": existing.status},
+            )
+            return None
         self.audit_service.record(
             "alert_task_updated",
             f"Updated alert task for {existing.event_ids} with latest payload.",
@@ -347,6 +380,67 @@ class AlertDispatchService:
             },
         )
         return updated_task
+
+    def recover_stale_running_tasks(
+        self,
+        *,
+        source_id: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> list[AlertHandlingTask]:
+        timeout = timeout_seconds if timeout_seconds is not None else _stale_running_timeout_seconds()
+        if timeout <= 0:
+            return []
+        now = datetime.now(timezone.utc)
+        with self.lock, self._get_conn() as conn:
+            if source_id:
+                rows = conn.execute(
+                    "SELECT * FROM alert_tasks WHERE source_id = ? AND status = 'running'",
+                    (source_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM alert_tasks WHERE status = 'running'").fetchall()
+            candidates = [self._row_to_task(row) for row in rows]
+
+        recovered: list[AlertHandlingTask] = []
+        for task in candidates:
+            updated_at = _parse_task_datetime(task.updated_at, timezone.utc)
+            if updated_at is None or (now - updated_at).total_seconds() < timeout:
+                continue
+            error = f"任务运行超过 {timeout} 秒未更新，已由系统回收为失败状态，可重新执行。"
+            existing_result = dict(task.last_result_data) if isinstance(task.last_result_data, dict) else {}
+            result_data = {
+                **existing_result,
+                "success": False,
+                "error": error,
+                "reason": str(existing_result.get("reason") or error).strip(),
+                "recovered_stale_running": True,
+            }
+            updated_task = self._update_task_columns(
+                task.task_id,
+                {
+                    "status": "failed",
+                    "last_action": task.last_action or "stale_running_recovery",
+                    "last_result_success": 0,
+                    "last_result_error": error,
+                    "last_result_data": json.dumps(result_data),
+                },
+                expected_statuses=["running"],
+            )
+            if not updated_task:
+                continue
+            self.dedup.mark_failed(f"{updated_task.source_id}:{updated_task.event_ids}")
+            self.audit_service.record(
+                "alert_task_stale_running_recovered",
+                f"Recovered stale running task {updated_task.event_ids} as failed.",
+                {
+                    "eventIds": updated_task.event_ids,
+                    "taskId": updated_task.task_id,
+                    "sourceId": updated_task.source_id,
+                    "timeoutSeconds": timeout,
+                },
+            )
+            recovered.append(updated_task)
+        return recovered
 
     def _list_missing_open_polled_tasks(self, active_event_ids_for_source: set[str], source_id: str = "default") -> list[AlertHandlingTask]:
         return [task for task in self.list_open_polled_tasks(source_id) if task.event_ids not in active_event_ids_for_source]
@@ -455,6 +549,7 @@ class AlertDispatchService:
         updated = 0
         errors: list[str] = []
         active_event_ids_for_source: set[str] = set()
+        self.recover_stale_running_tasks(source_id=source_id)
 
         for alert in alerts:
             alert["alert_source_id"] = str(alert.get("alert_source_id", source_id)).strip() or source_id
@@ -468,18 +563,22 @@ class AlertDispatchService:
             existing = self.get_task_by_event_id(event_id, source_id=effective_source_id)
             if existing and existing.status == "queued":
                 workflow_selection = existing.payload.get("workflow_selection", {}) if isinstance(existing.payload, dict) else {}
-                self._refresh_existing_task(existing, alert, workflow_selection if isinstance(workflow_selection, dict) else {})
-                updated += 1
+                if self._refresh_existing_task(existing, alert, workflow_selection if isinstance(workflow_selection, dict) else {}):
+                    updated += 1
+                else:
+                    skipped += 1
                 continue
             if existing and existing.status == "failed":
                 workflow_selection = existing.payload.get("workflow_selection", {}) if isinstance(existing.payload, dict) else {}
-                self._refresh_existing_task(
+                if self._refresh_existing_task(
                     existing,
                     alert,
                     workflow_selection if isinstance(workflow_selection, dict) else {},
                     reset_to_queued=False,
-                )
-                updated += 1
+                ):
+                    updated += 1
+                else:
+                    skipped += 1
                 continue
             if existing and existing.status == "running":
                 skipped += 1
@@ -559,8 +658,20 @@ class AlertDispatchService:
                 )
         return queued, skipped, updated, completed, errors
 
-    def list_queued_tasks(self, source_id: str | None = None) -> list[AlertHandlingTask]:
-        return self.list_tasks(source_id=source_id)
+    def list_queued_tasks(self, source_id: str | None = None, *, limit: int | None = None) -> list[AlertHandlingTask]:
+        normalized_limit = max(1, int(limit)) if limit is not None else None
+        with self.lock, self._get_conn() as conn:
+            params: list[Any] = []
+            query = "SELECT * FROM alert_tasks WHERE status = 'queued'"
+            if source_id:
+                query += " AND source_id = ?"
+                params.append(source_id)
+            query += " ORDER BY COALESCE(NULLIF(alert_time, ''), updated_at) ASC, updated_at ASC"
+            if normalized_limit is not None:
+                query += " LIMIT ?"
+                params.append(normalized_limit)
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._row_to_task(row) for row in rows]
 
     def list_open_polled_tasks(self, source_id: str | None = None) -> list[AlertHandlingTask]:
         with self.lock, self._get_conn() as conn:
@@ -675,7 +786,7 @@ class AlertDispatchService:
         if not isinstance(result, dict):
             return {}
         compact: dict[str, Any] = {}
-        for key in (
+        preserved_keys = (
             "success",
             "approval_pending",
             "approval_request",
@@ -685,7 +796,8 @@ class AlertDispatchService:
             "workflow_selection",
             "effective_closure_step",
             "closure_step",
-        ):
+        )
+        for key in preserved_keys:
             if key in result:
                 compact[key] = result.get(key)
         workflow_runs = result.get("workflow_runs")
@@ -699,6 +811,13 @@ class AlertDispatchService:
                 for item in workflow_runs[:3]
                 if isinstance(item, dict)
             ]
+            if len(workflow_runs) > 3:
+                compact["workflow_runs_truncated"] = True
+                compact["workflow_runs_total"] = len(workflow_runs)
+        omitted_keys = sorted(key for key in result.keys() if key not in preserved_keys and key != "workflow_runs")
+        if omitted_keys:
+            compact["summary_truncated"] = True
+            compact["omitted_result_keys"] = omitted_keys[:12]
         return compact
 
     def _compact_payload(self, raw: str | None) -> dict[str, Any]:
