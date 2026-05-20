@@ -1,7 +1,7 @@
 import sqlite3
 
 from sentinelflow.config.runtime import CONFIG_DIR
-from sentinelflow.services.sqlite_support import open_sqlite_connection, sqlite_transaction
+from sentinelflow.services.sqlite_support import open_sqlite_connection, sqlite_connection, sqlite_transaction
 
 DB_PATH = CONFIG_DIR / "sys_queue.db"
 
@@ -15,7 +15,7 @@ class AlertDedupStore:
 
     def __init__(self) -> None:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with self._get_conn() as conn:
+        with sqlite_connection(DB_PATH) as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS alert_dedup (
                     event_id TEXT PRIMARY KEY,
@@ -43,17 +43,17 @@ class AlertDedupStore:
             conn.execute("DELETE FROM alert_dedup WHERE event_id = ?", (event_id,))
 
     def is_processing(self, event_id: str) -> bool:
-        with self._get_conn() as conn:
+        with sqlite_connection(DB_PATH) as conn:
             row = conn.execute("SELECT status FROM alert_dedup WHERE event_id = ?", (event_id,)).fetchone()
             return row is not None and row[0] == "processing"
 
     def is_completed(self, event_id: str) -> bool:
-        with self._get_conn() as conn:
+        with sqlite_connection(DB_PATH) as conn:
             row = conn.execute("SELECT status FROM alert_dedup WHERE event_id = ?", (event_id,)).fetchone()
             return row is not None and row[0] == "completed"
 
     def seen(self, event_id: str) -> bool:
-        with self._get_conn() as conn:
+        with sqlite_connection(DB_PATH) as conn:
             row = conn.execute("SELECT status FROM alert_dedup WHERE event_id = ?", (event_id,)).fetchone()
             return row is not None
 

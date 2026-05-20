@@ -17,6 +17,19 @@ def open_sqlite_connection(db_path: Path) -> sqlite3.Connection:
 
 
 @contextmanager
+def sqlite_connection(db_path: Path) -> Iterator[sqlite3.Connection]:
+    conn = open_sqlite_connection(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
 def sqlite_transaction(db_path: Path, *, begin_mode: str | None = None) -> Iterator[sqlite3.Connection]:
     conn = open_sqlite_connection(db_path)
     try:

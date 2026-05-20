@@ -171,7 +171,7 @@ class AlertPollingService:
                 errors=["当前没有可用的告警源配置。"],
             )
             return self.get_latest_result(source_id)
-        response = self.client.fetch_open_alerts(source)
+        response = await asyncio.to_thread(self.client.fetch_open_alerts, source)
         if "error" in response:
             latest = PollingDispatchResult(
                 fetched_count=0,

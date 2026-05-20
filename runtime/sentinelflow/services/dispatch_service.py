@@ -8,7 +8,7 @@ from typing import Any, Iterable
 from sentinelflow.alerts.dedup import AlertDedupStore
 from sentinelflow.domain.models import AlertHandlingTask
 from sentinelflow.services.audit_service import AuditService
-from sentinelflow.services.sqlite_support import open_sqlite_connection, sqlite_transaction
+from sentinelflow.services.sqlite_support import open_sqlite_connection, sqlite_connection, sqlite_transaction
 from sentinelflow.services.triage_service import TriageService
 from sentinelflow.config.runtime import CONFIG_DIR
 
@@ -156,7 +156,7 @@ class AlertDispatchService:
         
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
-        with self._get_conn() as conn:
+        with sqlite_connection(DB_PATH) as conn:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS alert_tasks (
                     task_id TEXT PRIMARY KEY,
@@ -391,7 +391,7 @@ class AlertDispatchService:
         if timeout <= 0:
             return []
         now = datetime.now(timezone.utc)
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 rows = conn.execute(
                     "SELECT * FROM alert_tasks WHERE source_id = ? AND status = 'running'",
@@ -660,7 +660,7 @@ class AlertDispatchService:
 
     def list_queued_tasks(self, source_id: str | None = None, *, limit: int | None = None) -> list[AlertHandlingTask]:
         normalized_limit = max(1, int(limit)) if limit is not None else None
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             params: list[Any] = []
             query = "SELECT * FROM alert_tasks WHERE status = 'queued'"
             if source_id:
@@ -674,7 +674,7 @@ class AlertDispatchService:
         return [self._row_to_task(row) for row in rows]
 
     def list_open_polled_tasks(self, source_id: str | None = None) -> list[AlertHandlingTask]:
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 rows = conn.execute(
                     "SELECT * FROM alert_tasks WHERE source_id = ? AND status IN ('queued', 'failed')",
@@ -689,7 +689,7 @@ class AlertDispatchService:
     def list_failed_retry_candidates(self, retry_interval_seconds: int, max_retry_count: int = 3, source_id: str | None = None) -> list[AlertHandlingTask]:
         if retry_interval_seconds <= 0:
             return []
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 rows = conn.execute(
                     "SELECT * FROM alert_tasks WHERE source_id = ? AND status = 'failed' AND retry_count < ?",
@@ -718,7 +718,7 @@ class AlertDispatchService:
         return eligible
 
     def list_tasks(self, source_id: str | None = None) -> list[AlertHandlingTask]:
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 rows = conn.execute("SELECT * FROM alert_tasks WHERE source_id = ?", (source_id,)).fetchall()
             else:
@@ -739,7 +739,7 @@ class AlertDispatchService:
             alert_time, updated_at, status, retry_count, last_action, last_result_success,
             last_result_error, last_result_data, payload
         """
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks WHERE source_id = ?", (source_id,)).fetchone()[0])
                 rows = conn.execute(
@@ -772,7 +772,7 @@ class AlertDispatchService:
             query += " WHERE source_id = ?"
             params = (source_id,)
         query += " GROUP BY status"
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             rows = conn.execute(query, params).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
@@ -924,14 +924,14 @@ class AlertDispatchService:
         return len(removed_task_ids)
 
     def get_task(self, task_id: str) -> AlertHandlingTask | None:
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             row = conn.execute("SELECT * FROM alert_tasks WHERE task_id = ?", (task_id,)).fetchone()
             if row:
                 return self._row_to_task(row)
         return None
 
     def get_task_by_event_id(self, event_id: str, source_id: str | None = None) -> AlertHandlingTask | None:
-        with self.lock, self._get_conn() as conn:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 row = conn.execute(
                     "SELECT * FROM alert_tasks WHERE source_id = ? AND event_ids = ? ORDER BY rowid DESC LIMIT 1",
