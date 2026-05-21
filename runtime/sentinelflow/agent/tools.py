@@ -41,6 +41,10 @@ def build_agent_tools(
         if arguments is None:
             return {}, None
         if isinstance(arguments, dict):
+            nested = arguments.get("arguments")
+            wrapper_keys = {"skill_name", "arguments"}
+            if isinstance(nested, dict) and set(str(key) for key in arguments.keys()).issubset(wrapper_keys):
+                return nested, None
             return arguments, None
         if isinstance(arguments, str):
             try:
@@ -48,7 +52,7 @@ def build_agent_tools(
             except json.JSONDecodeError:
                 return {}, "Skill arguments must be a JSON object."
             if isinstance(parsed, dict):
-                return parsed, None
+                return _normalize_skill_arguments(parsed)
             return {}, "Skill arguments must be a JSON object."
         return {}, "Skill arguments must be a JSON object."
 
