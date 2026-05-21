@@ -202,14 +202,24 @@ class SkillRunAnalyzerMixin:
             tool_payload = item.get("tool_payload", {})
             if not isinstance(tool_payload, dict):
                 tool_payload = {}
+            tool_payload_provided = bool(tool_payload)
+            result_summary = item.get("result_summary", {})
+            if not isinstance(result_summary, dict):
+                result_summary = {}
             business_payload = item.get("payload", item.get("result", item.get("data", {})))
             if not isinstance(business_payload, dict):
                 business_payload = {"result": business_payload} if business_payload not in (None, "") else {}
             if not business_payload and isinstance(tool_payload.get("data"), dict):
                 business_payload = tool_payload.get("data", {})
+            if not business_payload:
+                summary_facts = result_summary.get("key_facts", {})
+                if isinstance(summary_facts, dict) and summary_facts:
+                    business_payload = dict(summary_facts)
             if not tool_payload:
                 tool_payload = {"data": business_payload}
                 explicit_success = item.get("success", item.get("tool_success"))
+                if not isinstance(explicit_success, bool):
+                    explicit_success = result_summary.get("success")
                 if isinstance(explicit_success, bool):
                     tool_payload["success"] = explicit_success
                 if graph_result.get("error"):
@@ -233,6 +243,7 @@ class SkillRunAnalyzerMixin:
                 "payload": dict(business_payload),
                 "success": computed_success,
                 "inferred_from_summary": True,
+                "tool_payload_provided": tool_payload_provided,
             }
             if not tool_call_id:
                 fingerprint = self._skill_run_fingerprint(run)
@@ -400,13 +411,18 @@ class SkillRunAnalyzerMixin:
 
     def _closure_status_value(self, run: dict[str, Any]) -> str:
         payload = run.get("payload", {})
+        arguments = run.get("arguments", {})
         tool_payload = run.get("tool_payload", {})
         payload = payload if isinstance(payload, dict) else {}
+        arguments = arguments if isinstance(arguments, dict) else {}
         tool_payload = tool_payload if isinstance(tool_payload, dict) else {}
         tool_payload_data = tool_payload.get("data", {})
         tool_payload_data = tool_payload_data if isinstance(tool_payload_data, dict) else {}
         return str(
-            payload.get("status", tool_payload_data.get("status", tool_payload.get("status", "")))
+            payload.get(
+                "status",
+                tool_payload_data.get("status", tool_payload.get("status", arguments.get("status", ""))),
+            )
         ).strip()
 
     def _is_successful_closure_run(self, run: dict[str, Any]) -> bool:
@@ -423,6 +439,13 @@ class SkillRunAnalyzerMixin:
         if isinstance(tool_success, bool) and not tool_success:
             return False
         if bool(payload.get("error")) or bool(tool_payload.get("error")):
+            return False
+        if (
+            bool(run.get("inferred_from_summary"))
+            and not bool(run.get("tool_payload_provided"))
+            and not isinstance(tool_success, bool)
+            and not isinstance(payload.get("success"), bool)
+        ):
             return False
         status_value = self._closure_status_value(run)
         if status_value in self._VALID_EXEC_CLOSURE_STATUSES:
@@ -486,7 +509,10 @@ class SkillRunAnalyzerMixin:
         selected = closure_run or self._select_closure_run(skill_runs, None)
         if selected is not None:
             payload = selected.get("payload", {})
-            return payload if isinstance(payload, dict) else {}
+            if isinstance(payload, dict) and payload:
+                return payload
+            arguments = selected.get("arguments", {})
+            return arguments if isinstance(arguments, dict) else {}
         return {}
 
     def _first_enrichment_payload(self, skill_runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -525,10 +551,14 @@ class SkillRunAnalyzerMixin:
         arguments = closure_run.get("arguments", {})
         payload = payload if isinstance(payload, dict) else {}
         arguments = arguments if isinstance(arguments, dict) else {}
+        result_payload = payload if payload else dict(arguments)
         success = self._is_successful_closure_run(closure_run)
         summary = str(
             payload.get("detailMsg")
             or payload.get("detail_msg")
+            or arguments.get("detailMsg")
+            or arguments.get("detail_msg")
+            or arguments.get("memo")
             or payload.get("result")
             or payload.get("message")
             or ("结单执行成功。" if success else "结单执行失败。")
@@ -542,8 +572,8 @@ class SkillRunAnalyzerMixin:
             "tool_success": closure_run.get("tool_success"),
             "tool_error": closure_run.get("tool_error"),
             "arguments": arguments,
-            "result": payload,
-            "error": payload.get("error"),
+            "result": result_payload,
+            "error": payload.get("error") if payload else None,
             "summary": summary,
         }
         if source_type:
