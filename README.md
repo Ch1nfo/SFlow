@@ -23,15 +23,17 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 **SentinelFlow** is a full-stack SOC automation platform that combines a **LangGraph-powered multi-agent orchestration runtime** with a **React WebUI** for alert management and operator collaboration. Instead of rigid playbooks, you get a flexible, extensible agent system where a Primary Supervisor Agent coordinates specialized Worker Sub-Agents — each equipped with pluggable Skills that can call external APIs, run enrichment scripts, close tickets, and more.
 
 - **Multi-Agent Orchestration** — Supervisor + Worker SubGraph pattern via LangGraph, with sequential and parallel worker delegation plus supervisor-guided workflows
-- **Full Operator Console** — Unified WebUI for Overview, Alert Workbench, Task Center, Conversation Console, Skills, Agents, Workflows, and Settings
+- **Full Operator Console** — Unified WebUI for Overview, Alert Workbench, Task Center, Conversation Console, Skills, RAG, Agents, Workflows, Settings, and run-log inspection
 - **Pluggable Skill System** — Drop a `SKILL.md` + `main.py` into the local plugin workspace; agents discover and invoke them automatically with granular per-agent permission control
 - **Dual Entry Points** — Accepts both raw security alerts (JSON payloads from SIEM/SOAR) and free-form human commands via the WebUI conversation console
 - **Agent Workflow Engine** — Define reusable multi-step workflows for high-frequency scenarios; the Primary Agent loads the plan, then calls each worker with concrete step prompts
 - **Multi-Source Alert Ingestion** — Configure multiple named alert sources, each using REST/HTTP polling or a Python script entrypoint with its own parser and schedule
 - **AI-Assisted Parser Generation** — Paste a sample alert payload and let the LLM auto-generate the field-mapping parser rule, with preview and one-click apply
 - **Source-Scoped Async Auto-Execution & Retry** — Enable the background executor per alert source, process queued alerts asynchronously, and retry failed tasks after source-specific delays
-- **Approval & Resume Flow** — `approval_required` skills pause the graph in conversation mode and manual single-alert handling, surface approval cards in the UI, then resume from checkpoint after approve/reject
-- **SOC Execution Context Control** — Context manifests, authority traces, and pre-execution input checks help agents keep target IPs, recipients, event IDs, and closure facts precise without compressing execution inputs
+- **Approval & Resume Flow** — `approval_required` skills pause manual graph execution, surface approval cards in the UI, then resume from checkpoint after approve/reject
+- **Run-Local Context Window Control** — Each LLM call receives a budgeted `llm_prompt_view` with task anchors, `case_context`, recent ReAct turns, and compact tool records while full state/checkpoints/run logs remain lossless
+- **SOC Execution Guardrails** — Authority traces, key facts, task-anchor selection, and pre-execution input checks help agents keep target IPs, recipients, event IDs, and closure facts precise
+- **Thinking-Model Adapter** — Optional settings toggle for providers such as DeepSeek that need explicit `thinking: disabled` request bodies
 - **Fine-Grained Governance** — Per-agent skill permissions, mode-aware worker allowlists, execution approval gates, audit logging, and agent-level model overrides
 
 ## Screenshots
@@ -55,7 +57,8 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Supervisor + Worker SubGraph** — Primary Agent uses LangGraph's `ToolNode` to delegate tasks to Worker Sub-Agents, each compiled as an isolated ReAct SubGraph wrapped as a `@tool`
 - **Parallel Delegation** — Primary Agent can dispatch multiple independent sub-tasks to different workers simultaneously via `delegate_parallel`
 - **Agent Workflow Engine** — Define reusable workflows for common scenarios (e.g., phishing triage, IP enrichment + block); `run_workflow` loads the fixed plan, while the Primary Agent remains responsible for calling each Worker with a complete task prompt
-- **SOC Execution Context Controller** — Each agent handoff can carry a `context_manifest` with current goal, available facts, authority trace, missing inputs, and context warnings while preserving original execution data losslessly
+- **SOC Context Window Manager** — `prepare_messages_for_llm()` builds a prompt view before every Supervisor/Worker call: system prompt, current task anchor, `case_context`, recent ReAct turns, and compacted older tool results
+- **Run-Local Case Context** — During a single run, agents maintain structured facts such as goal, alert refs, actions taken, missing inputs, pending approvals, completed steps, and do-not-repeat hints
 - **Mode-Aware Worker Permissions** — The Primary Agent can use different worker allowlists for conversation-style execution and alert-handling execution
 - **Prompt Variants & Synthesis** — Primary Agents can define base, command, alert, and synthesis prompts, while Worker Agents keep a single execution prompt
 - **Cancellation & Step Limits** — All graphs respect a `cancel_event` threading flag; `worker_max_steps` caps orchestration recursion depth
@@ -66,6 +69,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Two skill types**: `doc` (knowledge-only, read by agent) and `hybrid` (doc + executable subprocess)
 - **Per-agent permission control** — `doc_skill_allowlist`, `exec_skill_allowlist`, `approval_required` flags per skill; `approval_required` only applies to the Conversation Console and manual single-alert handling, each execution is approved separately, while auto-execution / auto-retry / debug bypass approval
 - **Subprocess execution** — Skills run in isolated subprocesses with structured JSON I/O; audit logging built in
+- **Compact LLM surface** — Large tool outputs and skill documents are kept in runtime state/run logs but summarized before they re-enter the LLM context
 - **In-WebUI Skill Management** — Create, edit, delete, inspect, and debug skills directly from the dedicated Skills page
 
 ### Alert Ingestion Pipeline
@@ -89,6 +93,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Full execution trace** — Every task stores a structured `execution_trace` covering alert receipt, workflow usage, agent analysis, skill calls, approval state, closure result, and final status
 - **Fact-based result convergence** — Final status, judgment, disposal outcome, closure state, and workflow usage are converged into structured `final_facts`
 - **Completion Policy Semantics** — Skill-level `completion_policy` distinguishes enrichment, containment, notification, and closure effects so task state follows real execution facts rather than loose text summaries
+- **Run Log Traceability** — LLM prompt views, window statistics, worker boundaries, constructed skill arguments, approvals, and final task results are recorded for audit and troubleshooting
 
 ### Security Operations WebUI
 
@@ -96,7 +101,9 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Alert Workbench** — Switch between alert sources, browse source-scoped task queues, start/stop automatic execution, manually trigger alert tasks, and inspect full alert context, approval state, and execution traces
 - **Task Center** — Review queue state, retry failed work, approve pending skills, and inspect full-process execution details from a task-first view
 - **Conversation Console** — Free-form command interface with multi-session history, streaming replies, collapsible worker/skill summaries, execution context details, and inline approval cards
-- **Configuration Center** — Unified settings page for LLM credentials plus multi-source alert connection, parser rules, polling schedules, retry intervals, and auto-execution toggles — all persisted without restarting the server
+- **Configuration Center** — Unified settings page for LLM credentials, thinking-model adapter, multi-source alert connection, parser rules, polling schedules, retry intervals, run-log retention, and auto-execution toggles — all persisted without restarting the server
+- **RAG Settings** — Configure the built-in RAG skill, retrieval parameters, API key, rerank model, and agent availability from the WebUI
+- **Run Log Viewer** — Inspect per-alert execution logs, prompt windows, worker/skill events, and argument provenance from the Settings page debug panel
 - **Skill Management** — Create, view, edit, and delete skills; run debug executions with custom arguments
 - **Agent Management** — Configure Primary Agent and Worker Sub-Agents: prompts (default / alert / command / synthesis variants), LLM overrides, skill permissions, and mode-aware worker delegation
 - **Workflow Management** — Create and edit Agent Workflows; run test executions from the UI
@@ -130,6 +137,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 │  │   ┌──────────────────────────────────────────────────┐    │  │
 │  │   │  Primary Agent (Supervisor)                       │    │  │
 │  │   │  LangGraph StateGraph + ToolNode                  │    │  │
+│  │   │  Context Window → ReAct → Worker/Skill Tools      │    │  │
 │  │   │    ↓ sequential / parallel worker delegation      │    │  │
 │  │   │  ┌────────────┐  ┌────────────┐  ┌────────────┐  │    │  │
 │  │   │  │  Worker A  │  │  Worker B  │  │  Worker C  │  │    │  │
@@ -143,6 +151,11 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 │  │    loader → executor → subprocess isolation → audit log    │  │
 │  └────────────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────────────┐  │
+│  │            Prompt Window & Run Log Traceability            │  │
+│  │  task anchors → case_context → compact tool records        │  │
+│  │  full state/checkpoints/run logs remain available          │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────────────┐  │
 │  │              Alert Ingestion & Task Queue                  │  │
 │  │  Multi-Source API/Script Poller → Parser → Dedup → Queue   │  │
 │  │  Source-Scoped Auto-Executor → Task Runner → Agent/Workflow│  │
@@ -152,19 +165,22 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 
 **Core Design Patterns**
 
-- **Supervisor + Worker SubGraph** — Workers are compiled ReAct SubGraphs, wrapped as `@tool` functions; only `final_response` surfaces back to the Supervisor as a `ToolMessage`
-- **SOC execution context control** — `context_manifest` provides LLM-visible navigation, authority trace, missing inputs, and context warnings while runtime state, approvals, and audit records stay outside the execution prompt unless explicitly needed
+- **Supervisor + Worker SubGraph** — Workers are compiled ReAct SubGraphs and wrapped as `@tool` functions; compact summaries, key facts, action results, approvals, and errors surface back to the Supervisor
+- **SOC context window control** — `prepare_messages_for_llm()` creates the actual LLM prompt view from full state, preserving task anchors and recent ReAct turns while compressing older tool records
+- **Run-local case context** — `case_context` carries current goal, alert refs, facts, actions taken, missing inputs, pending approvals, completed steps, and do-not-repeat hints for the current run only
 - **SKILL.md discovery** — Skills are file-system plugins; no code changes needed to add new capabilities
 - **Dual entry types** — `alert` (JSON from SIEM) and `conversation` (human command); both routed through the same agent runtime
 - **Source-aware SQLite task persistence** — Alert tasks survive restarts; source-scoped event IDs and atomic status transitions prevent duplicate execution
 - **Atomic result serialization** — All graph results pass through `_serialize_alert_result` for a consistent, structured execution trace
+- **Lossless audit / compact inference split** — Full state, checkpoints, and run logs are retained; only the prompt sent to the LLM is windowed and compacted
 
 **Key Components**
 
 - **`SentinelFlowAgentService`** — Top-level service; routes to orchestrator or single-agent graph; serializes results
 - **`build_orchestrator_graph()`** — Compiles the Supervisor + Worker multi-agent LangGraph
 - **`build_agent_graph()`** — Builds a single-agent ReAct SubGraph (used for both workers and standalone agents)
-- **`context_utils`** — Builds context manifests, authority traces, key facts, tool-call summaries, and pre-execution input checks
+- **`context_utils`** — Builds context manifests, task anchors, case context, prompt windows, key facts, compact tool summaries, and pre-execution input checks
+- **`RunLogTracer` / `AgentRunLogService`** — Records per-run LLM prompt views, window information, worker boundaries, skill calls, approvals, and final results
 - **`AlertDispatchService`** — SQLite-backed source-aware task queue; handles create, dedup, status transition, and finalization
 - **`AlertPollingService`** — Per-source scheduler that polls enabled API/script alert sources and dispatches normalized alerts into the task queue
 - **`AlertAutoExecutionService`** — Asyncio-based source-scoped executor loop; processes queued and retry-eligible tasks without human action
@@ -172,6 +188,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **`SentinelFlowSkillRuntime`** — Manages skill lifecycle; adapts skills as LangChain tools for agent use
 - **`AgentWorkflowRegistry`** — Lists and resolves workflow definitions for multi-step Agent Workflows
 - **`SkillApprovalService`** — Persists approval records and checkpoint resume state for human-in-the-loop execution
+- **`weekly_alert_cleanup_service`** — Optional weekly cleanup for stored alert tasks and run artifacts
 - **`AuditService`** — Records runtime audit events for dispatch, task execution, approval handling, and background services
 
 </details>
@@ -194,6 +211,9 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 │       │   ├── graph.py                # Single-agent ReAct graph builder
 │       │   ├── registry.py             # Agent definition loader (agent.yaml)
 │       │   ├── prompts.py              # System prompts & appendix templates
+│       │   ├── context_utils.py        # Context manifest, prompt window, case_context, compact records
+│       │   ├── run_log_tracer.py       # LLM prompt/run-log event tracing
+│       │   ├── skill_run_analyzer.py   # Skill/closure/action result convergence
 │       │   ├── policy.py               # Per-agent skill permission resolver
 │       │   ├── nodes.py                # LangGraph node implementations
 │       │   ├── tools.py                # Agent-facing tool definitions
@@ -202,6 +222,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 │       │   ├── loader.py               # SKILL.md discovery & validation
 │       │   ├── executor.py             # Skill subprocess execution
 │       │   ├── adapters.py             # Skill → LangChain tool adapters
+│       │   ├── resolver.py             # Local/plugin skill resolution
 │       │   └── models.py               # Skill data models
 │       ├── alerts/
 │       │   ├── client.py               # Alert source HTTP/script client
@@ -210,12 +231,15 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 │       │   ├── parser_generator.py     # LLM + heuristic parser rule generator
 │       │   └── dedup.py                # Alert deduplication store
 │       ├── services/
+│       │   ├── agent_run_log_service.py # Per-alert JSONL run logs
 │       │   ├── dispatch_service.py     # SQLite-backed task queue & lifecycle
 │       │   ├── task_runner_service.py  # Task execution orchestration
 │       │   ├── auto_execution_service.py # Continuous auto-executor loop
 │       │   ├── skill_approval_service.py # Skill approval records + checkpoint persistence
 │       │   ├── triage_service.py       # Rule-based alert disposition fallback
+│       │   ├── weekly_alert_cleanup_service.py # Optional weekly cleanup
 │       │   └── audit_service.py        # Audit event log
+│       ├── tools/                      # Built-in operational tools
 │       ├── workflows/                  # Agent workflow registry & runner
 │       ├── api/                        # FastAPI route handlers
 │       ├── config/                     # Runtime config loader (.env + persisted JSON)
@@ -279,10 +303,10 @@ sentinelflow backend
 
 The preferred way to configure SentinelFlow is through the **WebUI Settings panel** — all settings are persisted to `.sentinelflow/runtime.json` by default without requiring a server restart.
 
-Alternatively, copy `.env.example` to `.env` for environment-level defaults:
+Alternatively, create a project-root `.env` file for environment-level defaults:
 
 ```bash
-cp .env.example .env
+touch .env
 ```
 
 Key environment variables (all prefixed with `SENTINELFLOW_`):
@@ -292,6 +316,7 @@ Key environment variables (all prefixed with `SENTINELFLOW_`):
 SENTINELFLOW_LLM_API_KEY=sk-...
 SENTINELFLOW_LLM_API_BASE_URL=https://api.openai.com/v1
 SENTINELFLOW_LLM_MODEL=gpt-4o
+SENTINELFLOW_LLM_THINKING_ADAPTER_ENABLED=false  # enable only for thinking-model adapters such as DeepSeek
 
 # Alert Source
 SENTINELFLOW_ALERT_SOURCE_ENABLED=false
@@ -304,13 +329,20 @@ SENTINELFLOW_AUTO_EXECUTE_ENABLED=false
 
 # Runtime
 SENTINELFLOW_AGENT_ENABLED=true
+SENTINELFLOW_RUN_LOG_RETENTION_DAYS=1
+SENTINELFLOW_WEEKLY_ALERT_CLEANUP_ENABLED=false
+
+# RAG skill defaults
+SENTINELFLOW_RAG_ENABLED=true
+SENTINELFLOW_RAG_KNOWLEDGE_ID=your-knowledge-id
+SENTINELFLOW_RAG_API_KEY=sk-...
 ```
 
 ### Tech Stack
 
 **Backend**: Python 3.11 · FastAPI · uvicorn · LangGraph · LangChain · Pydantic v2 · python-dotenv · SQLite
 
-**Frontend**: React 18 · TypeScript · Vite · TailwindCSS · react-hook-form
+**Frontend**: React 19 · TypeScript · Vite 7 · TailwindCSS · React Router
 
 **AI Runtime**: LangGraph (StateGraph + ToolNode) · LangChain Core · langchain-openai
 
@@ -363,7 +395,7 @@ Open the WebUI and navigate to **Settings**. Configure your LLM endpoint and one
 Alternatively, create a `.env` file for environment-level defaults:
 
 ```bash
-cp .env.example .env
+touch .env
 # Edit .env with your SENTINELFLOW_LLM_API_KEY, SENTINELFLOW_LLM_API_BASE_URL, etc.
 ```
 
@@ -414,6 +446,8 @@ SENTINELFLOW_LLM_API_BASE_URL=https://your-provider/v1
 SENTINELFLOW_LLM_API_KEY=your-key
 SENTINELFLOW_LLM_MODEL=model-name
 ```
+
+For DeepSeek-style thinking models, enable **Thinking Model Adapter** in Settings or set `SENTINELFLOW_LLM_THINKING_ADAPTER_ENABLED=true`. When enabled, SentinelFlow sends `thinking: {"type": "disabled"}` to avoid provider-side `reasoning_content` replay errors. Leave it disabled for providers that do not support this request body.
 
 </details>
 
@@ -486,6 +520,7 @@ The WebUI and alert ingestion pipeline work without an LLM key. However, the AI 
 - **Workflows**: `.sentinelflow/plugins/workflows/` by default
 - **Runtime config** (persisted from WebUI): `.sentinelflow/runtime.json` by default
 - **Task queue / approvals**: `.sentinelflow/sys_queue.db` (SQLite)
+- **Run logs**: `.sentinelflow/run_logs/` by default
 - **Environment defaults**: `.env` at project root (optional)
 
 In the current project layout, the effective local workspace is the project-root `.sentinelflow/` directory.
@@ -517,13 +552,11 @@ Create a `workflow.json` file under `.sentinelflow/plugins/workflows/<workflow-i
 
 ## Release Notes
 
-- [SentinelFlow v1.1.0 — Execution Context Integrity Milestone](RELEASE_1.1.0.md)
+- **v1.1.0** — Multi-agent execution integrity, source-aware alert tasks, workflow runner, prompt window management, run-log traceability, RAG settings, and thinking-model adapter.
 
 ## Documentation
 
-For detailed guides on each feature, see the planned **[User Manual](docs/user-manual/en/README.md)** — covering agent configuration, skill development, workflow authoring, API reference, and deployment.
-
-> 📝 **Note**: Full documentation is under active development. Contributions welcome!
+This README is the current primary guide. More detailed user manuals for agent configuration, skill development, workflow authoring, API reference, and deployment are planned.
 
 ## Contributing
 

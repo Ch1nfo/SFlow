@@ -23,15 +23,17 @@
 **SentinelFlow** 是一个全栈 SOC 自动化平台，将 **基于 LangGraph 的多 Agent 编排运行时**与**面向运营协同的 React WebUI** 深度结合。不同于固化的剧本，你将拥有一套灵活、可扩展的 Agent 体系——主 Agent（Supervisor）统一调度各专项子 Agent（Worker），每个子 Agent 均可装配可热插拔的 Skill，实现外部 API 调用、情报富化脚本、工单闭合等任意安全运营动作。
 
 - **多 Agent 编排** — 基于 LangGraph 的 Supervisor + Worker SubGraph 模式，支持顺序/并行委派以及由主 Agent 引导执行的 Workflow
-- **完整运营控制台** — 统一 WebUI 覆盖总览、告警工作台、任务中心、对话指挥台、Skills、Agents、Workflows 和平台设置
+- **完整运营控制台** — 统一 WebUI 覆盖总览、告警工作台、任务中心、对话指挥台、Skills、RAG、Agents、Workflows、平台设置和运行日志查看
 - **可插拔 Skill 系统** — 在本地插件工作区中放入 `SKILL.md` + `main.py` 即可，Agent 自动发现并调用，支持细粒度的按 Agent 权限控制
 - **双入口处理** — 同时接受原始安全告警（SIEM/SOAR 的 JSON 告警）和 WebUI 对话台中的自由文本人工指令
 - **Agent Workflow 引擎** — 定义可复用的多步骤工作流；主 Agent 读取固定计划后，仍负责为每一步生成具体任务并调用对应子 Agent
 - **多告警源接入** — 支持配置多个命名告警源，每个源可使用 HTTP API 轮询或 Python 脚本入口，并拥有独立解析规则与调度参数
 - **AI 辅助解析规则生成** — 粘贴告警样本，大模型自动生成字段映射解析规则，并支持预览后保存
 - **按源异步自动处置与失败重试** — 可按告警源开启后台自动执行，异步处理排队告警，并按各源配置的延迟自动重试失败任务
-- **审批与断点恢复** — `approval_required` Skill 在对话与手动单告警场景下会暂停图执行，在 UI 中显示审批卡，并在批准/拒绝后从 checkpoint 恢复
-- **SOC 执行上下文控制** — 通过 `context_manifest`、权威事实追踪和执行前参数校验，让 Agent 在不压缩执行入参的前提下更准确识别 IP、收信人、告警 ID 和结单状态
+- **审批与断点恢复** — `approval_required` Skill 在手动图执行中会暂停流程，在 UI 中显示审批卡，并在批准/拒绝后从 checkpoint 恢复
+- **单次任务上下文窗口控制** — 每次 LLM 调用前生成受预算约束的 `llm_prompt_view`，保留任务锚点、`case_context`、最近 ReAct 轮次和压缩工具结果，完整 state/checkpoint/run log 不丢失
+- **SOC 执行护栏** — 通过权威事实、关键字段、任务锚点识别和执行前参数校验，让 Agent 更准确识别 IP、收信人、告警 ID 和结单状态
+- **思考模型适配开关** — 在平台设置中可按需启用 DeepSeek 等 thinking 模型所需的 `thinking: disabled` 请求体
 - **细粒度治理策略** — 按 Agent 配置 Skill 权限、按模式分离 Worker 委派权限、执行审批门控、审计日志和 Agent 级模型覆盖
 
 ## 界面预览
@@ -55,7 +57,8 @@
 - **Supervisor + Worker SubGraph** — 主 Agent 通过 LangGraph 的 `ToolNode` 将任务委托给子 Agent，每个子 Agent 以独立 ReAct SubGraph 编译后封装为 `@tool`
 - **并行委派** — 主 Agent 可通过 `delegate_parallel` 同时将多个独立子任务分发给不同 Worker 并行执行
 - **Agent Workflow 引擎** — 定义可复用的固定多步骤工作流，用于高频场景；`run_workflow` 只加载固定计划，主 Agent 仍负责为每一步子 Agent 调用生成完整 task_prompt
-- **SOC 执行上下文控制器** — 每次 Agent 交接可携带 `context_manifest`，记录当前目标、可用事实、权威来源、缺失输入和上下文提示，同时保持原始执行数据无损
+- **SOC 上下文窗口管理器** — 每次 Supervisor/Worker 调用前由 `prepare_messages_for_llm()` 生成 prompt view：系统提示词、当前任务锚点、`case_context`、最近 ReAct 轮次和压缩后的旧工具结果
+- **单次 run 内 case_context** — 在一次任务内维护 goal、alert refs、facts、actions taken、missing inputs、pending approvals、completed steps 和 do-not-repeat 等结构化工作台信息
 - **按模式分离的 Worker 权限** — 主 Agent 在对话式执行与告警处置执行下可以使用不同的 Worker 白名单
 - **提示词分层** — 主 Agent 支持基础 / 指令 / 告警 / 汇总四类提示词，子 Agent 使用统一执行提示词
 - **取消与步骤上限** — 所有编排图均尊重 `cancel_event` 线程标志；`worker_max_steps` 限制编排递归深度，防止失控
@@ -66,6 +69,7 @@
 - **两种 Skill 类型**：`doc`（纯知识型，供 Agent 阅读）和 `hybrid`（文档 + 可执行子进程）
 - **按 Agent 权限控制** — `doc_skill_allowlist`、`exec_skill_allowlist`、每个 Skill 的 `approval_required` 标志；`approval_required` 仅对对话与手动单告警生效，且每次执行都需要单独审批，自动执行 / 自动重试 / 调试会绕过审批
 - **子进程隔离执行** — Skill 在隔离子进程中运行，结构化 JSON 输入/输出，内置审计日志
+- **紧凑 LLM 数据面** — 大型工具输出和 Skill 文档保留在 runtime state/run log 中，重新进入 LLM 上下文前会先摘要化
 - **WebUI 内 Skill 管理** — 直接在独立 Skills 页面创建、编辑、删除、查看并在线调试 Skill
 
 ### 告警接入流水线
@@ -89,6 +93,7 @@
 - **结构化执行链路** — 每个任务存储完整 `execution_trace`，涵盖告警接收、Workflow 使用、Agent 研判、Skill 调用、审批状态、结单结果和最终状态
 - **基于事实的结果收敛** — 最终状态、研判分类、处置结果、结单状态和 Workflow 使用情况会统一收敛到结构化 `final_facts`
 - **闭环策略语义** — Skill 级 `completion_policy` 区分情报查询、遏制封禁、终态通知和正式结单，让任务状态以真实执行事实为准，而不是依赖松散文本描述
+- **运行日志可追溯** — LLM prompt view、窗口大小、Worker 边界、构造后的 Skill 入参、审批事件和最终任务结果均会进入运行日志，便于审计和排错
 
 ### 安全运营 WebUI
 
@@ -96,7 +101,9 @@
 - **告警工作台** — 切换不同告警源，浏览按源隔离的任务队列，启动/停止自动执行，手动触发 Agent 处置，查看告警上下文、审批状态和完整执行链路
 - **任务中心** — 以任务为中心查看队列状态、重试失败任务、处理待审批 Skill，并检查完整处置全流程
 - **对话指挥台** — 自由文本指令界面，支持多会话、流式响应、可折叠子 Agent/Skill 摘要、执行上下文详情和内联审批卡片
-- **配置中心** — 统一配置页面，涵盖 LLM 凭据、多告警源连接、解析规则、轮询参数、失败重试间隔、自动执行开关——所有配置实时持久化，无需重启服务
+- **配置中心** — 统一配置页面，涵盖 LLM 凭据、思考模型适配、多告警源连接、解析规则、轮询参数、失败重试间隔、运行日志保留策略、自动执行开关——所有配置实时持久化，无需重启服务
+- **RAG 设置** — 通过 WebUI 配置内置 RAG Skill、知识库 ID、检索参数、API Key、重排模型和 Agent 可用性
+- **运行日志查看器** — 在平台设置的调试面板中查看单告警执行日志、prompt window、Worker/Skill 事件和入参来源
 - **Skill 管理** — 创建、查看、编辑、删除 Skill；支持携带自定义参数进行在线调试执行
 - **Agent 管理** — 配置主 Agent 和子 Agent：提示词（默认/告警/指令/汇总 四种变体）、LLM 参数覆盖、Skill 权限和按模式分离的 Worker 委派权限
 - **Workflow 管理** — 创建、编辑 Agent Workflow；支持从 UI 直接发起测试运行
@@ -129,6 +136,7 @@
 │  │   ┌──────────────────────────────────────────────────┐    │  │
 │  │   │  主 Agent（Supervisor）                           │    │  │
 │  │   │  LangGraph StateGraph + ToolNode                  │    │  │
+│  │   │  Context Window → ReAct → Worker/Skill Tools      │    │  │
 │  │   │    ↓ 顺序 / 并行委派子 Agent                      │    │  │
 │  │   │  ┌────────────┐  ┌────────────┐  ┌────────────┐  │    │  │
 │  │   │  │  子 Agent A│  │  子 Agent B│  │  子 Agent C│  │    │  │
@@ -142,6 +150,11 @@
 │  │   loader → executor → 子进程隔离 → 审计日志                 │  │
 │  └────────────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────────────┐  │
+│  │              Prompt Window & 运行日志追踪                   │  │
+│  │  任务锚点 → case_context → compact tool records             │  │
+│  │  完整 state / checkpoint / run log 保持可追溯               │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────────────┐  │
 │  │              告警接入 & SQLite 任务队列                      │  │
 │  │  多源 API/脚本轮询 → 解析器 → 去重 → SQLite 任务队列          │  │
 │  │  按源自动执行循环 → 任务执行器 → Agent / Workflow             │  │
@@ -151,19 +164,22 @@
 
 **核心设计模式**
 
-- **Supervisor + Worker SubGraph** — 子 Agent 以编译后的 ReAct SubGraph 形式封装为 `@tool`，只有 `final_response` 作为 `ToolMessage` 返回给主 Agent
-- **SOC 执行上下文控制** — `context_manifest` 向 LLM 提供当前目标、权威事实、缺失输入与上下文提示；运行状态、审批状态和审计记录继续保留在本地 runtime state 中，避免污染执行提示词
+- **Supervisor + Worker SubGraph** — 子 Agent 以编译后的 ReAct SubGraph 形式封装为 `@tool`，以紧凑摘要、关键事实、动作结果、审批状态和错误信息返回给主 Agent
+- **SOC 上下文窗口控制** — `prepare_messages_for_llm()` 从完整 state 生成实际送入 LLM 的 prompt view，保留任务锚点和最近 ReAct 轮次，压缩较早工具记录
+- **单次任务 case_context** — `case_context` 在当前 run 内携带当前目标、告警引用、关键事实、已执行动作、缺失输入、待审批项、已完成步骤和防重复提示
 - **SKILL.md 自动发现** — Skill 是文件系统插件；无需修改代码即可添加新能力
 - **双入口类型** — `alert`（来自 SIEM 的 JSON 告警）和 `conversation`（人工指令）；均通过同一 Agent 运行时路由
 - **按源 SQLite 任务持久化** — 告警任务跨进程重启持久化；按源隔离 event ID，并通过原子状态转换防止重复执行
 - **原子化结果序列化** — 所有执行结果均经 `_serialize_alert_result` 统一处理，产出结构一致的执行链路追踪
+- **完整审计 / 紧凑推理分离** — 完整 state、checkpoint 与运行日志保留；只有实际送入 LLM 的 prompt 会做窗口化和压缩
 
 **核心组件**
 
 - **`SentinelFlowAgentService`** — 顶层服务，负责路由到编排器或单 Agent 图，并序列化执行结果
 - **`build_orchestrator_graph()`** — 编译 Supervisor + Worker 多 Agent LangGraph
 - **`build_agent_graph()`** — 构建单 Agent ReAct SubGraph（同时用于子 Agent 和独立 Agent）
-- **`context_utils`** — 构建 context manifest、权威事实追踪、关键事实索引、工具调用摘要和执行前输入校验
+- **`context_utils`** — 构建 context manifest、任务锚点、case context、prompt window、关键事实、紧凑工具摘要和执行前输入校验
+- **`RunLogTracer` / `AgentRunLogService`** — 记录每次运行的 LLM prompt view、窗口信息、Worker 边界、Skill 调用、审批事件和最终结果
 - **`AlertDispatchService`** — SQLite 支撑的按源任务队列；负责任务创建、去重、状态转换和闭合
 - **`AlertPollingService`** — 按源调度启用中的 API/脚本告警源，并将标准化告警写入任务队列
 - **`AlertAutoExecutionService`** — 基于 asyncio 的按源持续自动执行循环，无需人工干预处理排队与可重试任务
@@ -171,6 +187,7 @@
 - **`SentinelFlowSkillRuntime`** — 管理 Skill 生命周期，将 Skill 适配为 LangChain 工具供 Agent 使用
 - **`AgentWorkflowRegistry`** — 列举和解析固定多步骤 Agent Workflow 定义
 - **`SkillApprovalService`** — 持久化审批记录与断点恢复状态，用于人机协同执行
+- **`weekly_alert_cleanup_service`** — 可选的每周告警与运行数据清理服务
 - **`AuditService`** — 记录分发、任务执行、审批处理和后台服务相关审计事件
 
 </details>
@@ -193,6 +210,9 @@
 │       │   ├── graph.py                # 单 Agent ReAct 图构建器
 │       │   ├── registry.py             # Agent 定义加载器（agent.yaml）
 │       │   ├── prompts.py              # 系统提示词与附录模板
+│       │   ├── context_utils.py        # context manifest、prompt window、case_context、紧凑记录
+│       │   ├── run_log_tracer.py       # LLM prompt / 运行日志事件追踪
+│       │   ├── skill_run_analyzer.py   # Skill / 结单 / 动作结果收敛
 │       │   ├── policy.py               # 按 Agent Skill 权限解析器
 │       │   ├── nodes.py                # LangGraph 节点实现
 │       │   ├── tools.py                # Agent 侧工具定义
@@ -201,6 +221,7 @@
 │       │   ├── loader.py               # SKILL.md 发现与校验
 │       │   ├── executor.py             # Skill 子进程执行器
 │       │   ├── adapters.py             # Skill → LangChain 工具适配器
+│       │   ├── resolver.py             # 本地 / 插件 Skill 解析
 │       │   └── models.py               # Skill 数据模型
 │       ├── alerts/
 │       │   ├── client.py               # 告警源 HTTP / 脚本客户端
@@ -209,12 +230,15 @@
 │       │   ├── parser_generator.py     # 大模型 + 启发式解析规则生成器
 │       │   └── dedup.py                # 告警去重存储
 │       ├── services/
+│       │   ├── agent_run_log_service.py # 按告警记录 JSONL 运行日志
 │       │   ├── dispatch_service.py     # SQLite 任务队列与生命周期管理
 │       │   ├── task_runner_service.py  # 任务执行编排
 │       │   ├── auto_execution_service.py # 持续自动执行循环
 │       │   ├── skill_approval_service.py # Skill 审批记录与 checkpoint 持久化
 │       │   ├── triage_service.py       # 基于规则的处置结论兜底
+│       │   ├── weekly_alert_cleanup_service.py # 可选每周清理
 │       │   └── audit_service.py        # 审计事件日志
+│       ├── tools/                      # 内置运维工具
 │       ├── workflows/                  # Agent Workflow 注册表与执行器
 │       ├── api/                        # FastAPI 路由处理器
 │       ├── config/                     # 运行时配置加载器（.env + 持久化 JSON）
@@ -278,10 +302,10 @@ sentinelflow backend
 
 **推荐方式**：直接在 WebUI 的 **配置中心** 填写配置，所有参数默认实时持久化到 `.sentinelflow/runtime.json`，无需重启服务。
 
-**备选方式**：将 `.env.example` 复制为 `.env` 并填写环境变量（所有参数均以 `SENTINELFLOW_` 为前缀）：
+**备选方式**：在项目根目录创建 `.env` 并填写环境变量（所有参数均以 `SENTINELFLOW_` 为前缀）：
 
 ```bash
-cp .env.example .env
+touch .env
 ```
 
 核心环境变量：
@@ -291,6 +315,7 @@ cp .env.example .env
 SENTINELFLOW_LLM_API_KEY=sk-...
 SENTINELFLOW_LLM_API_BASE_URL=https://api.openai.com/v1
 SENTINELFLOW_LLM_MODEL=gpt-4o
+SENTINELFLOW_LLM_THINKING_ADAPTER_ENABLED=false  # 仅在 DeepSeek 等 thinking 模型适配时开启
 
 # 告警源
 SENTINELFLOW_ALERT_SOURCE_ENABLED=false
@@ -303,13 +328,20 @@ SENTINELFLOW_AUTO_EXECUTE_ENABLED=false
 
 # 运行时
 SENTINELFLOW_AGENT_ENABLED=true
+SENTINELFLOW_RUN_LOG_RETENTION_DAYS=1
+SENTINELFLOW_WEEKLY_ALERT_CLEANUP_ENABLED=false
+
+# RAG Skill 默认配置
+SENTINELFLOW_RAG_ENABLED=true
+SENTINELFLOW_RAG_KNOWLEDGE_ID=your-knowledge-id
+SENTINELFLOW_RAG_API_KEY=sk-...
 ```
 
 ### 技术栈
 
 **后端**：Python 3.11 · FastAPI · uvicorn · LangGraph · LangChain · Pydantic v2 · python-dotenv · SQLite
 
-**前端**：React 18 · TypeScript · Vite · TailwindCSS · react-hook-form
+**前端**：React 19 · TypeScript · Vite 7 · TailwindCSS · React Router
 
 **AI 运行时**：LangGraph（StateGraph + ToolNode）· LangChain Core · langchain-openai
 
@@ -362,7 +394,7 @@ python scripts/dev.py webui-serve
 也可以通过 `.env` 文件设置环境变量作为默认值：
 
 ```bash
-cp .env.example .env
+touch .env
 # 编辑 .env，填写 SENTINELFLOW_LLM_API_KEY、SENTINELFLOW_LLM_API_BASE_URL 等
 ```
 
@@ -413,6 +445,8 @@ SENTINELFLOW_LLM_API_BASE_URL=https://your-provider/v1
 SENTINELFLOW_LLM_API_KEY=your-key
 SENTINELFLOW_LLM_MODEL=model-name
 ```
+
+对于 DeepSeek 这类 thinking 模型，可在平台设置中开启 **思考模型适配**，或设置 `SENTINELFLOW_LLM_THINKING_ADAPTER_ENABLED=true`。开启后 SentinelFlow 会发送 `thinking: {"type": "disabled"}`，避免 provider 要求回传 `reasoning_content` 的报错。普通不支持该字段的模型应保持关闭。
 
 </details>
 
@@ -485,6 +519,7 @@ WebUI 和告警接入流水线不依赖 LLM Key 即可正常运行。但 AI Agen
 - **Workflow 定义**：默认位于 `.sentinelflow/plugins/workflows/`
 - **运行时配置**（WebUI 持久化）：默认位于 `.sentinelflow/runtime.json`
 - **任务队列 / 审批记录**：`.sentinelflow/sys_queue.db`（SQLite）
+- **运行日志**：默认位于 `.sentinelflow/run_logs/`
 - **环境变量默认值**：项目根目录 `.env`（可选）
 
 当前项目布局下，实际生效的本地工作区就是项目根 `.sentinelflow/` 目录。
@@ -516,13 +551,11 @@ WebUI 和告警接入流水线不依赖 LLM Key 即可正常运行。但 AI Agen
 
 ## 发布说明
 
-- [SentinelFlow v1.1.0 — Execution Context Integrity Milestone](RELEASE_1.1.0.md)
+- **v1.1.0** — 多 Agent 执行完整性、按源告警任务、Workflow Runner、prompt window 管理、运行日志追踪、RAG 设置与思考模型适配。
 
 ## 文档
 
-各功能的详细使用文档，请参阅规划中的 **[用户手册](docs/user-manual/zh/README.md)** — 涵盖 Agent 配置、Skill 开发、Workflow 编写、API 参考以及部署指南。
-
-> 📝 **注意**：完整文档正在积极建设中，欢迎社区贡献！
+当前 README 是主要使用说明。更完整的 Agent 配置、Skill 开发、Workflow 编写、API 参考和部署文档仍在规划中。
 
 ## 贡献
 
