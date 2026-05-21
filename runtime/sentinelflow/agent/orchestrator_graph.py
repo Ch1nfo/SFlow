@@ -30,9 +30,11 @@ from uuid import uuid4
 from sentinelflow.agent.checkpoint_state import serialize_graph_state
 from sentinelflow.agent.context_utils import (
     build_context_manifest,
+    compact_prior_step_payload,
     compact_worker_result_for_llm,
     extract_key_facts,
     format_context_manifest_header,
+    prepare_messages_for_llm,
     summarize_tool_calls,
 )
 from sentinelflow.agent.graph import build_agent_graph
@@ -149,7 +151,7 @@ def _tool_payloads_from_messages(messages: list[Any]) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             continue
         if isinstance(parsed, dict):
-            payloads.append(parsed)
+            payloads.append(compact_prior_step_payload(parsed))
     return payloads
 
 
@@ -215,6 +217,7 @@ def _build_worker_subgraph_tool(
             "approved_fingerprints": list(state.get("approved_fingerprints") or []),
             "rejected_fingerprints": list(state.get("rejected_fingerprints") or []),
             "executed_skill_cache": dict(state.get("executed_skill_cache", {}) or {}),
+            "case_context": copy.deepcopy(state.get("case_context", {}) or {}),
         }
         tracer = get_active_tracer()
         if tracer is not None:
@@ -750,18 +753,28 @@ def build_orchestrator_graph(
 
         turn = count_react_turns(current_messages) + 1
         alert_data = state.get("alert_data", {}) if isinstance(state.get("alert_data", {}), dict) else {}
+        prompt_goal = str(alert_data.get("payload", "") or state.get("action_hint", "") or "处理当前告警/任务")
+        prompt_messages, prompt_window_info, case_context = prepare_messages_for_llm(
+            system_msg=system_msg,
+            messages=messages_to_send[1:],
+            alert_data=alert_data,
+            current_goal=prompt_goal,
+            case_context=state.get("case_context", {}) if isinstance(state.get("case_context", {}), dict) else {},
+            scope="supervisor",
+        )
         if tracer is not None:
             tracer.log_llm_request(
                 scope=primary_scope,
                 graph="orchestrator",
                 agent_name=primary_name,
                 turn=turn,
-                messages=messages_to_send,
+                messages=prompt_messages,
                 node="supervisor",
                 alert_data=alert_data,
+                window_info=prompt_window_info,
             )
 
-        response = await supervisor_llm.ainvoke(messages_to_send)
+        response = await supervisor_llm.ainvoke(prompt_messages)
 
         if cancel is not None and getattr(cancel, "is_set", lambda: False)():
             raise RuntimeError("用户已停止当前任务。")
@@ -774,11 +787,11 @@ def build_orchestrator_graph(
                 turn=turn,
                 message=response,
                 node="supervisor",
-                request_messages=messages_to_send,
+                request_messages=prompt_messages,
                 alert_data=alert_data,
             )
 
-        return {"messages": new_messages + [response]}
+        return {"messages": new_messages + [response], "case_context": case_context}
 
     def _extract_approval_request(state: OrchestratorState) -> dict | None:
         for msg in reversed(list(state.get("messages", []))):
@@ -817,6 +830,7 @@ def build_orchestrator_graph(
             graph="orchestrator",
             agent_name=str(getattr(primary_agent, "name", "")).strip(),
             node="supervisor_tools",
+            tool_node_cls=ToolNode,
         ),
     )
     builder.add_node("approval_gate", _approval_gate)

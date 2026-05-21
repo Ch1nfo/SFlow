@@ -132,10 +132,14 @@ class RunLogTracer:
         messages: list[Any],
         node: str,
         alert_data: dict[str, Any] | None = None,
+        window_info: dict[str, Any] | None = None,
     ) -> int:
-        prompt_messages, window_info = serialize_messages_for_prompt_audit(messages)
+        llm_window_info = dict(window_info or {})
+        prompt_messages, audit_window_info = serialize_messages_for_prompt_audit(messages)
         digest = compute_prompt_digest(prompt_messages)
-        prompt_stats = summarize_prompt_stats(messages, prompt_messages, window_info=window_info)
+        prompt_stats = summarize_prompt_stats(messages, prompt_messages, window_info=audit_window_info)
+        if llm_window_info:
+            prompt_stats["llm_window"] = llm_window_info
         truncated = bool(prompt_stats.get("window_truncated")) or bool(prompt_stats.get("content_truncated_any"))
         title_suffix = "提示词审计（已截断）" if truncated else "提示词审计"
         self.log(
@@ -153,6 +157,7 @@ class RunLogTracer:
                 "system_prompt": self._system_prompt_summary(prompt_messages),
                 "prompt_message_summaries": self._summarize_prompt_messages(prompt_messages),
                 "prompt_stats": prompt_stats,
+                "llm_window_info": llm_window_info,
                 "alert_data_keys": sorted(str(key) for key in (alert_data or {}).keys()) if isinstance(alert_data, dict) else [],
             },
         )
@@ -374,10 +379,11 @@ def make_logged_tool_node(
     graph: str,
     agent_name: str = "",
     node: str = "tools_node",
+    tool_node_cls: Any = None,
 ):
     from langgraph.prebuilt import ToolNode
 
-    base = ToolNode(tools)
+    base = (tool_node_cls or ToolNode)(tools)
 
     async def _node(state: dict[str, Any]) -> dict[str, Any]:
         tracer = get_active_tracer()

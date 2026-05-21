@@ -15,3 +15,4 @@ runtime/*.db
 runtime/*.sqlite
 .vscode/
 runtime/tests/
+tests

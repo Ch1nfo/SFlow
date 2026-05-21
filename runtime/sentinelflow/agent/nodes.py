@@ -4,7 +4,12 @@ import json
 from typing import Literal
 
 from sentinelflow.agent.catalog import load_skill_catalog
-from sentinelflow.agent.context_utils import build_context_envelope, build_context_manifest, format_context_manifest_header
+from sentinelflow.agent.context_utils import (
+    build_context_envelope,
+    build_context_manifest,
+    format_context_manifest_header,
+    prepare_messages_for_llm,
+)
 from sentinelflow.agent.prompt_builder import PromptBuildContext, build_prompt
 from sentinelflow.agent.message_trace import count_react_turns
 from sentinelflow.agent.run_log_tracer import get_active_tracer, scope_label
@@ -140,17 +145,27 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
         )
 
     turn = count_react_turns(current_messages) + 1
+    prompt_goal = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "执行当前 Agent 任务")
+    prompt_messages, prompt_window_info, case_context = prepare_messages_for_llm(
+        system_msg=system_msg,
+        messages=messages_to_send[1:],
+        alert_data=alert_data if isinstance(alert_data, dict) else {},
+        current_goal=prompt_goal,
+        case_context=state.get("case_context", {}) if isinstance(state.get("case_context", {}), dict) else {},
+        scope="worker",
+    )
     if tracer is not None:
         tracer.log_llm_request(
             scope=scope,
             graph="agent_react",
             agent_name=agent_name,
             turn=turn,
-            messages=messages_to_send,
+            messages=prompt_messages,
             node="agent_node",
             alert_data=alert_data if isinstance(alert_data, dict) else {},
+            window_info=prompt_window_info,
         )
-    response = await llm.ainvoke(messages_to_send)
+    response = await llm.ainvoke(prompt_messages)
     if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
         raise RuntimeError("用户已停止当前任务。")
     if tracer is not None:
@@ -161,10 +176,10 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
             turn=turn,
             message=response,
             node="agent_node",
-            request_messages=messages_to_send,
+            request_messages=prompt_messages,
             alert_data=alert_data if isinstance(alert_data, dict) else {},
         )
-    return {"messages": seeded_messages + [response], "input_seeded": seeded_flag}
+    return {"messages": seeded_messages + [response], "input_seeded": seeded_flag, "case_context": case_context}
 
 
 def should_continue(state: SentinelFlowAgentState) -> Literal["tools", "__end__"]:

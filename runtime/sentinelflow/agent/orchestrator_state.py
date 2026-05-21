@@ -58,3 +58,4 @@ class OrchestratorState(TypedDict):
     approved_fingerprints: NotRequired[list[str]]
     rejected_fingerprints: NotRequired[list[str]]
     executed_skill_cache: NotRequired[dict[str, Any]]
+    case_context: NotRequired[dict[str, Any]]

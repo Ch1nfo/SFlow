@@ -4,6 +4,11 @@ import json
 import re
 from typing import Any
 
+try:
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+except ModuleNotFoundError:  # pragma: no cover
+    AIMessage = HumanMessage = SystemMessage = ToolMessage = object  # type: ignore[assignment]
+
 
 KEY_FACT_FIELDS = {
     "to",
@@ -48,6 +53,11 @@ KEY_FACT_ALIASES = {
 DEFAULT_KEY_FACT_MAX_DEPTH = 20
 DEFAULT_CONTEXT_WARNING_TOKEN_THRESHOLD = 24000
 DEFAULT_SAFE_GOAL_MAX_CHARS = 500
+DEFAULT_SUPERVISOR_PROMPT_TOKEN_BUDGET = 32000
+DEFAULT_WORKER_PROMPT_TOKEN_BUDGET = 16000
+DEFAULT_RECENT_REACT_MESSAGES = 8
+DEFAULT_TOOL_SUMMARY_CHARS = 800
+DEFAULT_TOOL_PREVIEW_CHARS = 500
 
 AUTHORITY_PRIORITY = [
     "current_skill_args",
@@ -292,6 +302,38 @@ def estimate_context_size(value: Any) -> dict[str, int]:
         "chars": chars,
         "estimated_tokens": max(1, chars // 4) if chars else 0,
     }
+
+
+def _message_type(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("type") or message.get("role") or "").strip().lower()
+    return str(getattr(message, "type", "") or message.__class__.__name__).strip().lower()
+
+
+def _message_content(message: Any) -> Any:
+    if isinstance(message, dict):
+        return message.get("content", "")
+    return getattr(message, "content", "")
+
+
+def _message_tool_call_id(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("tool_call_id", "") or "").strip()
+    return str(getattr(message, "tool_call_id", "") or "").strip()
+
+
+def _message_tool_name(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("name", "") or "").strip()
+    return str(getattr(message, "name", "") or "").strip()
+
+
+def _message_tool_calls(message: Any) -> list[Any]:
+    if isinstance(message, dict):
+        calls = message.get("tool_calls", [])
+    else:
+        calls = getattr(message, "tool_calls", [])
+    return calls if isinstance(calls, list) else []
 
 
 def _fact_values(value: Any) -> list[Any]:
@@ -594,6 +636,191 @@ def _parse_tool_message_payload(content: Any) -> Any:
     return {"result": content}
 
 
+def compact_tool_payload_for_llm(
+    payload: Any,
+    *,
+    tool_name: str = "",
+    tool_call_id: str = "",
+    summary_chars: int = DEFAULT_TOOL_SUMMARY_CHARS,
+) -> dict[str, Any]:
+    parsed = payload if isinstance(payload, dict) else _parse_tool_message_payload(payload)
+    parsed_dict = parsed if isinstance(parsed, dict) else {"result": parsed}
+    data = parsed_dict.get("data") if isinstance(parsed_dict, dict) else None
+    success = parsed_dict.get("success")
+    error = parsed_dict.get("error")
+    key_facts = extract_key_facts(parsed_dict)
+    summary_source = (
+        parsed_dict.get("summary")
+        or parsed_dict.get("display_summary")
+        or parsed_dict.get("short_summary")
+        or parsed_dict.get("final_response")
+        or data
+        or parsed_dict
+    )
+    compact: dict[str, Any] = {
+        "tool": str(tool_name or parsed_dict.get("tool") or parsed_dict.get("worker") or parsed_dict.get("name") or "").strip(),
+        "success": bool(success) if success is not None else not bool(error),
+        "summary": compact_text(summary_source, summary_chars),
+        "key_facts": key_facts,
+        "missing_required_inputs": list(parsed_dict.get("missing_required_inputs", []) or [])
+        if isinstance(parsed_dict.get("missing_required_inputs", []), list)
+        else [],
+        "approval_pending": bool(parsed_dict.get("approval_pending")),
+        "error": error,
+        "result_ref": str(tool_call_id or parsed_dict.get("result_ref") or parsed_dict.get("id") or "").strip(),
+    }
+    actions = parsed_dict.get("actions_taken") or parsed_dict.get("actions_summary")
+    if isinstance(actions, list) and actions:
+        compact["actions_taken"] = _json_safe(actions, max_depth=4)
+    if parsed_dict.get("approval_request"):
+        compact["approval_request"] = _json_safe(parsed_dict.get("approval_request"), max_depth=6)
+    return {key: value for key, value in compact.items() if value not in ("", None, [], {})}
+
+
+def compact_tool_message_for_llm(message: Any, *, summary_chars: int = DEFAULT_TOOL_SUMMARY_CHARS) -> dict[str, Any]:
+    return compact_tool_payload_for_llm(
+        _message_content(message),
+        tool_name=_message_tool_name(message),
+        tool_call_id=_message_tool_call_id(message),
+        summary_chars=summary_chars,
+    )
+
+
+def compact_prior_step_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    tool_calls_summary = payload.get("tool_calls_summary", [])
+    if not isinstance(tool_calls_summary, list):
+        tool_calls_summary = []
+    compact_calls = [
+        {
+            "name": str(item.get("name", "")).strip(),
+            "args": _json_safe(item.get("args", {}), max_depth=4),
+            "key_facts": _json_safe(item.get("key_facts", {}), max_depth=4),
+            "result_ref": str(item.get("id", "")).strip(),
+        }
+        for item in tool_calls_summary
+        if isinstance(item, dict)
+    ]
+    final_response = str(payload.get("final_response") or payload.get("display_summary") or payload.get("summary") or "")
+    compact: dict[str, Any] = {
+        "step": payload.get("step"),
+        "worker": str(payload.get("worker") or payload.get("worker_agent") or "").strip(),
+        "task_prompt": compact_text(payload.get("task_prompt", ""), 500),
+        "summary": compact_text(final_response, DEFAULT_TOOL_SUMMARY_CHARS),
+        "success": bool(payload.get("success")),
+        "error": payload.get("error"),
+        "key_facts": extract_key_facts(payload.get("key_facts", {}), compact_calls),
+        "tool_calls_summary": compact_calls[:8],
+        "missing_required_inputs": list(payload.get("missing_required_inputs", []) or [])
+        if isinstance(payload.get("missing_required_inputs", []), list)
+        else [],
+        "approval_pending": bool(payload.get("approval_pending")),
+    }
+    return {key: value for key, value in compact.items() if value not in ("", None, [], {})}
+
+
+def build_case_context(
+    *,
+    goal: str = "",
+    alert_data: Any = None,
+    messages: list[Any] | None = None,
+    prior_step_results: Any = None,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    case_context: dict[str, Any] = _json_safe(existing or {}, max_depth=8) if isinstance(existing, dict) else {}
+    if goal:
+        case_context["goal"] = compact_text(goal, 800)
+    alert = alert_data if isinstance(alert_data, dict) else {}
+    alert_refs = extract_key_facts(alert)
+    if alert_refs:
+        merged_refs = case_context.get("alert_refs", {}) if isinstance(case_context.get("alert_refs"), dict) else {}
+        case_context["alert_refs"] = {**merged_refs, **alert_refs}
+
+    facts = case_context.get("facts", {}) if isinstance(case_context.get("facts"), dict) else {}
+    actions_taken = list(case_context.get("actions_taken", []) or []) if isinstance(case_context.get("actions_taken", []), list) else []
+    missing_inputs = list(case_context.get("missing_inputs", []) or []) if isinstance(case_context.get("missing_inputs", []), list) else []
+    pending_approvals = list(case_context.get("pending_approvals", []) or []) if isinstance(case_context.get("pending_approvals", []), list) else []
+    completed_steps = list(case_context.get("completed_steps", []) or []) if isinstance(case_context.get("completed_steps", []), list) else []
+    do_not_repeat = list(case_context.get("do_not_repeat", []) or []) if isinstance(case_context.get("do_not_repeat", []), list) else []
+
+    payload_sources: list[Any] = []
+    if isinstance(prior_step_results, list):
+        payload_sources.extend(prior_step_results)
+    for message in messages or []:
+        if _message_type(message) not in {"tool", "toolmessage"}:
+            continue
+        payload_sources.append(_parse_tool_message_payload(_message_content(message)))
+
+    for index, payload in enumerate(payload_sources, start=1):
+        if not isinstance(payload, dict):
+            continue
+        facts = {**facts, **extract_key_facts(payload)}
+        if payload.get("success") is True:
+            completed_steps.append(
+                {
+                    "step": payload.get("step") or index,
+                    "worker": payload.get("worker") or payload.get("worker_agent") or payload.get("tool"),
+                    "summary": compact_text(payload.get("summary") or payload.get("display_summary") or payload.get("final_response") or payload, 400),
+                }
+            )
+        if payload.get("actions_taken") and isinstance(payload.get("actions_taken"), list):
+            actions_taken.extend(_json_safe(payload.get("actions_taken"), max_depth=4))
+        elif payload.get("tool_calls_summary") and isinstance(payload.get("tool_calls_summary"), list):
+            for call in payload.get("tool_calls_summary", [])[:8]:
+                if isinstance(call, dict):
+                    actions_taken.append(
+                        {
+                            "tool": call.get("name"),
+                            "args": _json_safe(call.get("args", {}), max_depth=4),
+                            "key_facts": _json_safe(call.get("key_facts", {}), max_depth=4),
+                        }
+                    )
+        if payload.get("missing_required_inputs") and isinstance(payload.get("missing_required_inputs"), list):
+            missing_inputs.extend(_json_safe(payload.get("missing_required_inputs"), max_depth=4))
+        if payload.get("approval_pending"):
+            pending_approvals.append(_json_safe(payload.get("approval_request", payload), max_depth=5))
+        if payload.get("success") is False or payload.get("error"):
+            do_not_repeat.append(
+                {
+                    "step": payload.get("step") or index,
+                    "worker": payload.get("worker") or payload.get("worker_agent") or payload.get("tool"),
+                    "error": compact_text(payload.get("error") or payload, 400),
+                }
+            )
+
+    def _dedupe_list(items: list[Any], limit: int) -> list[Any]:
+        deduped: list[Any] = []
+        seen: set[str] = set()
+        for item in items:
+            safe = _json_safe(item, max_depth=6)
+            marker = json.dumps(safe, ensure_ascii=False, sort_keys=True)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            deduped.append(safe)
+        return deduped[-limit:]
+
+    if facts:
+        case_context["facts"] = _json_safe(facts, max_depth=8)
+    if actions_taken:
+        case_context["actions_taken"] = _dedupe_list(actions_taken, 20)
+    if missing_inputs:
+        case_context["missing_inputs"] = _dedupe_list(missing_inputs, 20)
+    if pending_approvals:
+        case_context["pending_approvals"] = _dedupe_list(pending_approvals, 10)
+    if completed_steps:
+        case_context["completed_steps"] = _dedupe_list(completed_steps, 20)
+    if do_not_repeat:
+        case_context["do_not_repeat"] = _dedupe_list(do_not_repeat, 20)
+    return case_context
+
+
+def format_case_context_for_llm(case_context: dict[str, Any]) -> str:
+    return (
+        "本次任务 case_context（仅本次 run 内有效；完整审计数据保留在 runtime state/run log）：\n"
+        f"```json\n{json.dumps(_json_safe(case_context, max_depth=8), ensure_ascii=False, indent=2)}\n```\n"
+    )
+
+
 def _tool_payloads_by_id(tool_messages: Any) -> dict[str, dict[str, Any]]:
     payloads: dict[str, dict[str, Any]] = {}
     if not isinstance(tool_messages, list):
@@ -620,6 +847,7 @@ def summarize_tool_calls(
     *,
     limit: int | None = None,
     tool_messages: Any = None,
+    include_tool_payload: bool = False,
 ) -> list[dict[str, Any]]:
     if not isinstance(tool_calls, list):
         return []
@@ -643,12 +871,20 @@ def summarize_tool_calls(
             item["type"] = str(call.get("type", "")).strip()
         tool_payload = payloads_by_id.get(str(call.get("id", "")).strip())
         if isinstance(tool_payload, dict):
-            item["tool_payload"] = tool_payload
+            if include_tool_payload:
+                item["tool_payload"] = tool_payload
             data = tool_payload.get("data", {})
-            if isinstance(data, dict):
-                item["payload"] = data
-            elif data not in (None, ""):
-                item["payload"] = {"result": data}
+            item["result_summary"] = compact_tool_payload_for_llm(
+                tool_payload,
+                tool_name=str(item.get("name", "")),
+                tool_call_id=str(item.get("id", "")),
+            )
+            item["key_facts"] = extract_key_facts(item.get("key_facts", {}), tool_payload)
+            if include_tool_payload:
+                if isinstance(data, dict):
+                    item["payload"] = data
+                elif data not in (None, ""):
+                    item["payload"] = {"result": data}
         summaries.append(item)
     return [item for item in summaries if item.get("name")]
 
@@ -664,16 +900,27 @@ def compact_worker_result_for_llm(worker_result: dict[str, Any]) -> dict[str, An
     )
     final_response = str(worker_result.get("final_response", ""))
     error = worker_result.get("error")
+    actions_taken = worker_result.get("actions_taken") or worker_result.get("actions_summary") or []
     compact: dict[str, Any] = {
         "step": worker_result.get("step", 0),
         "worker": str(worker_result.get("worker", worker_result.get("worker_agent", ""))).strip(),
         "task_prompt": str(worker_result.get("task_prompt", "")),
-        "final_response": final_response,
-        "display_summary": compact_text(final_response, 1600),
+        "summary": compact_text(worker_result.get("summary") or worker_result.get("display_summary") or final_response, 800),
+        "display_summary": compact_text(worker_result.get("display_summary") or final_response, 800),
         "skills_used": list(worker_result.get("skills_used", []) or []),
-        "tool_calls_summary": tool_calls_summary,
+        "tool_calls_summary": [
+            {
+                "name": str(item.get("name", "")).strip(),
+                "args": _json_safe(item.get("args", {}), max_depth=4),
+                "key_facts": _json_safe(item.get("key_facts", {}), max_depth=4),
+                "result_summary": _json_safe(item.get("result_summary", {}), max_depth=4),
+                "id": str(item.get("id", "")).strip(),
+                "type": str(item.get("type", "")).strip(),
+            }
+            for item in tool_calls_summary
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        ],
         "key_facts": key_facts,
-        "context_manifest": worker_result.get("context_manifest", {}),
         "context_warnings": list(worker_result.get("context_warnings", []) or []),
         "input_contract": worker_result.get("input_contract", {}),
         "missing_required_inputs": list(worker_result.get("missing_required_inputs", []) or []),
@@ -684,11 +931,145 @@ def compact_worker_result_for_llm(worker_result: dict[str, Any]) -> dict[str, An
         ),
         "success": bool(worker_result.get("success")),
         "error": error,
+        "result_ref": str(worker_result.get("result_ref") or worker_result.get("tool_call_id") or "").strip(),
     }
+    if isinstance(actions_taken, list) and actions_taken:
+        compact["actions_taken"] = _json_safe(actions_taken, max_depth=5)
     if worker_result.get("approval_pending"):
         compact["approval_pending"] = True
         compact["approval_request"] = worker_result.get("approval_request", {})
-    return compact
+    return {key: value for key, value in compact.items() if value not in ("", None, [], {})}
+
+
+def _select_recent_messages(messages: list[Any], *, max_messages: int = DEFAULT_RECENT_REACT_MESSAGES) -> tuple[list[Any], int]:
+    if not messages:
+        return [], 0
+    start = max(0, len(messages) - max_messages)
+    while start > 0 and _message_type(messages[start]) in {"tool", "toolmessage"}:
+        start -= 1
+    return list(messages[start:]), start
+
+
+def _summarize_older_messages(messages: list[Any]) -> tuple[list[dict[str, Any]], int]:
+    summaries: list[dict[str, Any]] = []
+    trimmed_tool_messages = 0
+    pending_ai: dict[str, dict[str, Any]] = {}
+    for index, message in enumerate(messages):
+        msg_type = _message_type(message)
+        if msg_type in {"ai", "aimessage"}:
+            for call in _message_tool_calls(message):
+                if isinstance(call, dict):
+                    call_id = str(call.get("id", "") or "").strip()
+                    if call_id:
+                        pending_ai[call_id] = {
+                            "tool": str(call.get("name", "") or "").strip(),
+                            "args": _json_safe(call.get("args", {}), max_depth=4),
+                        }
+            continue
+        if msg_type in {"tool", "toolmessage"}:
+            compact = compact_tool_message_for_llm(message)
+            call_id = _message_tool_call_id(message)
+            if call_id and call_id in pending_ai:
+                compact = {**pending_ai.get(call_id, {}), **compact}
+            compact["message_index"] = index
+            summaries.append(compact)
+            trimmed_tool_messages += 1
+            continue
+        content = compact_text(_message_content(message), 500)
+        if content:
+            summaries.append({"role": msg_type or "message", "summary": content, "message_index": index})
+    return summaries[-30:], trimmed_tool_messages
+
+
+def prepare_messages_for_llm(
+    *,
+    system_msg: Any,
+    messages: list[Any],
+    alert_data: Any = None,
+    current_goal: str = "",
+    case_context: dict[str, Any] | None = None,
+    scope: str = "worker",
+    token_budget: int | None = None,
+    recent_message_count: int = DEFAULT_RECENT_REACT_MESSAGES,
+) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
+    """Create a bounded prompt view for inference without mutating graph state."""
+    all_messages = list(messages or [])
+    budget = token_budget or (
+        DEFAULT_SUPERVISOR_PROMPT_TOKEN_BUDGET
+        if str(scope).strip().lower() in {"supervisor", "orchestrator"}
+        else DEFAULT_WORKER_PROMPT_TOKEN_BUDGET
+    )
+    recent_messages, recent_start = _select_recent_messages(all_messages, max_messages=recent_message_count)
+    older_messages = all_messages[:recent_start]
+    older_summaries, trimmed_tool_messages = _summarize_older_messages(older_messages)
+    before_size = estimate_context_size([_message_content(system_msg), [_message_content(item) for item in all_messages]])
+    if before_size.get("estimated_tokens", 0) <= budget and trimmed_tool_messages == 0:
+        recent_messages = all_messages
+        recent_start = 0
+        older_messages = []
+        older_summaries = []
+    merged_case_context = build_case_context(
+        goal=current_goal,
+        alert_data=alert_data,
+        messages=all_messages,
+        existing=case_context,
+    )
+    control_payload = {
+        "current_goal": compact_text(current_goal, 1000),
+        "case_context": merged_case_context,
+        "older_history_compact": older_summaries,
+        "context_window_policy": {
+            "state_retention": "完整 messages/checkpoint/run_log 保留在 runtime；本消息仅为 LLM 推理视图。",
+            "recent_raw_messages": len(recent_messages),
+            "older_tool_results": "旧 ToolMessage 已替换为 compact record；如需完整数据依据 run log/checkpoint 追溯。",
+        },
+    }
+    control_message = HumanMessage(
+        content=(
+            "LLM 推理窗口控制器（本消息为自动生成的上下文视图）：\n"
+            f"```json\n{json.dumps(_json_safe(control_payload, max_depth=10), ensure_ascii=False, indent=2)}\n```"
+        )
+    )
+    prompt_view = [system_msg, control_message] + recent_messages
+    after_size = estimate_context_size([_message_content(item) for item in prompt_view])
+
+    # If the compact view still exceeds budget, reduce older summaries first, then recent tail.
+    strategy = "case_context+older_summary+recent_raw"
+    while after_size.get("estimated_tokens", 0) > budget and older_summaries:
+        older_summaries = older_summaries[len(older_summaries) // 2 :]
+        control_payload["older_history_compact"] = older_summaries
+        control_message = HumanMessage(
+            content=(
+                "LLM 推理窗口控制器（本消息为自动生成的上下文视图）：\n"
+                f"```json\n{json.dumps(_json_safe(control_payload, max_depth=10), ensure_ascii=False, indent=2)}\n```"
+            )
+        )
+        prompt_view = [system_msg, control_message] + recent_messages
+        after_size = estimate_context_size([_message_content(item) for item in prompt_view])
+        strategy = "case_context+reduced_older_summary+recent_raw"
+
+    while after_size.get("estimated_tokens", 0) > budget and len(recent_messages) > 2:
+        recent_messages = recent_messages[2:]
+        while recent_messages and _message_type(recent_messages[0]) in {"tool", "toolmessage"}:
+            recent_messages = recent_messages[1:]
+        prompt_view = [system_msg, control_message] + recent_messages
+        after_size = estimate_context_size([_message_content(item) for item in prompt_view])
+        strategy = "case_context+reduced_older_summary+reduced_recent_raw"
+
+    window_info = {
+        "estimated_tokens_before": before_size.get("estimated_tokens", 0),
+        "estimated_tokens_after": after_size.get("estimated_tokens", 0),
+        "chars_before": before_size.get("chars", 0),
+        "chars_after": after_size.get("chars", 0),
+        "token_budget": budget,
+        "trimmed_tool_messages": trimmed_tool_messages,
+        "kept_recent_messages": len(recent_messages),
+        "kept_recent_turns": max(1, len(recent_messages) // 2) if recent_messages else 0,
+        "older_summary_count": len(older_summaries),
+        "strategy": strategy,
+        "scope": scope,
+    }
+    return prompt_view, window_info, merged_case_context
 
 
 def build_context_envelope(

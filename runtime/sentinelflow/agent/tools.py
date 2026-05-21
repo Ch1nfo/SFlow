@@ -6,6 +6,7 @@ from typing import Annotated, Any
 from sentinelflow.agent.context_utils import (
     build_context_manifest,
     build_safe_current_goal,
+    compact_text,
     validate_execution_inputs,
     validate_skill_input_schema,
 )
@@ -342,8 +343,21 @@ def build_agent_tools(
                 )
             try:
                 result = skill_runtime.read_skill(skill_name)
+                markdown = str(result.markdown or "")
+                preview = compact_text(markdown, 4000)
                 return json.dumps(
-                    {"success": True, "data": result.markdown, "error": None},
+                    {
+                        "success": True,
+                        "data": {
+                            "skill_name": skill_name,
+                            "markdown_preview": preview,
+                            "preview_chars": len(preview),
+                            "original_chars": len(markdown),
+                            "truncated": len(preview) < len(markdown),
+                            "note": "完整 Skill 文档保留在 runtime；LLM 默认只接收 preview 以控制上下文窗口。",
+                        },
+                        "error": None,
+                    },
                     ensure_ascii=False,
                 )
             except Exception as exc:

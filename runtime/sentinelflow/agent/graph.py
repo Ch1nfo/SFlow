@@ -27,6 +27,7 @@ def build_agent_graph(
 ):
     try:
         from langgraph.graph import END, START, StateGraph
+        from langgraph.prebuilt import ToolNode
         from langchain_openai import ChatOpenAI
     except ModuleNotFoundError as exc:  # pragma: no cover
         raise ModuleNotFoundError(
@@ -100,6 +101,7 @@ def build_agent_graph(
             graph="agent_react",
             agent_name="",
             node="tools_node",
+            tool_node_cls=ToolNode,
         ),
     )
     builder.add_node("approval_gate", _approval_gate)

@@ -8,6 +8,7 @@ from uuid import uuid4
 from sentinelflow.agent.context_utils import (
     build_context_envelope,
     build_context_manifest,
+    build_case_context,
     compact_text,
     extract_key_facts,
     format_context_manifest_header,
@@ -524,11 +525,16 @@ class SentinelFlowAgentWorkflowRunner:
             workflow_definition,
             delegated_task_prompt,
             effective_task_prompt,
-            prior_step_results,
+            prior_step_summaries,
             *[
                 item.get("key_facts", {})
                 for item in prior_step_results
             ]
+        )
+        case_context = build_case_context(
+            goal=effective_task_prompt,
+            alert_data=workflow_input,
+            prior_step_results=prior_step_results,
         )
         context_manifest = build_context_manifest(
             current_goal=effective_task_prompt,
@@ -542,7 +548,7 @@ class SentinelFlowAgentWorkflowRunner:
             original_input=workflow_input,
             current_task_prompt=effective_task_prompt,
             workflow_definition=workflow_definition,
-            prior_step_results=prior_step_results,
+            prior_step_results=prior_step_summaries,
             model_summary=prior_facts,
         )
         envelope = build_context_envelope(
@@ -556,9 +562,9 @@ class SentinelFlowAgentWorkflowRunner:
                 "steps_count": len(workflow.steps),
                 "step_name": step_name,
                 "task_prompt": effective_task_prompt,
-                "prior_step_results": prior_step_results,
                 "prior_step_summaries": prior_step_summaries,
                 "prior_steps": prior_step_summaries,
+                "case_context": case_context,
                 "context_manifest": context_manifest,
             },
             prior_facts=prior_facts,
@@ -577,13 +583,13 @@ class SentinelFlowAgentWorkflowRunner:
         return (
             f"你当前处于 Agent Workflow《{workflow.name}》的第 {step_index}/{len(workflow.steps)} 步：{step_name}\n\n"
             f"{format_context_manifest_header(context_manifest)}\n"
-            "请只依据以下上下文执行当前步骤；workflow_definition.description 是固定流程目标和对象依据，prior_step_results 是完整前置步骤结果，prior_step_summaries 只是阅读辅助：\n"
+            "请只依据以下上下文执行当前步骤；workflow_definition.description 是固定流程目标和对象依据，prior_step_summaries 与 case_context 是前置步骤执行视图，完整前置结果仅保留在运行日志：\n"
             f"```json\n{json.dumps(envelope, ensure_ascii=False, indent=2)}\n```\n\n"
             f"本步骤固定任务：\n{effective_task_prompt}\n\n"
             "要求：\n"
             "- 只完成当前步骤，不要尝试规划整个流程\n"
             "- 不要假设自己能调度其他 Agent\n"
-            "- 发送对象、处置对象、结单对象只能来自当前步骤、workflow_definition、authoritative_inputs、prior_step_results、原始上下文或 prior_facts\n"
+            "- 发送对象、处置对象、结单对象只能来自当前步骤、workflow_definition、authoritative_inputs、prior_step_summaries、case_context、原始上下文或 prior_facts\n"
             "- 如果关键对象缺失，明确说明缺失，不要编造\n"
             "- 输出简洁中文结果，必要时调用你已授权的 Skill\n"
         )

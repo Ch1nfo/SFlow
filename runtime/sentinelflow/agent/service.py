@@ -36,6 +36,16 @@ from sentinelflow.workflows.agent_workflow_registry import list_agent_workflows
 LOGGER = logging.getLogger(__name__)
 
 
+def _result_text_for_display(result: dict[str, Any], *, limit: int | None = None) -> str:
+    if not isinstance(result, dict):
+        return ""
+    for field in ("summary", "display_summary", "short_summary", "final_response", "reason", "error"):
+        text = str(result.get(field, "") or "").strip()
+        if text:
+            return text[:limit] if limit is not None else text
+    return ""
+
+
 class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
     def __init__(
         self,
@@ -1510,7 +1520,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 if not isinstance(wr, dict):
                     continue
                 worker_name = str(wr.get("worker") or wr.get("worker_agent") or "worker").strip()
-                resp = str(wr.get("final_response", "")).strip()[:400]
+                resp = _result_text_for_display(wr, limit=400)
                 if resp:
                     worker_parts.append(f"子Agent [{worker_name}]: {resp}")
 
@@ -1590,6 +1600,16 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 "tool_calls": graph_result.get("tool_calls", []),
                 "structured_judgment": graph_result.get("structured_judgment"),
                 "worker_results": graph_result.get("worker_results", []),
+                "worker_result_summaries": [
+                    {
+                        "worker": str(item.get("worker") or item.get("worker_agent") or "").strip(),
+                        "summary": _result_text_for_display(item),
+                        "key_facts": item.get("key_facts", {}),
+                        "success": item.get("success"),
+                    }
+                    for item in (graph_result.get("worker_results", []) or [])
+                    if isinstance(item, dict)
+                ],
                 "workflow_runs": workflow_runs,
             },
             "skill_execution": {
