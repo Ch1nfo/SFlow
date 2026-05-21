@@ -437,35 +437,35 @@ def build_agent_tools(
                     error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
                     include_invalid_inputs=True,
                 )
-            if not _has_input_schema(skill):
-                alert_data = state.get("alert_data", {})
-                task_prompt = ""
-                if isinstance(alert_data, dict):
-                    task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
-                execution_validation = validate_execution_inputs(
+            alert_data = state.get("alert_data", {})
+            task_prompt = ""
+            if isinstance(alert_data, dict):
+                task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
+            execution_validation = validate_execution_inputs(
+                skill_name=skill_name,
+                arguments=normalized_arguments,
+                task_prompt=task_prompt,
+                enforce_required=not _has_input_schema(skill),
+            )
+            if not execution_validation.get("valid"):
+                _audit_skill_input(
+                    state,
                     skill_name=skill_name,
                     arguments=normalized_arguments,
-                    task_prompt=task_prompt,
+                    outcome="rejected_execution_inputs",
+                    compliant=False,
+                    error="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                    validation=execution_validation,
+                    input_schema=input_schema,
                 )
-                if not execution_validation.get("valid"):
-                    _audit_skill_input(
-                        state,
-                        skill_name=skill_name,
-                        arguments=normalized_arguments,
-                        outcome="rejected_execution_inputs",
-                        compliant=False,
-                        error="Skill 调用缺少必需执行参数，请先补齐后再执行。",
-                        validation=execution_validation,
-                        input_schema=input_schema,
-                    )
-                    return _build_validation_payload(
-                        skill_name=skill_name,
-                        arguments=normalized_arguments,
-                        validation=execution_validation,
-                        state=state,
-                        error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
-                        include_invalid_inputs=False,
-                    )
+                return _build_validation_payload(
+                    skill_name=skill_name,
+                    arguments=normalized_arguments,
+                    validation=execution_validation,
+                    state=state,
+                    error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                    include_invalid_inputs=False,
+                )
             execution_entry = str(state.get("execution_entry", "")).strip()
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments=normalized_arguments, state=state):
@@ -587,35 +587,35 @@ def build_agent_tools(
                     error_message="Skill 调用参数不符合 input_schema，请修正后再执行。",
                     include_invalid_inputs=True,
                 )
-            if not _has_input_schema(skill):
-                alert_data = state.get("alert_data", {})
-                task_prompt = ""
-                if isinstance(alert_data, dict):
-                    task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
-                execution_validation = validate_execution_inputs(
+            alert_data = state.get("alert_data", {})
+            task_prompt = ""
+            if isinstance(alert_data, dict):
+                task_prompt = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "")
+            execution_validation = validate_execution_inputs(
+                skill_name=skill_name,
+                arguments=no_args,
+                task_prompt=task_prompt,
+                enforce_required=not _has_input_schema(skill),
+            )
+            if not execution_validation.get("valid"):
+                _audit_skill_input(
+                    state,
                     skill_name=skill_name,
                     arguments=no_args,
-                    task_prompt=task_prompt,
+                    outcome="rejected_execution_inputs",
+                    compliant=False,
+                    error="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                    validation=execution_validation,
+                    input_schema=input_schema,
                 )
-                if not execution_validation.get("valid"):
-                    _audit_skill_input(
-                        state,
-                        skill_name=skill_name,
-                        arguments=no_args,
-                        outcome="rejected_execution_inputs",
-                        compliant=False,
-                        error="Skill 调用缺少必需执行参数，请先补齐后再执行。",
-                        validation=execution_validation,
-                        input_schema=input_schema,
-                    )
-                    return _build_validation_payload(
-                        skill_name=skill_name,
-                        arguments=no_args,
-                        validation=execution_validation,
-                        state=state,
-                        error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
-                        include_invalid_inputs=False,
-                    )
+                return _build_validation_payload(
+                    skill_name=skill_name,
+                    arguments=no_args,
+                    validation=execution_validation,
+                    state=state,
+                    error_message="Skill 调用缺少必需执行参数，请先补齐后再执行。",
+                    include_invalid_inputs=False,
+                )
             execution_entry = str(state.get("execution_entry", "")).strip()
             if skill.spec.approval_required and execution_entry not in {"auto_alert", "debug"}:
                 if _is_rejected_in_current_run(skill_name=skill_name, arguments=no_args, state=state):

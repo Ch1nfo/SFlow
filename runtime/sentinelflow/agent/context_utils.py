@@ -58,6 +58,7 @@ DEFAULT_WORKER_PROMPT_TOKEN_BUDGET = 16000
 DEFAULT_RECENT_REACT_MESSAGES = 8
 DEFAULT_TOOL_SUMMARY_CHARS = 800
 DEFAULT_TOOL_PREVIEW_CHARS = 500
+SYNTHETIC_EVENT_ID_PREFIXES = ("CMD-", "PLAN-")
 
 AUTHORITY_PRIORITY = [
     "current_skill_args",
@@ -77,6 +78,27 @@ def compact_text(value: Any, limit: int = 800) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}..."
+
+
+def is_synthetic_event_id(value: Any) -> bool:
+    text = str(value or "").strip().upper()
+    return any(text.startswith(prefix) for prefix in SYNTHETIC_EVENT_ID_PREFIXES)
+
+
+def extract_explicit_event_id_from_text(value: Any) -> str:
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    patterns = [
+        r"(?:告警|事件|工单|eventIds?|alert[_\s-]?id|event[_\s-]?id)[:：#\s]*([A-Za-z][A-Za-z0-9_-]{8,})",
+        r"\b(E[0-9]{10,}[A-Za-z0-9_-]*)\b",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            candidate = str(match.group(1) or "").strip()
+            if candidate and not is_synthetic_event_id(candidate):
+                return candidate
+    return ""
 
 
 def _clip_goal_text(value: Any, limit: int = DEFAULT_SAFE_GOAL_MAX_CHARS) -> tuple[str, dict[str, Any]]:
@@ -516,6 +538,7 @@ def validate_execution_inputs(
     skill_name: str = "",
     arguments: dict[str, Any] | None = None,
     task_prompt: str = "",
+    enforce_required: bool = True,
 ) -> dict[str, Any]:
     """Check only hard execution parameters; never mutate or infer args."""
     normalized_name = str(skill_name or "").strip().lower()
@@ -532,15 +555,17 @@ def validate_execution_inputs(
 
     if is_contact:
         contract = {"skill_name": skill_name, "action_type": "contact", "required": ["to", "body"]}
-        if not _has_any(args, ("to",)):
+        if enforce_required and not _has_any(args, ("to",)):
             missing.append(_missing_field("to", "联系/通知类 Skill 执行前必须有明确收信人。"))
-        if not _has_any(args, ("body",)):
+        if enforce_required and not _has_any(args, ("body",)):
             missing.append(_missing_field("body", "联系/通知类 Skill 执行前必须有明确消息内容。"))
     elif is_closure_like:
         contract = {"skill_name": skill_name, "action_type": "closure_or_status_update", "required": ["eventIds", "status"]}
-        if not _has_any(args, ("eventIds", "event_id", "alert_id")):
+        if enforce_required and not _has_any(args, ("eventIds", "event_id", "alert_id")):
             missing.append(_missing_field("eventIds", "告警状态更新/结单类 Skill 执行前必须有明确告警 ID。"))
-        if not _has_any(args, ("status", "closeStatus", "close_status")):
+        elif any(is_synthetic_event_id(args.get(key)) for key in ("eventIds", "event_id", "alert_id")):
+            missing.append(_missing_field("eventIds", "CMD-/PLAN- 是人工指令运行引用，不是业务告警 ID；必须使用任务文本或告警原始字段中的真实 eventIds。"))
+        if enforce_required and not _has_any(args, ("status", "closeStatus", "close_status")):
             missing.append(_missing_field("status", "告警状态更新/结单类 Skill 执行前必须有明确目标状态。"))
 
     if missing and prompt_text:

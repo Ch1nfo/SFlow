@@ -11,7 +11,13 @@ from uuid import uuid4
 
 from sentinelflow.agent.checkpoint_state import deserialize_graph_state, serialize_graph_state
 from sentinelflow.agent.catalog import load_skill_catalog
-from sentinelflow.agent.context_utils import build_context_manifest, compact_worker_result_for_llm, extract_key_facts, summarize_tool_calls
+from sentinelflow.agent.context_utils import (
+    build_context_manifest,
+    compact_worker_result_for_llm,
+    extract_explicit_event_id_from_text,
+    extract_key_facts,
+    summarize_tool_calls,
+)
 from sentinelflow.agent.graph import build_agent_graph
 from sentinelflow.agent.policy import can_agent_delegate_to_worker, can_agent_execute_skill, can_agent_read_skill
 from sentinelflow.agent.prompt_builder import PromptBuildContext, build_prompt
@@ -342,8 +348,10 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         return "\n".join(items)
 
     def _build_command_planner_payload(self, command_text: str, step_results: list[dict[str, Any]]) -> dict[str, Any]:
+        command_ref = f"PLAN-{uuid4().hex[:12].upper()}"
         return {
-            "eventIds": f"PLAN-{uuid4().hex[:12].upper()}",
+            "eventIds": extract_explicit_event_id_from_text(command_text),
+            "command_ref": command_ref,
             "alert_name": "主 Agent 调度",
             "payload": json.dumps(
                 {
@@ -367,8 +375,10 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 },
                 ensure_ascii=False,
             )
+        command_ref = f"CMD-{uuid4().hex[:12].upper()}"
         return {
-            "eventIds": f"CMD-{uuid4().hex[:12].upper()}",
+            "eventIds": extract_explicit_event_id_from_text(command_text),
+            "command_ref": command_ref,
             "alert_name": "人工指令",
             "payload": payload,
             "alert_source": "human_command",
@@ -1301,8 +1311,10 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         max_steps = self._resolve_worker_max_steps(primary_agent)
         parallel_limit = self._resolve_worker_parallel_limit(primary_agent)
         readable_skills, executable_skills = self._resolve_skill_permissions(primary_agent)
+        command_ref = f"CMD-{uuid4().hex[:12].upper()}"
         alert_data = {
-            "eventIds": f"CMD-{uuid4().hex[:12].upper()}",
+            "eventIds": extract_explicit_event_id_from_text(command_text),
+            "command_ref": command_ref,
             "alert_name": "人工指令",
             "payload": command_text,
             "alert_source": "human_command",
@@ -1752,8 +1764,10 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         workers = self._resolve_worker_candidates(agent_definition, entry_type="conversation")
         if self._should_use_orchestrator(agent_definition, workers):
             return await self._orchestrate_command(agent_definition, workers, command_text, history, cancel_event, status_callback=status_callback, execution_context=execution_context)
+        command_ref = f"CMD-{uuid4().hex[:12].upper()}"
         alert = {
-            "eventIds": f"CMD-{uuid4().hex[:12].upper()}",
+            "eventIds": extract_explicit_event_id_from_text(command_text),
+            "command_ref": command_ref,
             "alert_name": "人工指令",
             "payload": command_text,
             "alert_source": "human_command",
