@@ -50,6 +50,7 @@ type SettingsDraft = {
   llmModel: string
   llmTemperature: string
   llmTimeout: string
+  llmThinkingAdapterEnabled: boolean
   weeklyAlertCleanupEnabled: boolean
   runLogRetentionDays: string
   alertSourceEnabled: boolean
@@ -173,6 +174,7 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
     llmModel: settings.llm.model,
     llmTemperature: String(settings.llm.temperature),
     llmTimeout: String(settings.llm.timeout),
+    llmThinkingAdapterEnabled: settings.llm.thinking_adapter_enabled,
     weeklyAlertCleanupEnabled: settings.runtime.weekly_alert_cleanup_enabled,
     runLogRetentionDays: String(settings.runtime.run_log_retention_days ?? 1),
     alertSourceEnabled: selectedSource.enabled,
@@ -416,6 +418,7 @@ export default function SentinelFlowSettingsPage() {
       llmModel: '',
       llmTemperature: '0',
       llmTimeout: '60',
+      llmThinkingAdapterEnabled: false,
       weeklyAlertCleanupEnabled: false,
       runLogRetentionDays: '1',
       alertSourceEnabled: false,
@@ -1041,7 +1044,16 @@ export default function SentinelFlowSettingsPage() {
           <label className="sentinelflow-settings-field"><span>LLM 模型名</span><input className="sentinelflow-settings-input" value={draft.llmModel} onChange={(event) => updateDraft('llmModel', event.target.value)} /></label>
           <label className="sentinelflow-settings-field"><span>LLM 温度</span><input className="sentinelflow-settings-input" value={draft.llmTemperature} onChange={(event) => updateDraft('llmTemperature', event.target.value)} /></label>
           <label className="sentinelflow-settings-field"><span>LLM 超时（秒）</span><input className="sentinelflow-settings-input" value={draft.llmTimeout} onChange={(event) => updateDraft('llmTimeout', event.target.value)} /></label>
-          <label className="sentinelflow-settings-field sentinelflow-settings-field-full"><span>LLM API Key</span><input type="password" className="sentinelflow-settings-input" value={draft.llmApiKey} onChange={(event) => updateDraft('llmApiKey', event.target.value)} placeholder={settings?.llm.api_key_configured ? '已配置，可重新填写覆盖' : ''} /></label>
+          <div className="sentinelflow-settings-field sentinelflow-settings-field-full">
+            <span>LLM API Key</span>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <input type="password" className="sentinelflow-settings-input" value={draft.llmApiKey} onChange={(event) => updateDraft('llmApiKey', event.target.value)} placeholder={settings?.llm.api_key_configured ? '已配置，可重新填写覆盖' : ''} />
+              <label className="sentinelflow-settings-toggle whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2">
+                <input type="checkbox" checked={draft.llmThinkingAdapterEnabled} onChange={(event) => updateDraft('llmThinkingAdapterEnabled', event.target.checked)} />
+                <span>思考模型适配</span>
+              </label>
+            </div>
+          </div>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.agentEnabled} onChange={(event) => updateDraft('agentEnabled', event.target.checked)} /><span>启用 Agent Runtime</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.alertSourceEnabled} onChange={(event) => updateDraft('alertSourceEnabled', event.target.checked)} /><span>启用告警接入</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.weeklyAlertCleanupEnabled} onChange={(event) => updateDraft('weeklyAlertCleanupEnabled', event.target.checked)} /><span>每周刷新告警</span></label>

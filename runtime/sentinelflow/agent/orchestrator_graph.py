@@ -43,6 +43,7 @@ from sentinelflow.agent.run_log_tracer import get_active_tracer, make_logged_too
 from sentinelflow.agent.orchestrator_state import OrchestratorState
 from sentinelflow.agent.policy import can_agent_execute_skill, can_agent_read_skill
 from sentinelflow.agent.tools import build_agent_tools
+from sentinelflow.config.runtime import build_llm_client_kwargs
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
 from sentinelflow.workflows.agent_workflow_registry import load_agent_workflow, list_agent_workflows
@@ -662,13 +663,7 @@ def build_orchestrator_graph(
 
     # ── Build Supervisor LLM (bound with worker + primary skill tools) ───────
     supervisor_config = primary_agent.resolve_runtime_config(runtime_config)
-    supervisor_llm = ChatOpenAI(
-        model=supervisor_config.llm_model,
-        api_key=supervisor_config.llm_api_key,
-        base_url=supervisor_config.llm_api_base_url,
-        temperature=supervisor_config.llm_temperature,
-        timeout=supervisor_config.llm_timeout,
-    ).bind_tools(supervisor_tools)
+    supervisor_llm = ChatOpenAI(**build_llm_client_kwargs(supervisor_config)).bind_tools(supervisor_tools)
 
     # ── Supervisor node ───────────────────────────────────────────────────────
     async def _supervisor_node(state: OrchestratorState) -> dict:

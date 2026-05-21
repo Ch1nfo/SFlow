@@ -88,6 +88,7 @@ def runtime_settings() -> dict[str, Any]:
             "model": runtime_config.llm_model,
             "temperature": runtime_config.llm_temperature,
             "timeout": runtime_config.llm_timeout,
+            "thinking_adapter_enabled": runtime_config.llm_thinking_adapter_enabled,
             "agent_configured": agent_service.is_configured(),
             "agent_available": agent_available,
             "agent_unavailable_reason": agent_reason or "",

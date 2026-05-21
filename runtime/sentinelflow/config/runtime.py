@@ -88,6 +88,8 @@ class SentinelFlowRuntimeConfig:
     llm_model: str
     llm_temperature: float
     llm_timeout: int
+    llm_thinking_adapter_enabled: bool
+    llm_thinking: str
     weekly_alert_cleanup_enabled: bool
     run_log_retention_days: int
     alert_source_enabled: bool
@@ -120,6 +122,8 @@ def _default_values() -> dict[str, Any]:
         "llm_model": os.getenv("SENTINELFLOW_LLM_MODEL", "").strip(),
         "llm_temperature": float(os.getenv("SENTINELFLOW_LLM_TEMPERATURE", "0")),
         "llm_timeout": int(os.getenv("SENTINELFLOW_LLM_TIMEOUT", "60")),
+        "llm_thinking_adapter_enabled": _read_env_bool("SENTINELFLOW_LLM_THINKING_ADAPTER_ENABLED", False),
+        "llm_thinking": os.getenv("SENTINELFLOW_LLM_THINKING", "disabled").strip().lower() or "disabled",
         "weekly_alert_cleanup_enabled": _read_env_bool("SENTINELFLOW_WEEKLY_ALERT_CLEANUP_ENABLED", False),
         "run_log_retention_days": int(os.getenv("SENTINELFLOW_RUN_LOG_RETENTION_DAYS", "1")),
         "alert_source_enabled": _read_env_bool("SENTINELFLOW_ALERT_SOURCE_ENABLED", False),
@@ -244,6 +248,8 @@ def _normalize_config(values: dict[str, Any]) -> SentinelFlowRuntimeConfig:
         llm_model=str(values.get("llm_model", "")).strip(),
         llm_temperature=float(values.get("llm_temperature", 0)),
         llm_timeout=int(values.get("llm_timeout", 60)),
+        llm_thinking_adapter_enabled=_read_bool_value(values.get("llm_thinking_adapter_enabled"), False),
+        llm_thinking=_normalize_llm_thinking(values.get("llm_thinking", "disabled")),
         weekly_alert_cleanup_enabled=_read_bool_value(values.get("weekly_alert_cleanup_enabled"), False),
         run_log_retention_days=max(int(values.get("run_log_retention_days", 1) or 1), 1),
         alert_source_enabled=primary_source.alert_source_enabled,
@@ -320,3 +326,25 @@ def reset_runtime_config() -> SentinelFlowRuntimeConfig:
 
 def should_use_demo_mode() -> bool:
     return load_runtime_config().demo_mode
+
+
+def _normalize_llm_thinking(value: Any) -> str:
+    normalized = str(value or "disabled").strip().lower()
+    return normalized if normalized in {"enabled", "disabled"} else "disabled"
+
+
+def build_llm_client_kwargs(config: SentinelFlowRuntimeConfig, *, temperature: float | None = None) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "model": config.llm_model,
+        "api_key": config.llm_api_key,
+        "base_url": config.llm_api_base_url,
+        "temperature": config.llm_temperature if temperature is None else temperature,
+        "timeout": config.llm_timeout,
+    }
+    if _read_bool_value(getattr(config, "llm_thinking_adapter_enabled", False), False):
+        kwargs["model_kwargs"] = {
+            "extra_body": {
+                "thinking": {"type": "disabled"},
+            }
+        }
+    return kwargs

@@ -32,7 +32,7 @@ from sentinelflow.agent.text_extractor import (
     clean_model_text as _clean_model_text,
     normalize_markdown_line as _normalize_markdown_line,
 )
-from sentinelflow.config.runtime import load_runtime_config
+from sentinelflow.config.runtime import build_llm_client_kwargs, load_runtime_config
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 from sentinelflow.services.triage_service import TriageService
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
@@ -237,13 +237,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         config = load_runtime_config()
         effective_config = agent_definition.resolve_runtime_config(config) if agent_definition else config
         try:
-            llm_instance = ChatOpenAI(
-                model=effective_config.llm_model,
-                api_key=effective_config.llm_api_key,
-                base_url=effective_config.llm_api_base_url,
-                temperature=effective_config.llm_temperature,
-                timeout=effective_config.llm_timeout,
-            )
+            llm_instance = ChatOpenAI(**build_llm_client_kwargs(effective_config))
             llm = llm_instance.with_structured_output(PlannerResult)
         except Exception as exc:
             LOGGER.exception("Failed to initialize planner LLM.")
@@ -1518,13 +1512,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
 
         try:
             config = effective_config or load_runtime_config()
-            llm = ChatOpenAI(
-                model=config.llm_model,
-                api_key=config.llm_api_key,
-                base_url=config.llm_api_base_url,
-                temperature=0,
-                timeout=config.llm_timeout,
-            )
+            llm = ChatOpenAI(**build_llm_client_kwargs(config, temperature=0))
 
             final_response = str(graph_result.get("final_response", "")).strip()
             worker_parts: list[str] = []
@@ -1701,11 +1689,10 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 execution_trace=execution_trace,
             )
             llm = ChatOpenAI(
-                model=config.llm_model,
-                api_key=config.llm_api_key,
-                base_url=config.llm_api_base_url,
-                temperature=config.llm_temperature if config.llm_temperature is not None else 0,
-                timeout=config.llm_timeout,
+                **build_llm_client_kwargs(
+                    config,
+                    temperature=config.llm_temperature if config.llm_temperature is not None else 0,
+                )
             )
             response = await llm.ainvoke(
                 [

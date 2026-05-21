@@ -230,6 +230,7 @@ export type RuntimeSettingsResponse = {
     model: string
     temperature: number
     timeout: number
+    thinking_adapter_enabled: boolean
     agent_configured: boolean
     agent_available: boolean
     agent_unavailable_reason: string
@@ -843,6 +844,7 @@ export async function saveRuntimeSettings(payload: {
   llmModel: string
   llmTemperature: string
   llmTimeout: string
+  llmThinkingAdapterEnabled: boolean
   weeklyAlertCleanupEnabled: boolean
   runLogRetentionDays?: string
   alertSourceEnabled?: boolean

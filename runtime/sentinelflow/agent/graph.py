@@ -8,7 +8,7 @@ from sentinelflow.agent.nodes import agent_node, should_continue
 from sentinelflow.agent.run_log_tracer import get_active_tracer, make_logged_tool_node
 from sentinelflow.agent.state import SentinelFlowAgentState
 from sentinelflow.agent.tools import build_agent_tools
-from sentinelflow.config.runtime import SentinelFlowRuntimeConfig
+from sentinelflow.config.runtime import SentinelFlowRuntimeConfig, build_llm_client_kwargs
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
 
@@ -41,13 +41,7 @@ def build_agent_graph(
         enable_execute_skill=enable_execute_skill,
         executable_skill_names=executable_skill_names,
     )
-    llm = ChatOpenAI(
-        model=runtime_config.llm_model,
-        api_key=runtime_config.llm_api_key,
-        base_url=runtime_config.llm_api_base_url,
-        temperature=runtime_config.llm_temperature,
-        timeout=runtime_config.llm_timeout,
-    ).bind_tools(tools)
+    llm = ChatOpenAI(**build_llm_client_kwargs(runtime_config)).bind_tools(tools)
 
     skill_root = project_root / ".sentinelflow" / "plugins" / "skills"
 
@@ -166,13 +160,7 @@ def _build_synthesis_node(runtime_config: SentinelFlowRuntimeConfig):
 
         # ── Call synthesis LLM ───────────────────────────────────────────────
         try:
-            llm = ChatOpenAI(
-                model=runtime_config.llm_model,
-                api_key=runtime_config.llm_api_key,
-                base_url=runtime_config.llm_api_base_url,
-                temperature=0,  # deterministic for schema extraction
-                timeout=runtime_config.llm_timeout,
-            )
+            llm = ChatOpenAI(**build_llm_client_kwargs(runtime_config, temperature=0))
             response = await llm.ainvoke(synthesis_messages)
             tracer = get_active_tracer()
             if tracer is not None:

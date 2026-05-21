@@ -28,6 +28,7 @@ class RuntimeConfigRequest(BaseModel):
     llm_model: str | None = Field(default=None, alias="llmModel")
     llm_temperature: float | None = Field(default=None, alias="llmTemperature")
     llm_timeout: int | None = Field(default=None, alias="llmTimeout")
+    llm_thinking_adapter_enabled: bool | None = Field(default=None, alias="llmThinkingAdapterEnabled")
     weekly_alert_cleanup_enabled: bool | None = Field(default=None, alias="weeklyAlertCleanupEnabled")
     run_log_retention_days: int | None = Field(default=None, alias="runLogRetentionDays")
     alert_source_enabled: bool | None = Field(default=None, alias="alertSourceEnabled")
@@ -58,6 +59,7 @@ class RuntimeConfigRequest(BaseModel):
             "llm_model": self.llm_model,
             "llm_temperature": self.llm_temperature,
             "llm_timeout": self.llm_timeout,
+            "llm_thinking_adapter_enabled": self.llm_thinking_adapter_enabled,
             "weekly_alert_cleanup_enabled": self.weekly_alert_cleanup_enabled,
             "run_log_retention_days": self.run_log_retention_days,
             "alert_source_enabled": self.alert_source_enabled,
