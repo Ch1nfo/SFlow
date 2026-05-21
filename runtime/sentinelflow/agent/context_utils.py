@@ -58,7 +58,16 @@ DEFAULT_WORKER_PROMPT_TOKEN_BUDGET = 16000
 DEFAULT_RECENT_REACT_MESSAGES = 8
 DEFAULT_TOOL_SUMMARY_CHARS = 800
 DEFAULT_TOOL_PREVIEW_CHARS = 500
+DEFAULT_ANCHOR_SIZE_WARNING_TOKEN_THRESHOLD = 8000
 SYNTHETIC_EVENT_ID_PREFIXES = ("CMD-", "PLAN-")
+TASK_ANCHOR_MARKERS = (
+    "SOC 执行上下文控制器",
+    "delegated_task",
+    "请处理以下人工指令",
+    "请执行以下人工指令",
+    "请分析并处置以下告警",
+    "Workflow 约束",
+)
 
 AUTHORITY_PRIORITY = [
     "current_skill_args",
@@ -1006,6 +1015,68 @@ def _summarize_older_messages(messages: list[Any]) -> tuple[list[dict[str, Any]]
     return summaries[-30:], trimmed_tool_messages
 
 
+def _compact_recent_tool_messages(messages: list[Any]) -> tuple[list[Any], int]:
+    compacted: list[Any] = []
+    count = 0
+    for message in messages:
+        if _message_type(message) not in {"tool", "toolmessage"}:
+            compacted.append(message)
+            continue
+        payload = compact_tool_message_for_llm(message)
+        compacted.append(
+            ToolMessage(
+                content=json.dumps(payload, ensure_ascii=False),
+                tool_call_id=_message_tool_call_id(message),
+                name=_message_tool_name(message) or None,
+            )
+        )
+        count += 1
+    return compacted, count
+
+
+def _has_large_tool_message(messages: list[Any], *, min_chars: int = DEFAULT_TOOL_SUMMARY_CHARS * 2) -> bool:
+    return any(
+        _message_type(message) in {"tool", "toolmessage"} and len(str(_message_content(message) or "")) > min_chars
+        for message in messages
+    )
+
+
+def select_task_anchor_messages(
+    messages: list[Any],
+    *,
+    scope: str = "worker",
+) -> tuple[list[Any], list[Any], dict[str, Any]]:
+    anchor_indexes: list[int] = []
+    for index, message in enumerate(messages):
+        if _message_type(message) not in {"human", "humanmessage"}:
+            continue
+        content = str(_message_content(message) or "")
+        if any(marker in content for marker in TASK_ANCHOR_MARKERS):
+            anchor_indexes.append(index)
+
+    strategy = "content_marker"
+    if anchor_indexes:
+        selected_indexes = anchor_indexes[-2:]
+    elif messages and _message_type(messages[0]) in {"human", "humanmessage"} and str(scope).strip().lower() not in {"supervisor", "orchestrator"}:
+        selected_indexes = [0]
+        strategy = "worker_first_human_fallback"
+    else:
+        selected_indexes = []
+        strategy = "none"
+
+    selected = set(selected_indexes)
+    anchor_messages = [message for index, message in enumerate(messages) if index in selected]
+    history_messages = [message for index, message in enumerate(messages) if index not in selected]
+    anchor_size = estimate_context_size([_message_content(message) for message in anchor_messages])
+    info = {
+        "anchor_message_indexes": selected_indexes,
+        "anchor_selection_strategy": strategy,
+        "anchor_size": anchor_size,
+        "anchor_size_warning": anchor_size.get("estimated_tokens", 0) >= DEFAULT_ANCHOR_SIZE_WARNING_TOKEN_THRESHOLD,
+    }
+    return anchor_messages, history_messages, info
+
+
 def prepare_messages_for_llm(
     *,
     system_msg: Any,
@@ -1019,17 +1090,18 @@ def prepare_messages_for_llm(
 ) -> tuple[list[Any], dict[str, Any], dict[str, Any]]:
     """Create a bounded prompt view for inference without mutating graph state."""
     all_messages = list(messages or [])
+    anchor_messages, history_messages, anchor_info = select_task_anchor_messages(all_messages, scope=scope)
     budget = token_budget or (
         DEFAULT_SUPERVISOR_PROMPT_TOKEN_BUDGET
         if str(scope).strip().lower() in {"supervisor", "orchestrator"}
         else DEFAULT_WORKER_PROMPT_TOKEN_BUDGET
     )
-    recent_messages, recent_start = _select_recent_messages(all_messages, max_messages=recent_message_count)
-    older_messages = all_messages[:recent_start]
+    recent_messages, recent_start = _select_recent_messages(history_messages, max_messages=recent_message_count)
+    older_messages = history_messages[:recent_start]
     older_summaries, trimmed_tool_messages = _summarize_older_messages(older_messages)
     before_size = estimate_context_size([_message_content(system_msg), [_message_content(item) for item in all_messages]])
     if before_size.get("estimated_tokens", 0) <= budget and trimmed_tool_messages == 0:
-        recent_messages = all_messages
+        recent_messages = history_messages
         recent_start = 0
         older_messages = []
         older_summaries = []
@@ -1055,11 +1127,18 @@ def prepare_messages_for_llm(
             f"```json\n{json.dumps(_json_safe(control_payload, max_depth=10), ensure_ascii=False, indent=2)}\n```"
         )
     )
-    prompt_view = [system_msg, control_message] + recent_messages
+    prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
     after_size = estimate_context_size([_message_content(item) for item in prompt_view])
+    compacted_recent_tool_messages = 0
+    if _has_large_tool_message(recent_messages) and (trimmed_tool_messages or after_size.get("estimated_tokens", 0) > budget):
+        recent_messages, compacted_recent_tool_messages = _compact_recent_tool_messages(recent_messages)
+        prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
+        after_size = estimate_context_size([_message_content(item) for item in prompt_view])
 
     # If the compact view still exceeds budget, reduce older summaries first, then recent tail.
     strategy = "case_context+older_summary+recent_raw"
+    if compacted_recent_tool_messages:
+        strategy = "case_context+older_summary+compacted_recent_tools"
     while after_size.get("estimated_tokens", 0) > budget and older_summaries:
         older_summaries = older_summaries[len(older_summaries) // 2 :]
         control_payload["older_history_compact"] = older_summaries
@@ -1069,7 +1148,7 @@ def prepare_messages_for_llm(
                 f"```json\n{json.dumps(_json_safe(control_payload, max_depth=10), ensure_ascii=False, indent=2)}\n```"
             )
         )
-        prompt_view = [system_msg, control_message] + recent_messages
+        prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
         after_size = estimate_context_size([_message_content(item) for item in prompt_view])
         strategy = "case_context+reduced_older_summary+recent_raw"
 
@@ -1077,9 +1156,16 @@ def prepare_messages_for_llm(
         recent_messages = recent_messages[2:]
         while recent_messages and _message_type(recent_messages[0]) in {"tool", "toolmessage"}:
             recent_messages = recent_messages[1:]
-        prompt_view = [system_msg, control_message] + recent_messages
+        prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
         after_size = estimate_context_size([_message_content(item) for item in prompt_view])
         strategy = "case_context+reduced_older_summary+reduced_recent_raw"
+
+    if after_size.get("estimated_tokens", 0) > budget and recent_messages:
+        recent_messages, extra_compacted = _compact_recent_tool_messages(recent_messages)
+        compacted_recent_tool_messages += extra_compacted
+        prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
+        after_size = estimate_context_size([_message_content(item) for item in prompt_view])
+        strategy = "case_context+reduced_older_summary+compacted_recent_tools"
 
     window_info = {
         "estimated_tokens_before": before_size.get("estimated_tokens", 0),
@@ -1088,7 +1174,13 @@ def prepare_messages_for_llm(
         "chars_after": after_size.get("chars", 0),
         "token_budget": budget,
         "trimmed_tool_messages": trimmed_tool_messages,
+        "compacted_recent_tool_messages": compacted_recent_tool_messages,
         "kept_recent_messages": len(recent_messages),
+        "kept_anchor_messages": len(anchor_messages),
+        "anchor_message_indexes": anchor_info.get("anchor_message_indexes", []),
+        "anchor_selection_strategy": anchor_info.get("anchor_selection_strategy", "none"),
+        "anchor_size_warning": bool(anchor_info.get("anchor_size_warning")),
+        "anchor_size": anchor_info.get("anchor_size", {}),
         "kept_recent_turns": max(1, len(recent_messages) // 2) if recent_messages else 0,
         "older_summary_count": len(older_summaries),
         "strategy": strategy,
