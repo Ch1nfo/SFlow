@@ -24,6 +24,29 @@ except ModuleNotFoundError:  # pragma: no cover
     InjectedState = object  # type: ignore[assignment]
 
 
+def _format_schema_property_label(
+    field: str,
+    field_schema: Any,
+    *,
+    description_limit: int = 120,
+) -> str:
+    if not isinstance(field_schema, dict):
+        return str(field)
+    parts: list[str] = []
+    field_type = str(field_schema.get("type", "")).strip()
+    if field_type:
+        parts.append(field_type)
+    enum_values = field_schema.get("enum")
+    if isinstance(enum_values, list) and enum_values:
+        enum_repr = "|".join(str(item) for item in enum_values)
+        parts.append(f"enum={enum_repr}")
+    label = f"{field}: {' '.join(parts)}" if parts else field
+    description = compact_text(field_schema.get("description", ""), description_limit)
+    if description:
+        label += f" ({description})"
+    return label
+
+
 def build_agent_tools(
     skill_runtime: SentinelFlowSkillRuntime,
     approval_service: SkillApprovalService,
@@ -199,12 +222,18 @@ def build_agent_tools(
             properties = input_schema.get("properties") or {}
             if not isinstance(properties, dict):
                 properties = {}
+            ordered_fields: list[str] = []
+            for field_name in required_names:
+                if field_name in properties and field_name not in ordered_fields:
+                    ordered_fields.append(field_name)
+            for field_name in properties.keys():
+                normalized_name = str(field_name).strip()
+                if normalized_name and normalized_name not in ordered_fields:
+                    ordered_fields.append(normalized_name)
             prop_parts: list[str] = []
-            for field, field_schema in properties.items():
-                field_type = ""
-                if isinstance(field_schema, dict):
-                    field_type = str(field_schema.get("type", "")).strip()
-                prop_parts.append(f"{field}: {field_type}" if field_type else str(field))
+            for field in ordered_fields:
+                field_schema = properties.get(field, {})
+                prop_parts.append(_format_schema_property_label(field, field_schema))
             additional = input_schema.get("additionalProperties", True)
             additional_repr = "true" if (not isinstance(additional, bool)) or additional else "false"
             properties_repr = "{" + ", ".join(prop_parts) + "}" if prop_parts else "{}"

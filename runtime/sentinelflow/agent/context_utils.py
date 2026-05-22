@@ -450,6 +450,15 @@ def _schema_type_matches(value: Any, expected_type: str) -> bool:
     return True
 
 
+def _schema_enum_matches(value: Any, enum_values: list[Any]) -> bool:
+    for candidate in enum_values:
+        if value == candidate:
+            return True
+        if str(value) == str(candidate):
+            return True
+    return False
+
+
 def validate_skill_input_schema(
     *,
     skill_name: str,
@@ -518,6 +527,17 @@ def validate_skill_input_schema(
                     "field": str(field),
                     "source": "arguments",
                     "reason": f"字段 {field} 类型不符合 input_schema，期望 {expected_type}。",
+                }
+            )
+            continue
+        enum_values = field_schema.get("enum")
+        if isinstance(enum_values, list) and enum_values and not _schema_enum_matches(arguments[field], enum_values):
+            allowed = ", ".join(str(item) for item in enum_values)
+            invalid.append(
+                {
+                    "field": str(field),
+                    "source": "arguments",
+                    "reason": f"字段 {field} 的值不符合 input_schema.enum，仅允许: {allowed}。",
                 }
             )
 
