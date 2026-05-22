@@ -222,6 +222,17 @@ function asRecordArray(value: unknown): Array<Record<string, unknown>> {
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
 }
 
+function parseMaybeJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  if (typeof value !== 'string') return {}
+  try {
+    const parsed = JSON.parse(value)
+    return asRecord(parsed)
+  } catch {
+    return {}
+  }
+}
+
 function compactDisplayText(value: unknown, limit = 180): string {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim()
   if (!text) return ''
@@ -340,15 +351,76 @@ function buildToolInvocation(item: Record<string, unknown>, source: string, fall
   }
 }
 
-function collectToolInvocationResults(trace: ExecutionTraceItem[]): ToolInvocationResult[] {
+function buildToolInvocationFromSummary(item: Record<string, unknown>, source: string, fallbackIndex: number): ToolInvocationResult | null {
+  const toolName = String(item.name ?? item.tool_name ?? 'execute_skill').trim() || 'execute_skill'
+  const args = asRecord(item.args)
+  const skillName = String(args.skill_name ?? item.skill_name ?? toolName).trim()
+  if (!skillName) return null
+  const input = parseMaybeJsonRecord(args.arguments)
+  const resultSummary = asRecord(item.result_summary)
+  const successValue = resultSummary.success ?? item.success ?? item.tool_success
+  const success = typeof successValue === 'boolean' ? successValue : null
+  const toolCallId = String(item.id ?? item.tool_call_id ?? resultSummary.result_ref ?? '').trim()
+  const normalizedItem = {
+    skill_name: skillName,
+    tool_name: toolName,
+    tool_call_id: toolCallId,
+    arguments: input,
+    result_summary: resultSummary,
+    success,
+    tool_success: success,
+  }
+  const output = getToolInvocationOutput(normalizedItem)
+  const outputNote = getToolInvocationOutputNote(normalizedItem)
+  const key = toolCallId || `${skillName}-${source}-${fallbackIndex}-${JSON.stringify(input)}-${JSON.stringify(output)}`
+  return {
+    key,
+    skillName,
+    toolName,
+    toolCallId,
+    success,
+    source,
+    input,
+    output,
+    outputNote,
+    raw: { ...item, normalized_item: normalizedItem },
+  }
+}
+
+function collectWorkerToolSummaries(value: unknown, sourcePrefix = ''): ToolInvocationResult[] {
+  const results: ToolInvocationResult[] = []
+  const walk = (workerResults: Array<Record<string, unknown>>, prefix: string) => {
+    workerResults.forEach((worker, workerIndex) => {
+      const workerName = String(worker.worker ?? worker.worker_agent ?? worker.agent_name ?? `worker-${workerIndex + 1}`).trim()
+      const source = `${prefix}${workerName} · Worker compact result`
+      asRecordArray(worker.tool_calls_summary).forEach((item) => {
+        const invocation = buildToolInvocationFromSummary(item, source, results.length)
+        if (invocation) results.push(invocation)
+      })
+      walk(asRecordArray(worker.worker_results), `${prefix}${workerName}/`)
+    })
+  }
+  walk(asRecordArray(value), sourcePrefix)
+  return results
+}
+
+function collectToolInvocationResults(resultData: Record<string, unknown>, trace: ExecutionTraceItem[]): ToolInvocationResult[] {
   const results: ToolInvocationResult[] = []
   const seen = new Set<string>()
-  const addItem = (item: Record<string, unknown>, source: string) => {
-    const invocation = buildToolInvocation(item, source, results.length)
+  const addInvocation = (invocation: ToolInvocationResult | null) => {
     if (!invocation || seen.has(invocation.key)) return
     seen.add(invocation.key)
     results.push(invocation)
   }
+  const addItem = (item: Record<string, unknown>, source: string) => {
+    addInvocation(buildToolInvocation(item, source, results.length))
+  }
+
+  collectWorkerToolSummaries(resultData.worker_results).forEach(addInvocation)
+  asRecordArray(resultData.workflow_runs).forEach((workflowRun) => {
+    const workflowName = String(workflowRun.workflow_name ?? workflowRun.workflow_id ?? 'workflow').trim()
+    collectWorkerToolSummaries(workflowRun.worker_results, `${workflowName}/`).forEach(addInvocation)
+  })
 
   trace.forEach((traceItem) => {
     const data = asRecord(traceItem.data)
@@ -850,7 +922,7 @@ export default function SentinelFlowTasksPage() {
   const selectedTrace = Array.isArray(selectedResult.execution_trace) && selectedResult.execution_trace.length
     ? (selectedResult.execution_trace as ExecutionTraceItem[])
     : buildFallbackTrace(selectedTask)
-  const selectedToolResults = collectToolInvocationResults(selectedTrace)
+  const selectedToolResults = collectToolInvocationResults(selectedResult, selectedTrace)
   const dipPreview = formatIpPreview(selectedPayload.dip)
   const workflowDecision = String(
     selectedWorkflowRun?.workflow_name ?? selectedWorkflowRun?.workflow_id ?? selectedTask?.workflow_name ?? '',
