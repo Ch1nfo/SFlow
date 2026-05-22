@@ -37,6 +37,7 @@ type ToolInvocationResult = {
   source: string
   input: Record<string, unknown>
   output: Record<string, unknown>
+  outputNote: string
   raw: Record<string, unknown>
 }
 
@@ -245,11 +246,60 @@ function getToolInvocationOutput(item: Record<string, unknown>): Record<string, 
   const payload = asRecord(item.payload)
   if (Object.keys(payload).length) return payload
   const result = asRecord(item.result)
-  if (Object.keys(result).length) return result
+  if (Object.keys(result).length) {
+    const argumentsRecord = asRecord(item.arguments)
+    const skillName = String(item.skill_name ?? '').trim().toLowerCase()
+    const resultKeys = Object.keys(result)
+    const isSparseClosureResult =
+      ['exec', 'close', 'soc_close', 'alert_close'].includes(skillName) &&
+      resultKeys.length <= 2 &&
+      Object.keys(argumentsRecord).length
+    if (isSparseClosureResult) {
+      return {
+        returned: result,
+        submitted_arguments: argumentsRecord,
+      }
+    }
+    return result
+  }
   const toolPayload = asRecord(item.tool_payload)
   const toolPayloadData = asRecord(toolPayload.data)
   if (Object.keys(toolPayloadData).length) return toolPayloadData
+  const resultSummary = asRecord(item.result_summary)
+  if (Object.keys(resultSummary).length) {
+    const summaryOutput: Record<string, unknown> = {}
+    if (typeof resultSummary.success === 'boolean') summaryOutput.success = resultSummary.success
+    if (String(resultSummary.summary ?? '').trim()) summaryOutput.summary = resultSummary.summary
+    const keyFacts = asRecord(resultSummary.key_facts)
+    if (Object.keys(keyFacts).length) summaryOutput.key_facts = keyFacts
+    if (String(resultSummary.error ?? '').trim()) summaryOutput.error = resultSummary.error
+    if (String(resultSummary.result_ref ?? '').trim()) summaryOutput.result_ref = resultSummary.result_ref
+    if (Object.keys(summaryOutput).length) return summaryOutput
+  }
+  if (String(item.error ?? '').trim() || String(item.tool_error ?? '').trim()) {
+    return {
+      error: String(item.error ?? item.tool_error ?? '').trim(),
+    }
+  }
   return {}
+}
+
+function getToolInvocationOutputNote(item: Record<string, unknown>): string {
+  const resultSummary = asRecord(item.result_summary)
+  if (Object.keys(resultSummary).length && !Object.keys(asRecord(item.result)).length && !Object.keys(asRecord(item.payload)).length) {
+    return '该输出来自压缩后的 result_summary；完整原始结果请查看处置全流程或运行日志。'
+  }
+  const skillName = String(item.skill_name ?? '').trim().toLowerCase()
+  const result = asRecord(item.result)
+  const argumentsRecord = asRecord(item.arguments)
+  if (
+    ['exec', 'close', 'soc_close', 'alert_close'].includes(skillName) &&
+    Object.keys(result).length <= 2 &&
+    Object.keys(argumentsRecord).length
+  ) {
+    return '结单接口返回字段较少，已同时展示本次实际提交参数。'
+  }
+  return ''
 }
 
 function isSuccessfulSkillItem(item: Record<string, unknown>): boolean {
@@ -268,11 +318,11 @@ function isSuccessfulSkillItem(item: Record<string, unknown>): boolean {
 function buildToolInvocation(item: Record<string, unknown>, source: string, fallbackIndex: number): ToolInvocationResult | null {
   const skillName = String(item.skill_name ?? '').trim()
   if (!skillName) return null
-  if (!isSuccessfulSkillItem(item)) return null
   const toolName = String(item.tool_name ?? 'execute_skill').trim() || 'execute_skill'
   const toolCallId = String(item.tool_call_id ?? '').trim()
   const input = asRecord(item.arguments)
   const output = getToolInvocationOutput(item)
+  const outputNote = getToolInvocationOutputNote(item)
   const successValue = item.success
   const success = typeof successValue === 'boolean' ? successValue : null
   const key = toolCallId || `${skillName}-${source}-${fallbackIndex}-${JSON.stringify(input)}-${JSON.stringify(output)}`
@@ -285,6 +335,7 @@ function buildToolInvocation(item: Record<string, unknown>, source: string, fall
     source,
     input,
     output,
+    outputNote,
     raw: item,
   }
 }
@@ -461,6 +512,7 @@ function ToolInvocationResults({ tools, ownerId }: { tools: ToolInvocationResult
                 </div>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">输出</div>
+                  {tool.outputNote ? <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{tool.outputNote}</div> : null}
                   <JsonPreview value={tool.output} />
                 </div>
               </div>
