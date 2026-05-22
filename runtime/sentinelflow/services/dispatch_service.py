@@ -1117,12 +1117,21 @@ class AlertDispatchService:
         return task
 
     def mark_task_running_from_approval(self, task_id: str, action: str) -> AlertHandlingTask | None:
+        task = self.get_task(task_id)
+        cleared_result_data: dict[str, Any] = {}
+        if task is not None and isinstance(task.last_result_data, dict):
+            cleared_result_data = {
+                key: value
+                for key, value in task.last_result_data.items()
+                if key not in {"approval_pending", "approval_request"}
+            }
         task = self._update_task_columns(
             task_id,
             {
                 "status": "running",
                 "last_action": action,
                 "last_result_error": None,
+                "last_result_data": json.dumps(cleared_result_data),
             },
             expected_statuses=["awaiting_approval"],
         )

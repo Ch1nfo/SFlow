@@ -189,6 +189,22 @@ class SkillApprovalService:
         )
         return self._row_to_approval(row) if row else None
 
+    def get_latest_pending_for_scope(self, scope_type: str, scope_ref: str) -> SkillApprovalRecord | None:
+        scope_type = str(scope_type or "").strip()
+        scope_ref = str(scope_ref or "").strip()
+        if not scope_type or not scope_ref:
+            return None
+        row = self._fetch_one(
+            """
+            SELECT * FROM skill_approvals
+            WHERE status = 'pending' AND scope_type = ? AND scope_ref = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (scope_type, scope_ref),
+        )
+        return self._row_to_approval(row) if row else None
+
     def create_or_reuse_pending(
         self,
         *,
@@ -240,7 +256,7 @@ class SkillApprovalService:
                     (checkpoint_thread_id, tool_call_id),
                 ).fetchone()
                 existing = self._row_to_approval(existing_row) if existing_row else None
-                if existing and existing.status in {"pending", "approved", "rejected", "cancelled", "consumed"}:
+                if existing and existing.status == "pending":
                     return existing
 
             conn.execute(

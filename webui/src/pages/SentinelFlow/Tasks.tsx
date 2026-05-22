@@ -74,6 +74,21 @@ function isApprovalPendingAction(result: AlertActionResponse | ApprovalDecisionR
   )
 }
 
+function getPendingApprovalRequest(task: AlertTask | null | undefined, result: Record<string, unknown> | undefined): Record<string, unknown> {
+  const approvalRequest = (result?.approval_request as Record<string, unknown> | undefined) ?? {}
+  const approvalId = String(approvalRequest.approval_id ?? '').trim()
+  const approvalStatus = String(approvalRequest.status ?? '').trim()
+  if (
+    task &&
+    getEffectiveTaskStatus(task) === 'awaiting_approval' &&
+    approvalId &&
+    (!approvalStatus || approvalStatus === 'pending')
+  ) {
+    return approvalRequest
+  }
+  return {}
+}
+
 function getDispositionLabel(value: string) {
   if (value === 'true_attack') return '真实攻击'
   if (value === 'business_trigger') return '业务触发'
@@ -868,7 +883,7 @@ export default function SentinelFlowTasksPage() {
   }
 
   async function handleApprovalDecision(decision: 'approve' | 'reject') {
-    const approvalId = String(selectedApprovalRequest.approval_id ?? '').trim()
+    const approvalId = String(selectedPendingApprovalRequest.approval_id ?? '').trim()
     if (!approvalId) return
     setRunningAction(decision)
     try {
@@ -903,7 +918,7 @@ export default function SentinelFlowTasksPage() {
     (selectedResult.workflow_selection as Record<string, unknown> | undefined) ??
     (selectedTask?.payload?.workflow_selection as Record<string, unknown> | undefined) ??
     {}
-  const selectedApprovalRequest = (selectedResult.approval_request as Record<string, unknown> | undefined) ?? {}
+  const selectedPendingApprovalRequest = getPendingApprovalRequest(selectedTask, selectedResult)
   const selectedClosureStep = (
     (selectedResult.effective_closure_step as Record<string, unknown> | undefined)
     ?? (selectedResult.closure_step as Record<string, unknown> | undefined)
@@ -1159,12 +1174,12 @@ export default function SentinelFlowTasksPage() {
                       <div className="mt-2 text-sm text-amber-900">检测到过程结果存在冲突，当前页面已按真实执行事实优先收敛展示。</div>
                     </div>
                   ) : null}
-                  {String(selectedApprovalRequest.approval_id ?? '').trim() ? (
+                  {String(selectedPendingApprovalRequest.approval_id ?? '').trim() ? (
                     <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
                       <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">待审批 Skill</div>
-                      <div className="mt-2 text-sm font-semibold text-amber-950">{String(selectedApprovalRequest.skill_name ?? '').trim() || '未命名 Skill'}</div>
-                      <div className="mt-2 text-sm text-amber-900">{String(selectedApprovalRequest.message ?? '该 Skill 需要审批后才能继续执行。').trim()}</div>
-                      <div className="mt-2 text-xs text-amber-800">参数：{String(selectedApprovalRequest.arguments_summary ?? '无参数').trim() || '无参数'}</div>
+                      <div className="mt-2 text-sm font-semibold text-amber-950">{String(selectedPendingApprovalRequest.skill_name ?? '').trim() || '未命名 Skill'}</div>
+                      <div className="mt-2 text-sm text-amber-900">{String(selectedPendingApprovalRequest.message ?? '该 Skill 需要审批后才能继续执行。').trim()}</div>
+                      <div className="mt-2 text-xs text-amber-800">参数：{String(selectedPendingApprovalRequest.arguments_summary ?? '无参数').trim() || '无参数'}</div>
                       <div className="mt-3 flex gap-2">
                         <button type="button" className="sentinelflow-primary-button" onClick={() => void handleApprovalDecision('approve')} disabled={runningAction !== ''}>批准并继续</button>
                         <button type="button" className="sentinelflow-ghost-button" onClick={() => void handleApprovalDecision('reject')} disabled={runningAction !== ''}>拒绝并继续</button>

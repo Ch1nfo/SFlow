@@ -583,14 +583,36 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
     def _replace_tool_message_content(self, state: dict[str, Any], tool_call_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         serialized = json.dumps(payload, ensure_ascii=False)
         messages = list(state.get("messages", []))
+        normalized_tool_call_id = str(tool_call_id or "").strip()
+        replaced = False
         for index in range(len(messages) - 1, -1, -1):
             msg = messages[index]
             if getattr(msg, "type", "") != "tool":
                 continue
-            if tool_call_id and str(getattr(msg, "tool_call_id", "")).strip() != tool_call_id:
-                continue
+            if normalized_tool_call_id:
+                if str(getattr(msg, "tool_call_id", "")).strip() != normalized_tool_call_id:
+                    continue
+            else:
+                content = getattr(msg, "content", "")
+                if isinstance(content, str):
+                    try:
+                        decoded = json.loads(content)
+                    except json.JSONDecodeError:
+                        decoded = None
+                    if not (isinstance(decoded, dict) and decoded.get("approval_pending")):
+                        continue
+                else:
+                    continue
             messages[index] = self._copy_tool_message_with_content(msg, serialized)
+            replaced = True
             break
+        if not replaced and not normalized_tool_call_id:
+            for index in range(len(messages) - 1, -1, -1):
+                msg = messages[index]
+                if getattr(msg, "type", "") != "tool":
+                    continue
+                messages[index] = self._copy_tool_message_with_content(msg, serialized)
+                break
         state["messages"] = messages
         state["approval_pending"] = False
         state["approval_request"] = {}
@@ -690,7 +712,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         approval_id = str(request.get("approval_id", "")).strip()
         if approval_id:
             record = self.approval_service.get_by_id(approval_id)
-            if record is not None:
+            if record is not None and record.status == "pending":
                 if not record.parent_checkpoint_thread_id and str(state.get("checkpoint_thread_id", "")).strip():
                     updated = self.approval_service.update_parent_context(
                         approval_id,

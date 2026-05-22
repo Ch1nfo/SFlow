@@ -730,7 +730,30 @@ def _select_current_approval(payload: dict[str, Any], fallback_approval: dict[st
         approval_id = str(approval_request.get("approval_id", "")).strip()
         if approval_id and (status == "pending" or bool(payload.get("approval_pending"))):
             return approval_request
+
+    scope_type = str(payload.get("scope_type", "")).strip()
+    scope_ref = str(payload.get("scope_ref", "")).strip()
+    if not scope_ref:
+        task_payload = payload.get("task")
+        if isinstance(task_payload, dict):
+            scope_ref = str(task_payload.get("task_id", "")).strip()
+    if not scope_type and scope_ref:
+        scope_type = "alert_task"
+    if scope_type and scope_ref and bool(payload.get("approval_pending")):
+        latest = skill_approval_service.get_latest_pending_for_scope(scope_type, scope_ref)
+        if latest is not None:
+            return skill_approval_service.serialize_approval(latest)
     return fallback_approval
+
+
+def _resolve_stale_approval_id(approval_id: str) -> str:
+    approval = skill_approval_service.get_by_id(approval_id)
+    if approval is None or approval.status == "pending":
+        return approval_id
+    latest = skill_approval_service.get_latest_pending_for_scope(approval.scope_type, approval.scope_ref)
+    if latest is not None and latest.approval_id != approval_id:
+        return latest.approval_id
+    return approval_id
 
 
 async def _resolve_approval_json(
@@ -739,6 +762,10 @@ async def _resolve_approval_json(
     *,
     status_callback=None,
 ) -> dict[str, Any]:
+    resolved_approval_id = _resolve_stale_approval_id(approval_id)
+    if resolved_approval_id != approval_id:
+        approval_id = resolved_approval_id
+
     approval = skill_approval_service.get_by_id(approval_id)
     if approval is None:
         return _build_approval_resolution_response(
@@ -748,6 +775,26 @@ async def _resolve_approval_json(
             data={},
             task=None,
             error="找不到待审批记录。",
+        )
+    if approval.status != "pending":
+        latest = skill_approval_service.get_latest_pending_for_scope(approval.scope_type, approval.scope_ref)
+        serialized = skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id) or approval)
+        if latest is not None:
+            return _build_approval_resolution_response(
+                success=False,
+                route="approval_not_pending",
+                approval=skill_approval_service.serialize_approval(latest),
+                data={"current_approval": skill_approval_service.serialize_approval(latest)},
+                task=_serialize(dispatch_service.get_task(approval.scope_ref)) if approval.scope_type == "alert_task" else None,
+                error=f"该审批已处理，请使用最新待审批记录（{latest.approval_id}）。",
+            )
+        return _build_approval_resolution_response(
+            success=False,
+            route="approval_not_pending",
+            approval=serialized,
+            data={"approval": serialized},
+            task=None,
+            error="该审批已处理。",
         )
     prepared_task = None
     run_log_ref = None
@@ -819,7 +866,8 @@ async def _resolve_approval_json(
             payload = result.get("data", {})
             payload = payload if isinstance(payload, dict) else {}
             if not bool(payload.get("approval_pending")):
-                error = str(result.get("error", "")).strip() or "审批恢复执行失败。"
+                raw_error = result.get("error")
+                error = str(raw_error).strip() if raw_error is not None and str(raw_error).strip() not in {"", "None"} else "审批恢复执行失败。"
                 if tracer_activated and run_log_ref is not None:
                     agent_run_log_service.append(
                         run_log_ref,

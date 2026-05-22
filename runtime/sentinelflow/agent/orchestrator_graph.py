@@ -321,7 +321,21 @@ def _build_worker_subgraph_tool(
         }
         if worker_state.get("approval_pending"):
             approval_request = worker_state.get("approval_request", {})
+            pending_tool_call_id = ""
             if isinstance(approval_request, dict):
+                for msg in reversed(list(worker_state.get("messages", []))):
+                    if getattr(msg, "type", "") != "tool":
+                        continue
+                    content = getattr(msg, "content", "")
+                    if not isinstance(content, str):
+                        continue
+                    try:
+                        payload = json.loads(content)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict) and payload.get("approval_pending"):
+                        pending_tool_call_id = str(getattr(msg, "tool_call_id", "")).strip()
+                        break
                 approval_service.save_checkpoint(
                     checkpoint_thread_id=child_checkpoint_thread_id,
                     checkpoint_ns="agent_graph",
@@ -343,7 +357,7 @@ def _build_worker_subgraph_tool(
                     approval_required=True,
                     checkpoint_thread_id=child_checkpoint_thread_id,
                     checkpoint_ns="agent_graph",
-                    tool_call_id=str(approval_request.get("tool_call_id", "")).strip(),
+                    tool_call_id=pending_tool_call_id or str(approval_request.get("tool_call_id", "")).strip(),
                     parent_checkpoint_thread_id=str(child_state.get("parent_checkpoint_thread_id", "")).strip(),
                     parent_checkpoint_ns=str(child_state.get("parent_checkpoint_ns", "")).strip(),
                     parent_tool_call_id=str(child_state.get("parent_tool_call_id", "")).strip(),
