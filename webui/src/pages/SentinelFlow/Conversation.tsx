@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Bot, CheckCircle2, ChevronDown, ChevronRight, FileJson, MessageSquareText, Plus, RotateCcw, Send, Square, Trash2, Workflow, Wrench } from 'lucide-react'
 import type { ApprovalRequest, CommandDispatchResponse } from '@/api/sentinelflow'
@@ -80,19 +80,41 @@ type DetailField = {
 
 function CollapsibleChatMarkdown({ content, inverted = false }: { content: string; inverted?: boolean }) {
   const [expanded, setExpanded] = useState(false)
+  const [hasOverflow, setHasOverflow] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
   const normalizedContent = String(content ?? '')
-  const shouldClamp = normalizedContent.length > 360 || normalizedContent.split(/\r?\n/).length > 10
+  const canClamp = normalizedContent.length > 360 || normalizedContent.split(/\r?\n/).length > 10
 
   useEffect(() => {
     setExpanded(false)
   }, [normalizedContent])
 
+  useLayoutEffect(() => {
+    if (!canClamp) {
+      setHasOverflow(false)
+      return
+    }
+    const element = contentRef.current
+    if (!element) return
+    const measure = () => {
+      setHasOverflow(element.scrollHeight > element.clientHeight + 1)
+    }
+    measure()
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    observer?.observe(element)
+    window.addEventListener('resize', measure)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [canClamp, expanded, normalizedContent])
+
   return (
     <div className="sentinelflow-chat-markdown">
-      <div className={shouldClamp && !expanded ? 'sentinelflow-chat-markdown-clamped' : undefined}>
+      <div ref={contentRef} className={canClamp && !expanded ? 'sentinelflow-chat-markdown-clamped' : undefined}>
         <MarkdownContent content={normalizedContent} inverted={inverted} />
       </div>
-      {shouldClamp ? (
+      {hasOverflow || expanded ? (
         <button
           type="button"
           className={`sentinelflow-chat-expand-button ${inverted ? 'sentinelflow-chat-expand-button-inverted' : ''}`}
