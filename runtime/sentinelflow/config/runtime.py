@@ -342,9 +342,7 @@ def build_llm_client_kwargs(config: SentinelFlowRuntimeConfig, *, temperature: f
         "timeout": config.llm_timeout,
     }
     if _read_bool_value(getattr(config, "llm_thinking_adapter_enabled", False), False):
-        kwargs["model_kwargs"] = {
-            "extra_body": {
-                "thinking": {"type": "disabled"},
-            }
+        kwargs["extra_body"] = {
+            "thinking": {"type": "disabled"},
         }
     return kwargs
