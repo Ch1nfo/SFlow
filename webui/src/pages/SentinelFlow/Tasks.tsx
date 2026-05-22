@@ -38,6 +38,7 @@ type ToolInvocationResult = {
   input: Record<string, unknown>
   output: Record<string, unknown>
   outputNote: string
+  sortOrder: number
   raw: Record<string, unknown>
 }
 
@@ -341,7 +342,105 @@ function isSuccessfulSkillItem(item: Record<string, unknown>): boolean {
   return false
 }
 
-function buildToolInvocation(item: Record<string, unknown>, source: string, fallbackIndex: number): ToolInvocationResult | null {
+function isExecuteSkillToolName(toolName: string): boolean {
+  return toolName === 'execute_skill' || toolName === 'execute_skill_no_args'
+}
+
+function indexWorkerResultsByMessageIndex(workerResults: Array<Record<string, unknown>>): Map<number, Record<string, unknown>> {
+  const map = new Map<number, Record<string, unknown>>()
+  const walk = (workers: Array<Record<string, unknown>>) => {
+    workers.forEach((worker) => {
+      const messageIndex = Number(worker._message_index)
+      if (Number.isFinite(messageIndex)) {
+        map.set(messageIndex, worker)
+      }
+      walk(asRecordArray(worker.worker_results))
+    })
+  }
+  walk(workerResults)
+  return map
+}
+
+function buildSkillInvocationOrderMap(resultData: Record<string, unknown>): Map<string, number> {
+  const orderByToolCallId = new Map<string, number>()
+  let order = 0
+  const assign = (toolCallId: string) => {
+    const normalized = toolCallId.trim()
+    if (!normalized || orderByToolCallId.has(normalized)) return
+    orderByToolCallId.set(normalized, order)
+    order += 1
+  }
+
+  const workerByMessageIndex = indexWorkerResultsByMessageIndex(asRecordArray(resultData.worker_results))
+  asRecordArray(resultData.workflow_runs).forEach((workflowRun) => {
+    indexWorkerResultsByMessageIndex(asRecordArray(workflowRun.worker_results)).forEach((worker, messageIndex) => {
+      workerByMessageIndex.set(messageIndex, worker)
+    })
+  })
+
+  asRecordArray(resultData.messages).forEach((message, messageIndex) => {
+    const messageType = String(message.type ?? '').trim().toLowerCase()
+    if (messageType === 'tool') {
+      const worker = workerByMessageIndex.get(messageIndex)
+      if (worker) {
+        asRecordArray(worker.tool_calls_summary).forEach((item) => {
+          assign(String(item.id ?? item.tool_call_id ?? ''))
+        })
+      }
+      return
+    }
+    if (messageType !== 'ai') return
+    asRecordArray(message.tool_calls).forEach((toolCall) => {
+      const toolName = String(toolCall.name ?? '').trim()
+      if (!isExecuteSkillToolName(toolName)) return
+      assign(String(toolCall.id ?? toolCall.tool_call_id ?? ''))
+    })
+  })
+
+  const assignWorkerFallback = (workers: Array<Record<string, unknown>>, baseOrder: number) => {
+    workers.forEach((worker, workerIndex) => {
+      const workerStep = Number(worker.step)
+      const base = Number.isFinite(workerStep) ? workerStep * 1000 : baseOrder + workerIndex * 1000
+      asRecordArray(worker.tool_calls_summary).forEach((item, toolIndex) => {
+        const toolCallId = String(item.id ?? item.tool_call_id ?? '').trim()
+        if (toolCallId && !orderByToolCallId.has(toolCallId)) {
+          orderByToolCallId.set(toolCallId, base + toolIndex)
+        }
+      })
+      assignWorkerFallback(asRecordArray(worker.worker_results), base)
+    })
+  }
+  assignWorkerFallback(asRecordArray(resultData.worker_results), 0)
+  asRecordArray(resultData.workflow_runs).forEach((workflowRun, workflowIndex) => {
+    assignWorkerFallback(asRecordArray(workflowRun.worker_results), (workflowIndex + 1) * 10000)
+  })
+
+  asRecordArray(resultData.tool_calls).forEach((toolCall, index) => {
+    const toolName = String(toolCall.name ?? '').trim()
+    if (!isExecuteSkillToolName(toolName)) return
+    const toolCallId = String(toolCall.id ?? toolCall.tool_call_id ?? '').trim()
+    if (toolCallId && !orderByToolCallId.has(toolCallId)) {
+      orderByToolCallId.set(toolCallId, 500000 + index)
+    }
+  })
+
+  return orderByToolCallId
+}
+
+function resolveToolInvocationSortOrder(toolCallId: string, orderMap: Map<string, number>, fallbackOrder: number): number {
+  const normalized = toolCallId.trim()
+  if (normalized && orderMap.has(normalized)) {
+    return orderMap.get(normalized) ?? fallbackOrder
+  }
+  return 1_000_000 + fallbackOrder
+}
+
+function buildToolInvocation(
+  item: Record<string, unknown>,
+  source: string,
+  fallbackIndex: number,
+  orderMap: Map<string, number>,
+): ToolInvocationResult | null {
   const skillName = String(item.skill_name ?? '').trim()
   if (!skillName) return null
   const toolName = String(item.tool_name ?? 'execute_skill').trim() || 'execute_skill'
@@ -362,11 +461,17 @@ function buildToolInvocation(item: Record<string, unknown>, source: string, fall
     input,
     output,
     outputNote,
+    sortOrder: resolveToolInvocationSortOrder(toolCallId, orderMap, fallbackIndex),
     raw: item,
   }
 }
 
-function buildToolInvocationFromSummary(item: Record<string, unknown>, source: string, fallbackIndex: number): ToolInvocationResult | null {
+function buildToolInvocationFromSummary(
+  item: Record<string, unknown>,
+  source: string,
+  fallbackIndex: number,
+  orderMap: Map<string, number>,
+): ToolInvocationResult | null {
   const toolName = String(item.name ?? item.tool_name ?? 'execute_skill').trim() || 'execute_skill'
   const args = asRecord(item.args)
   const skillName = String(args.skill_name ?? item.skill_name ?? toolName).trim()
@@ -398,18 +503,23 @@ function buildToolInvocationFromSummary(item: Record<string, unknown>, source: s
     input,
     output,
     outputNote,
+    sortOrder: resolveToolInvocationSortOrder(toolCallId, orderMap, fallbackIndex),
     raw: { ...item, normalized_item: normalizedItem },
   }
 }
 
-function collectWorkerToolSummaries(value: unknown, sourcePrefix = ''): ToolInvocationResult[] {
+function collectWorkerToolSummaries(
+  value: unknown,
+  orderMap: Map<string, number>,
+  sourcePrefix = '',
+): ToolInvocationResult[] {
   const results: ToolInvocationResult[] = []
   const walk = (workerResults: Array<Record<string, unknown>>, prefix: string) => {
     workerResults.forEach((worker, workerIndex) => {
       const workerName = String(worker.worker ?? worker.worker_agent ?? worker.agent_name ?? `worker-${workerIndex + 1}`).trim()
       const source = `${prefix}${workerName} · Worker compact result`
       asRecordArray(worker.tool_calls_summary).forEach((item) => {
-        const invocation = buildToolInvocationFromSummary(item, source, results.length)
+        const invocation = buildToolInvocationFromSummary(item, source, results.length, orderMap)
         if (invocation) results.push(invocation)
       })
       walk(asRecordArray(worker.worker_results), `${prefix}${workerName}/`)
@@ -422,19 +532,20 @@ function collectWorkerToolSummaries(value: unknown, sourcePrefix = ''): ToolInvo
 function collectToolInvocationResults(resultData: Record<string, unknown>, trace: ExecutionTraceItem[]): ToolInvocationResult[] {
   const results: ToolInvocationResult[] = []
   const seen = new Set<string>()
+  const orderMap = buildSkillInvocationOrderMap(resultData)
   const addInvocation = (invocation: ToolInvocationResult | null) => {
     if (!invocation || seen.has(invocation.key)) return
     seen.add(invocation.key)
     results.push(invocation)
   }
   const addItem = (item: Record<string, unknown>, source: string) => {
-    addInvocation(buildToolInvocation(item, source, results.length))
+    addInvocation(buildToolInvocation(item, source, results.length, orderMap))
   }
 
-  collectWorkerToolSummaries(resultData.worker_results).forEach(addInvocation)
+  collectWorkerToolSummaries(resultData.worker_results, orderMap).forEach(addInvocation)
   asRecordArray(resultData.workflow_runs).forEach((workflowRun) => {
     const workflowName = String(workflowRun.workflow_name ?? workflowRun.workflow_id ?? 'workflow').trim()
-    collectWorkerToolSummaries(workflowRun.worker_results, `${workflowName}/`).forEach(addInvocation)
+    collectWorkerToolSummaries(workflowRun.worker_results, orderMap, `${workflowName}/`).forEach(addInvocation)
   })
 
   trace.forEach((traceItem) => {
@@ -446,7 +557,10 @@ function collectToolInvocationResults(resultData: Record<string, unknown>, trace
     }
   })
 
-  return results
+  return results.sort((left, right) => {
+    if (left.sortOrder !== right.sortOrder) return left.sortOrder - right.sortOrder
+    return left.key.localeCompare(right.key)
+  })
 }
 
 function buildTraceSummaryRows(item: ExecutionTraceItem): Array<{ label: string; value: string }> {
