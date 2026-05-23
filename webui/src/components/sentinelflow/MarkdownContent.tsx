@@ -176,7 +176,7 @@ export default function MarkdownContent({ content, inverted = false }: MarkdownC
   const html = renderMarkdownToHtml(content)
   return (
     <div
-      className={inverted ? 'prose prose-invert max-w-none' : 'prose max-w-none'}
+      className={inverted ? 'sentinelflow-markdown sentinelflow-markdown-invert max-w-none' : 'sentinelflow-markdown max-w-none'}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   )

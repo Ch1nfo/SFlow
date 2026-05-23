@@ -45,187 +45,163 @@
   }
 }
 
-@layer utilities {
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
-  }
-
-  .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
-}
-
-/* Markdown 渲染样式 */
 @layer components {
-  .prose {
+  .sentinelflow-markdown {
     line-height: 1.75;
-    /* 覆盖 @tailwindcss/typography 插件的 CSS 变量，避免插件样式污染自定义样式 */
-    --tw-prose-code: inherit;
-    --tw-prose-pre-code: #e5e7eb;
-    --tw-prose-pre-bg: #1f2937;
   }
-  
-  .prose h1, .prose h2, .prose h3, .prose h4 {
-    @apply font-bold mt-4 mb-2;
+
+  .sentinelflow-markdown h1,
+  .sentinelflow-markdown h2,
+  .sentinelflow-markdown h3,
+  .sentinelflow-markdown h4 {
+    @apply mb-2 mt-4 font-bold;
   }
-  
-  .prose h2 {
-    @apply text-lg border-b border-gray-200 pb-1;
+
+  .sentinelflow-markdown h2 {
+    @apply border-b border-slate-200 pb-1 text-lg;
   }
-  
-  .prose h3 {
+
+  .sentinelflow-markdown h3 {
     @apply text-base;
   }
-  
-  .prose p {
+
+  .sentinelflow-markdown p {
     @apply my-2;
   }
-  
-  .prose ul, .prose ol {
-    @apply pl-6 my-2;
+
+  .sentinelflow-markdown ul,
+  .sentinelflow-markdown ol {
+    @apply my-2 pl-6;
   }
-  
-  .prose ul {
+
+  .sentinelflow-markdown ul {
     list-style-type: disc;
   }
-  
-  .prose ol {
+
+  .sentinelflow-markdown ol {
     list-style-type: decimal;
   }
-  
-  .prose li {
+
+  .sentinelflow-markdown li {
     @apply my-1;
   }
-  
-  .prose li > ul, .prose li > ol {
+
+  .sentinelflow-markdown li > ul,
+  .sentinelflow-markdown li > ol {
     @apply mt-1;
   }
-  
-  .prose strong {
+
+  .sentinelflow-markdown strong {
     @apply font-semibold;
   }
-  
-  .prose hr {
-    @apply my-4 border-gray-300;
+
+  .sentinelflow-markdown hr {
+    @apply my-4 border-slate-300;
   }
-  
-  .prose a {
-    @apply text-red-600 hover:underline;
+
+  .sentinelflow-markdown a {
+    @apply text-sky-700 hover:underline;
   }
-  
-  .prose code {
-    @apply bg-gray-100 px-1 py-0.5 rounded text-sm font-mono;
+
+  .sentinelflow-markdown code {
+    @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-sm;
   }
-  
-  .prose pre {
-    @apply bg-gray-800 text-gray-100 p-3 rounded overflow-x-auto my-2;
-    color: #e5e7eb;
+
+  .sentinelflow-markdown pre {
+    @apply my-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-slate-100;
   }
-  
-  .prose pre code {
-    /* 覆盖 typography 插件给 code 设置的深色文字，以及行内代码的浅色背景 */
+
+  .sentinelflow-markdown pre code {
     background: transparent !important;
     padding: 0 !important;
     color: inherit !important;
     font-size: inherit;
     border-radius: 0;
   }
-  
-  .prose blockquote {
-    @apply border-l-4 border-gray-300 pl-4 italic my-2;
+
+  .sentinelflow-markdown blockquote {
+    @apply my-2 border-l-4 border-slate-300 pl-4 italic;
   }
 
-  /* GFM 表格样式 */
-  .prose table {
-    @apply w-full border-collapse my-3 text-sm;
+  .sentinelflow-markdown table {
+    @apply my-3 w-full border-collapse text-sm;
   }
 
-  .prose thead {
-    @apply bg-gray-100;
+  .sentinelflow-markdown thead {
+    @apply bg-slate-100;
   }
 
-  .prose th {
-    @apply border border-gray-200 px-3 py-2 text-left font-semibold text-gray-700;
+  .sentinelflow-markdown th {
+    @apply border border-slate-200 px-3 py-2 text-left font-semibold text-slate-700;
   }
 
-  .prose td {
-    @apply border border-gray-200 px-3 py-2 text-gray-700;
+  .sentinelflow-markdown td {
+    @apply border border-slate-200 px-3 py-2 text-slate-700;
   }
 
-  .prose tr:nth-child(even) td {
-    @apply bg-gray-50;
+  .sentinelflow-markdown tr:nth-child(even) td {
+    @apply bg-slate-50;
   }
 
-  /* 用户消息里的表格反色 */
-  .prose-invert thead {
+  .sentinelflow-markdown-invert thead {
     @apply bg-white/10;
   }
 
-  .prose-invert th,
-  .prose-invert td {
-    @apply border-white/20 text-red-50;
+  .sentinelflow-markdown-invert th,
+  .sentinelflow-markdown-invert td {
+    @apply border-white/20 text-slate-50;
   }
 
-  .prose-invert tr:nth-child(even) td {
+  .sentinelflow-markdown-invert tr:nth-child(even) td {
     @apply bg-white/5;
   }
-  
-  /* 让 highlight.js 主题不覆盖我们的 pre 背景 */
-  .prose pre .hljs,
-  .prose .hljs {
-    background: transparent !important;
-    padding: 0 !important;
+
+  .sentinelflow-markdown-invert h2,
+  .sentinelflow-markdown-invert h3 {
+    @apply border-slate-300;
   }
 
-  /* 用户消息反色 */
-  .prose-invert h2, .prose-invert h3 {
-    @apply border-red-400;
+  .sentinelflow-markdown-invert a {
+    @apply text-sky-200;
   }
-  
-  .prose-invert a {
-    @apply text-red-200;
-  }
-  
-  .prose-invert code {
+
+  .sentinelflow-markdown-invert code {
     @apply bg-white/10;
   }
-  
-  .prose-invert hr {
-    @apply border-red-400;
+
+  .sentinelflow-markdown-invert hr {
+    @apply border-slate-300;
   }
 
-  /* <details> / <summary> 折叠样式 */
-  .prose details {
-    @apply border border-gray-200 rounded-lg my-2 overflow-hidden;
+  .sentinelflow-markdown details {
+    @apply my-2 overflow-hidden rounded-lg border border-slate-200;
   }
 
-  .prose details summary {
-    @apply px-3 py-2 cursor-pointer text-sm font-medium text-gray-700 bg-gray-50 hover:bg-gray-100 transition-colors select-none list-none;
+  .sentinelflow-markdown details summary {
+    @apply cursor-pointer select-none list-none bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100;
   }
 
-  .prose details summary::-webkit-details-marker {
+  .sentinelflow-markdown details summary::-webkit-details-marker {
     display: none;
   }
 
-  .prose details[open] summary {
-    @apply border-b border-gray-200;
+  .sentinelflow-markdown details[open] summary {
+    @apply border-b border-slate-200;
   }
 
-  .prose details > *:not(summary) {
+  .sentinelflow-markdown details > *:not(summary) {
     @apply px-3 py-2;
   }
 
-  /* 用户消息里的 details 反色 */
-  .prose-invert details {
+  .sentinelflow-markdown-invert details {
     @apply border-white/20;
   }
 
-  .prose-invert details summary {
-    @apply text-red-100 bg-white/10 hover:bg-white/20;
+  .sentinelflow-markdown-invert details summary {
+    @apply bg-white/10 text-slate-100 hover:bg-white/20;
   }
 
-  .prose-invert details[open] summary {
+  .sentinelflow-markdown-invert details[open] summary {
     @apply border-white/20;
   }
 }
@@ -754,7 +730,7 @@
     @apply mb-2 block text-sm font-semibold;
   }
 
-  .sentinelflow-chat-bubble .prose strong {
+  .sentinelflow-chat-bubble .sentinelflow-markdown strong {
     @apply inline font-semibold;
   }
 
@@ -768,8 +744,8 @@
     @apply min-w-0;
   }
 
-  .sentinelflow-chat-markdown .prose,
-  .sentinelflow-chat-markdown .prose * {
+  .sentinelflow-chat-markdown .sentinelflow-markdown,
+  .sentinelflow-chat-markdown .sentinelflow-markdown * {
     max-width: 100%;
     overflow-wrap: anywhere;
     word-break: break-word;
@@ -808,11 +784,11 @@
     @apply self-end rounded-[1.5rem] bg-slate-100 px-4 py-2 text-slate-900;
   }
 
-  .sentinelflow-chat-bubble-user .prose {
+  .sentinelflow-chat-bubble-user .sentinelflow-markdown {
     line-height: 1.45;
   }
 
-  .sentinelflow-chat-bubble-user .prose p {
+  .sentinelflow-chat-bubble-user .sentinelflow-markdown p {
     @apply my-0;
   }
 
@@ -864,11 +840,11 @@
     @apply rounded-xl border border-slate-100 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-700;
   }
 
-  .sentinelflow-detail-text .prose {
+  .sentinelflow-detail-text .sentinelflow-markdown {
     @apply max-w-none;
   }
 
-  .sentinelflow-detail-text .prose p {
+  .sentinelflow-detail-text .sentinelflow-markdown p {
     @apply my-0;
   }
 
