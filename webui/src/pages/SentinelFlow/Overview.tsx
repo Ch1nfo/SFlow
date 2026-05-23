@@ -127,9 +127,9 @@ export default function SentinelFlowOverviewPage() {
             <div className="sentinelflow-stack-item">
               <strong>任务生命周期</strong>
               <div className="sentinelflow-inline-status">
-                <span>running {runningCount}</span>
-                <span>awaiting_approval {awaitingApprovalCount}</span>
-                <span>failed {failedCount}</span>
+                <span>执行中 {runningCount}</span>
+                <span>待审批 {awaitingApprovalCount}</span>
+                <span>失败 {failedCount}</span>
               </div>
             </div>
           </div>

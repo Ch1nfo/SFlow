@@ -98,7 +98,6 @@ export default function SentinelFlowRagPage() {
         icon={<Database className="h-6 w-6" />}
       />
 
-      {/* Status Cards */}
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <Surface title="RAG 状态">
           <div className="flex items-center gap-2">
@@ -131,14 +130,12 @@ export default function SentinelFlowRagPage() {
         </Surface>
       </div>
 
-      {/* Config Form */}
       <div className="mt-6">
         <Surface title="RAG 连接配置">
           {loading && <p className="text-sm text-gray-500">加载中...</p>}
           {error && <p className="text-sm text-red-600">加载失败：{error}</p>}
           {draft && (
             <div className="space-y-5">
-              {/* Enable RAG Toggle */}
               <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                 <div>
                   <div className="text-sm font-semibold text-gray-900">启用 RAG</div>
@@ -159,7 +156,6 @@ export default function SentinelFlowRagPage() {
                 </button>
               </div>
 
-              {/* Knowledge ID */}
               <div>
                 <label className="block text-sm font-semibold text-gray-900">Knowledge ID</label>
                 <p className="text-xs text-gray-500 mt-0.5">RAG 向量知识库的唯一标识。</p>
@@ -172,7 +168,6 @@ export default function SentinelFlowRagPage() {
                 />
               </div>
 
-              {/* API Key */}
               <div>
                 <label className="block text-sm font-semibold text-gray-900">API Key</label>
                 <p className="text-xs text-gray-500 mt-0.5">RAG 接口鉴权密钥。</p>
@@ -185,7 +180,6 @@ export default function SentinelFlowRagPage() {
                 />
               </div>
 
-              {/* Top K */}
               <div>
                 <label className="block text-sm font-semibold text-gray-900">Top K</label>
                 <p className="text-xs text-gray-500 mt-0.5">返回最相似的前 K 条知识条目。</p>
@@ -199,7 +193,6 @@ export default function SentinelFlowRagPage() {
                 />
               </div>
 
-              {/* Similarity Threshold */}
               <div>
                 <label className="block text-sm font-semibold text-gray-900">Similarity Threshold</label>
                 <p className="text-xs text-gray-500 mt-0.5">相似度阈值（0-1），低于此分值的条目会被过滤。</p>
@@ -214,7 +207,6 @@ export default function SentinelFlowRagPage() {
                 />
               </div>
 
-              {/* Retrieve Strategy */}
               <div>
                 <label className="block text-sm font-semibold text-gray-900">Retrieve Strategy</label>
                 <p className="text-xs text-gray-500 mt-0.5">检索策略编号，决定向量检索的匹配方式。</p>
@@ -235,7 +227,6 @@ export default function SentinelFlowRagPage() {
                 </select>
               </div>
 
-              {/* Enable Rerank Model Toggle */}
               <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
                 <div>
                   <div className="text-sm font-semibold text-gray-900">Enable Rerank Model</div>
@@ -265,7 +256,6 @@ export default function SentinelFlowRagPage() {
                 </button>
               </div>
 
-              {/* Rerank Model */}
               {draft.enableRerankModel && (
                 <div>
                   <label className="block text-sm font-semibold text-gray-900">Rerank Model</label>
@@ -280,7 +270,6 @@ export default function SentinelFlowRagPage() {
                 </div>
               )}
 
-              {/* Save */}
               <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"

@@ -19,9 +19,7 @@ import {
   type RuntimeSettingsResponse,
 } from '@/api/sentinelflow'
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
-import KeyValueList from '@/components/sentinelflow/KeyValueList'
-import StatusBadge from '@/components/sentinelflow/StatusBadge'
-import Surface from '@/components/sentinelflow/Surface'
+import Surface, { SurfacePreviewGrid } from '@/components/sentinelflow/Surface'
 import PageHeader from '@/components/common/PageHeader'
 import { brand, withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
@@ -510,6 +508,34 @@ export default function SentinelFlowSettingsPage() {
   const selectedSourceIndex = Math.max(0, draft.alertSources.findIndex((source) => source.id === draft.selectedSourceId))
   const canEditSourceAnalysisPrompt = selectedSourceIndex > 0
 
+  const configCenterPreviewItems = useMemo(() => {
+    if (loading) {
+      return [{ label: '配置状态', value: '加载中...' }]
+    }
+    const parserConfigured =
+      isScriptMode || Object.keys(draft.alertParserRule ?? {}).length > 0 || Boolean(settings?.alert_source.parser_configured)
+    const llmApiBase = draft.llmApiBaseUrl.trim()
+    let llmApiSummary = llmApiBase || '未配置'
+    if (llmApiBase) {
+      try {
+        const parsed = new URL(llmApiBase)
+        llmApiSummary = `${parsed.host}${parsed.pathname.replace(/\/$/, '')}`
+      } catch {
+        llmApiSummary = llmApiBase.length > 32 ? `${llmApiBase.slice(0, 32)}...` : llmApiBase
+      }
+    }
+    return [
+      { label: 'LLM 模型', value: draft.llmModel.trim() || '未配置' },
+      { label: 'LLM 地址', value: llmApiSummary },
+      { label: 'LLM 温度', value: draft.llmTemperature.trim() || '0' },
+      { label: 'LLM Key', value: settings?.llm.api_key_configured ? '已配置' : '未配置' },
+      { label: '思考模型适配', value: draft.llmThinkingAdapterEnabled ? '已开启' : '未开启' },
+      { label: '告警源', value: `${draft.alertSources.length} 个` },
+      { label: '解析规则', value: isScriptMode ? '脚本模式' : parserConfigured ? '已配置' : '未配置' },
+      { label: '每周刷新告警', value: draft.weeklyAlertCleanupEnabled ? '已开启' : '未开启' },
+    ]
+  }, [loading, draft, settings, isScriptMode])
+
   function handleImportRuleFromFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) return
@@ -949,62 +975,86 @@ export default function SentinelFlowSettingsPage() {
     <div className="sentinelflow-page-stack">
       <PageHeader
         title="平台设置"
-        description={withProductName('配置平台参数、告警接入和解析规则。')}
+        description="告警接入、解析规则与运行参数"
         icon={<SettingsIcon className="w-8 h-8" />}
       />
 
-      <div className="grid gap-4 md:grid-cols-4">
+      {loading ? <p className="sentinelflow-muted-text">正在读取运行配置...</p> : null}
+      {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <div className="mb-2 text-sm font-semibold text-gray-900">运行模式</div>
+          <div className="mb-2 text-sm font-semibold text-gray-500">运行模式</div>
           <div className="text-2xl font-bold text-gray-900">{settings?.runtime.agent_enabled ? 'Agent' : 'Basic'}</div>
         </div>
         <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <div className="mb-2 text-sm font-semibold text-gray-900">轮询周期</div>
-          <div className="text-2xl font-bold text-gray-900">{settings?.runtime.poll_interval_seconds ?? '--'}</div>
-        </div>
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <div className="mb-2 text-sm font-semibold text-gray-900">API 健康</div>
-          <div className="text-2xl font-bold text-gray-900">{health?.status ?? 'unknown'}</div>
-        </div>
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <div className="mb-2 text-sm font-semibold text-gray-900">{settings?.alert_source.type === 'script' ? '接入方式' : '解析规则'}</div>
+          <div className="mb-2 text-sm font-semibold text-gray-500">轮询周期</div>
           <div className="text-2xl font-bold text-gray-900">
-            {settings?.alert_source.type === 'script' ? '脚本' : settings?.alert_source.parser_configured ? '已配置' : '未配置'}
+            {settings ? `${settings.runtime.poll_interval_seconds}s` : '--'}
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-2 text-sm font-semibold text-gray-500">失败重试</div>
+          <div className="text-2xl font-bold text-gray-900">
+            {settings && Number(settings.runtime.failed_retry_interval_seconds) > 0
+              ? `${settings.runtime.failed_retry_interval_seconds}s`
+              : settings
+                ? '关闭'
+                : '--'}
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-2 text-sm font-semibold text-gray-500">告警接入</div>
+          <div className="text-2xl font-bold text-gray-900">
+            {!settings
+              ? '--'
+              : settings.alert_source.enabled
+                ? settings.alert_source.type === 'script'
+                  ? '脚本'
+                  : '接口'
+                : '未启用'}
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-2 text-sm font-semibold text-gray-500">API</div>
+          <div className="text-2xl font-bold text-gray-900">{health?.status === 'ok' ? '正常' : health?.status ?? '--'}</div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-2 text-sm font-semibold text-gray-500">自然语言调度</div>
+          <div className="text-2xl font-bold text-gray-900">
+            {settings ? (settings.features.natural_language_dispatch ? '已开启' : '未开启') : '--'}
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-2 text-sm font-semibold text-gray-500">自动轮询</div>
+          <div className="text-2xl font-bold text-gray-900">
+            {settings ? (settings.features.alert_polling ? '已开启' : '未开启') : '--'}
+          </div>
+        </div>
+        <div className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-2 text-sm font-semibold text-gray-500">Agent</div>
+          <div className="text-2xl font-bold text-gray-900">
+            {settings ? (settings.llm.agent_available ? '可用' : '不可用') : '--'}
           </div>
         </div>
       </div>
 
-      <Surface title="平台设置" subtitle={withProductName('统一管理平台运行参数、告警接入和解析规则。')}>
-        {loading ? <p className="sentinelflow-muted-text">{withProductName('正在读取 SentinelFlow 运行配置...')}</p> : null}
-        {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
-        {settings ? (
-          <div className="sentinelflow-grid-2">
-            <div className="sentinelflow-detail-panel">
-              <h3>品牌与运行时</h3>
-              <KeyValueList
-                items={[
-                  { label: '产品名称', value: settings.branding.product_name || brand.productName },
-                  { label: '控制台标题', value: settings.branding.console_title || brand.consoleTitle },
-                  { label: '轮询周期', value: `${settings.runtime.poll_interval_seconds} 秒` },
-                  { label: '失败重试', value: Number(settings.runtime.failed_retry_interval_seconds) > 0 ? `${settings.runtime.failed_retry_interval_seconds} 秒后自动重试` : '未启用' },
-                  { label: '告警接入', value: settings.alert_source.enabled ? `已启用 · ${settings.alert_source.type === 'script' ? '脚本' : '接口'}` : '未启用' },
-                ]}
-              />
-            </div>
-            <div className="sentinelflow-detail-panel">
-              <h3>平台能力状态</h3>
-              <div className="sentinelflow-stack-list">
-                <div className="sentinelflow-stack-item"><strong>API 健康状态</strong><div className="sentinelflow-inline-status"><StatusBadge tone={health?.status === 'ok' ? 'success' : 'danger'}>{health?.status ?? 'unknown'}</StatusBadge></div></div>
-                <div className="sentinelflow-stack-item"><strong>自然语言调度</strong><div className="sentinelflow-inline-status"><StatusBadge tone={settings.features.natural_language_dispatch ? 'success' : 'neutral'}>{settings.features.natural_language_dispatch ? 'enabled' : 'disabled'}</StatusBadge></div></div>
-                <div className="sentinelflow-stack-item"><strong>自动轮询告警</strong><div className="sentinelflow-inline-status"><StatusBadge tone={settings.features.alert_polling ? 'success' : 'neutral'}>{settings.features.alert_polling ? 'enabled' : 'disabled'}</StatusBadge></div></div>
-                <div className="sentinelflow-stack-item"><strong>Agent Runtime</strong><div className="sentinelflow-inline-status"><StatusBadge tone={settings.llm.agent_available ? 'success' : 'warn'}>{settings.llm.agent_available ? 'available' : 'missing deps'}</StatusBadge></div></div>
+      <Surface
+        title="配置中心"
+        subtitle="平台级通用参数、告警源接入与解析规则。"
+        collapsible
+        defaultOpen={false}
+        collapsedPreview={
+          <>
+            {serverDraftChanged ? (
+              <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+                当前页面存在未保存草稿
               </div>
-            </div>
-          </div>
-        ) : null}
-      </Surface>
-
-      <Surface title="配置中心" subtitle="这里统一配置平台级通用参数，以及单个告警源的接入、轮询和解析规则。">
+            ) : null}
+            <SurfacePreviewGrid items={configCenterPreviewItems} />
+          </>
+        }
+      >
         {saveMessage ? <div className={`mb-4 sentinelflow-message-block ${saveMessageTone === 'success' ? 'sentinelflow-message-success' : 'sentinelflow-message-error'}`}>{saveMessage}</div> : null}
         {serverDraftChanged ? (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
