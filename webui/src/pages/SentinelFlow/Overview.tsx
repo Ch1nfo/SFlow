@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronRight, LayoutDashboard, ListTodo, MessageSquareText, Siren } from 'lucide-react'
-import { fetchDashboardSummary, fetchHealth, fetchSkills } from '@/api/sentinelflow'
+import { fetchDashboardSummary, fetchHealth } from '@/api/sentinelflow'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import PageHeader from '@/components/common/PageHeader'
 import { brand, withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
+import { useSentinelFlowResourceStore } from '@/hooks/useSentinelFlowResourceStore'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
@@ -15,7 +16,7 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 export default function SentinelFlowOverviewPage() {
   const { data: health, reload: reloadHealth } = useSentinelFlowAsyncData(fetchHealth, [])
   const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all')
-  const { data: skills, reload: reloadSkills } = useSentinelFlowAsyncData(fetchSkills, [])
+  const { data: skills, reload: reloadSkills } = useSentinelFlowResourceStore('skills')
   const { data: summary, reload: reloadSummary } = useSentinelFlowAsyncData(fetchDashboardSummary, [])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => readRuntimeActivity())
 

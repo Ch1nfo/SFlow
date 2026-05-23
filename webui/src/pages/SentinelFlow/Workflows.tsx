@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, GitBranch, Plus, Radar, RefreshCw, Save, ShieldCheck, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react'
-import { createWorkflow, deleteWorkflow, fetchAgents, fetchRuntimeSettings, fetchWorkflowDetail, fetchWorkflows, saveWorkflow, type AgentSummary, type WorkflowDetail } from '@/api/sentinelflow'
+import { createWorkflow, deleteWorkflow, fetchRuntimeSettings, fetchWorkflowDetail, fetchWorkflows, saveWorkflow, type AgentSummary, type WorkflowDetail } from '@/api/sentinelflow'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import PageHeader from '@/components/common/PageHeader'
 import { brand, withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
+import { useSentinelFlowResourceStore } from '@/hooks/useSentinelFlowResourceStore'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 
@@ -78,7 +79,7 @@ export default function SentinelFlowWorkflowsPage() {
   const { data: settings, reload: reloadSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all')
   const { data: workflowsData, reload: reloadWorkflows } = useSentinelFlowAsyncData(fetchWorkflows, [])
-  const { data: agentsData, reload: reloadAgents } = useSentinelFlowAsyncData(fetchAgents, [])
+  const { data: agentsData, reload: reloadAgents } = useSentinelFlowResourceStore('agents')
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [detail, setDetail] = useState<WorkflowDetail | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)

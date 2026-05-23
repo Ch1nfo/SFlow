@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, ChevronDown, ChevronRight, Plus, RefreshCw, Search, Sparkles } from 'lucide-react'
 import { createSkill, debugSkill, deleteSkill, fetchSkillDetail, fetchSkills, saveSkill, type SkillDebugResponse, type SkillDetail, type SkillSummary } from '@/api/sentinelflow'
 import KeyValueList from '@/components/sentinelflow/KeyValueList'
@@ -7,7 +7,7 @@ import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import Surface from '@/components/sentinelflow/Surface'
 import PageHeader from '@/components/common/PageHeader'
 import { brand, withProductName } from '@/config/brand'
-import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
+import { useSentinelFlowResourceStore } from '@/hooks/useSentinelFlowResourceStore'
 
 function getSkillTypeLabel(type: string) {
   if (type === 'doc') return '纯文本（Markdown）'
@@ -98,10 +98,12 @@ function completionPolicyOutcomeText(policy: SkillSummary['completion_policy'] |
 }
 
 export default function SentinelFlowSkillsPage() {
-  const { data, loading, error, reload } = useSentinelFlowAsyncData(fetchSkills, [])
+  const { data, loading: skillsLoading, error, reload } = useSentinelFlowResourceStore('skills')
+  const listLoading = skillsLoading && !data
   const [selectedSkill, setSelectedSkill] = useState<SkillSummary | null>(null)
   const [detail, setDetail] = useState<SkillDetail | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
+  const detailRequestSeq = useRef(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -144,13 +146,34 @@ export default function SentinelFlowSkillsPage() {
       setDetail(null)
       return
     }
+    const requestSeq = detailRequestSeq.current + 1
+    detailRequestSeq.current = requestSeq
     setMarkdownScrollUnlocked(false)
     setCodeScrollUnlocked(false)
     setDetailError(null)
-    fetchSkillDetail(selectedSkill.name).then(setDetail).catch((err) => {
-      setDetailError(err instanceof Error ? err.message : 'Unknown error')
-      })
-  }, [selectedSkill])
+    setDetail(null)
+    const timer = window.setTimeout(() => {
+      void fetchSkillDetail(selectedSkill.name)
+        .then((next) => {
+          if (detailRequestSeq.current !== requestSeq) return
+          setDetail(next)
+        })
+        .catch((err) => {
+          if (detailRequestSeq.current !== requestSeq) return
+          setDetailError(err instanceof Error ? err.message : 'Unknown error')
+        })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [selectedSkill?.name])
+
+  const skillStats = useMemo(() => {
+    const skills = data?.skills ?? []
+    return {
+      total: skills.length,
+      executable: skills.filter((skill) => skill.executable).length,
+      doc: skills.filter((skill) => skill.type === 'doc').length,
+    }
+  }, [data?.skills])
 
   const filteredSkills = useMemo(() => {
     const skills = data?.skills ?? []
@@ -175,7 +198,7 @@ export default function SentinelFlowSkillsPage() {
     if (refreshing) return
     setRefreshing(true)
     try {
-      await reload()
+      await reload({ force: true })
     } finally {
       setRefreshing(false)
     }
@@ -583,26 +606,29 @@ export default function SentinelFlowSkillsPage() {
               <Sparkles className="h-4 w-4 text-sky-500" />
               Skill 总数
             </div>
-            <div className="text-3xl font-bold text-gray-900">{data?.skills?.length ?? 0}</div>
+            <div className="text-3xl font-bold text-gray-900">{skillStats.total}</div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="mb-2 text-sm font-semibold text-gray-900">文本 + 可执行</div>
-            <div className="text-3xl font-bold text-gray-900">{(data?.skills ?? []).filter((skill) => skill.executable).length}</div>
+            <div className="text-3xl font-bold text-gray-900">{skillStats.executable}</div>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="mb-2 text-sm font-semibold text-gray-900">纯文本（Markdown）</div>
-            <div className="text-3xl font-bold text-gray-900">{(data?.skills ?? []).filter((skill) => skill.type === 'doc').length}</div>
+            <div className="text-3xl font-bold text-gray-900">{skillStats.doc}</div>
           </div>
         </div>
 
         <div className="sentinelflow-independent-scroll-grid">
           <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
             <h3>可用 Skills</h3>
+            {skillsLoading && data ? (
+              <div className="mb-3 text-xs text-slate-500">正在后台刷新...</div>
+            ) : null}
             <div className="min-w-0 space-y-4">
-              {loading ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">正在加载 Skills...</div> : null}
-              {error ? <div className="sentinelflow-message-block sentinelflow-message-error">加载失败：{error}</div> : null}
-              {!loading && !error && filteredSkills.length === 0 ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">没有匹配的 Skill。</div> : null}
-              {!loading && !error ? groupedSkills.map((group) => (
+              {listLoading ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">正在加载 Skills...</div> : null}
+              {error && !data ? <div className="sentinelflow-message-block sentinelflow-message-error">加载失败：{error}</div> : null}
+              {!listLoading && (!error || data) && filteredSkills.length === 0 ? <div className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-500">没有匹配的 Skill。</div> : null}
+              {!listLoading && (!error || data) ? groupedSkills.map((group) => (
                 <section key={group.value} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
                   <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-2">
                     <div>

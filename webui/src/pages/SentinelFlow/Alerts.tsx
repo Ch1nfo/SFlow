@@ -6,7 +6,6 @@ import {
   handleAlertAction,
   type AlertActionResponse,
   type AlertTask,
-  type PollAlertsResponse,
 } from '@/api/sentinelflow'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import Surface from '@/components/sentinelflow/Surface'
@@ -19,9 +18,25 @@ import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
-const ALERT_QUEUE_INITIAL_RENDER_COUNT = 120
-const ALERT_QUEUE_RENDER_INCREMENT = 120
+const ALERT_QUEUE_INITIAL_RENDER_COUNT = 60
+const ALERT_QUEUE_RENDER_INCREMENT = 60
 type AlertTimeRange = 'today' | 'week'
+
+const EMPTY_ALERTS_SUMMARY = {
+  judgment: {
+    business_trigger: 0,
+    false_positive: 0,
+    true_attack: 0,
+    unknown: 0,
+  },
+  operations: {
+    closed_success: 0,
+    disposed_success: 0,
+    manual_completed: 0,
+    banned_ip_count: 0,
+    banned_ips: [] as string[],
+  },
+}
 
 function readStoredSelectedSourceId(): string | null {
   try {
@@ -274,9 +289,6 @@ function getTaskFlowLabel(task: AlertTask): string {
 }
 
 export default function SentinelFlowAlertsPage() {
-  const [data, setData] = useState<PollAlertsResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(() => readStoredSelectedSourceId())
   const [timeRange, setTimeRange] = useState<AlertTimeRange>('today')
@@ -287,68 +299,84 @@ export default function SentinelFlowAlertsPage() {
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [visibleTaskCount, setVisibleTaskCount] = useState(ALERT_QUEUE_INITIAL_RENDER_COUNT)
+  const [weekSummaryEnabled, setWeekSummaryEnabled] = useState(false)
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
-  const loadRequestSeq = useRef(0)
+  const weekSummaryRef = useRef<HTMLDivElement | null>(null)
   const detailRequestSeq = useRef(0)
   const [queuePanelHeight, setQueuePanelHeight] = useState<number | null>(null)
   const [queueListMaxHeight, setQueueListMaxHeight] = useState<number | null>(null)
+  const {
+    data,
+    loading: pollLoading,
+    error,
+    reload: reloadPollStore,
+  } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: true })
+  const {
+    data: allSourcesPoll,
+    loading: allSourcesPollLoading,
+    reload: reloadAllSourcesPoll,
+  } = useSentinelFlowPollStore('all', { autoLoad: false })
+  const queueLoading = pollLoading && !data
   const autoExecuteEnabled = Boolean(data?.auto_execute_enabled)
   const autoExecuteRunning = Boolean(data?.auto_execute_running)
   const liveRefreshing = autoExecuteEnabled || actionState.running || (data?.tasks ?? []).some((task) => task.status === 'running')
-  const { reload: reloadPollStore } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: false })
-  const { data: allSourcesPoll, reload: reloadAllSourcesPoll } = useSentinelFlowPollStore('all')
 
-  const loadTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
-    const silent = options?.silent ?? false
-    const requestSeq = loadRequestSeq.current + 1
-    loadRequestSeq.current = requestSeq
-    if (!silent) {
-      setLoading(true)
-      setError(null)
-    }
-    try {
-      const result = await reloadPollStore({ force: options?.force, silent })
-      if (loadRequestSeq.current !== requestSeq) return
-      if (!result) {
-        if (!silent) setLoading(false)
-        return
-      }
-      setData(result)
-      setError(null)
-      void reloadAllSourcesPoll({ silent: true })
-      const knownSourceIds = (result.alert_sources ?? []).map((source) => source.id)
-      const selectedSourceExists = selectedSourceId && (knownSourceIds.length === 0 || knownSourceIds.includes(selectedSourceId))
-      const nextSelectedSourceId = selectedSourceExists ? selectedSourceId : result.source_id
-      if (nextSelectedSourceId && nextSelectedSourceId !== selectedSourceId) {
-        setSelectedSourceId(nextSelectedSourceId)
-        storeSelectedSourceId(nextSelectedSourceId)
-      }
-      if (!silent) {
-        setLoading(false)
-      }
-    } catch (loadError) {
-      if (loadRequestSeq.current !== requestSeq) return
-      setError(loadError instanceof Error ? loadError.message : 'Unknown error')
-      if (!silent) {
-        setLoading(false)
-      }
-    }
-  }, [reloadAllSourcesPoll, reloadPollStore, selectedSourceId])
+  const refreshTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
+    await reloadPollStore(options)
+  }, [reloadPollStore])
 
   useEffect(() => {
-    void loadTasks()
-  }, [loadTasks])
+    if (!data) return
+    const knownSourceIds = (data.alert_sources ?? []).map((source) => source.id)
+    const selectedSourceExists = selectedSourceId && (knownSourceIds.length === 0 || knownSourceIds.includes(selectedSourceId))
+    const nextSelectedSourceId = selectedSourceExists ? selectedSourceId : data.source_id
+    if (nextSelectedSourceId && nextSelectedSourceId !== selectedSourceId) {
+      setSelectedSourceId(nextSelectedSourceId)
+      storeSelectedSourceId(nextSelectedSourceId)
+    }
+  }, [data, selectedSourceId])
+
+  useEffect(() => {
+    const node = weekSummaryRef.current
+    if (!node || typeof IntersectionObserver === 'undefined') {
+      setWeekSummaryEnabled(true)
+      return
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setWeekSummaryEnabled(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '240px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (!weekSummaryEnabled) return
+    void reloadAllSourcesPoll({ silent: true })
+  }, [weekSummaryEnabled, reloadAllSourcesPoll])
 
   useSentinelFlowLiveRefresh(
-    () => loadTasks({ silent: true }),
+    () => refreshTasks({ silent: true }),
     { intervalMs: liveRefreshing ? 2000 : 5000 },
   )
 
-  const allTasks = [...(data?.tasks ?? [])].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
-  const now = new Date()
-  const tasks = allTasks.filter((task) => matchesAlertTimeRange(task, timeRange, now))
-  const visibleTasks = tasks.slice(0, visibleTaskCount)
+  const allTasks = useMemo(() => {
+    const sourceTasks = data?.tasks ?? []
+    return [...sourceTasks].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
+  }, [data?.tasks])
+
+  const tasks = useMemo(() => {
+    const now = new Date()
+    return allTasks.filter((task) => matchesAlertTimeRange(task, timeRange, now))
+  }, [allTasks, timeRange])
+
+  const visibleTasks = useMemo(() => tasks.slice(0, visibleTaskCount), [tasks, visibleTaskCount])
   const alertSources = data?.alert_sources ?? []
   const selectedSource = alertSources.find((source) => source.id === (selectedSourceId ?? data?.source_id)) ?? alertSources[0] ?? null
 
@@ -374,9 +402,13 @@ export default function SentinelFlowAlertsPage() {
   const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
   const summary = useMemo(() => buildAlertsSummary(tasks), [tasks])
   const weekSummary = useMemo(() => {
-    const allSourceTasks = (allSourcesPoll?.tasks ?? []).filter((task) => matchesAlertTimeRange(task, 'week', now))
+    if (!weekSummaryEnabled || !allSourcesPoll?.tasks?.length) {
+      return EMPTY_ALERTS_SUMMARY
+    }
+    const now = new Date()
+    const allSourceTasks = allSourcesPoll.tasks.filter((task) => matchesAlertTimeRange(task, 'week', now))
     return buildAlertsSummary(allSourceTasks)
-  }, [allSourcesPoll?.tasks, now])
+  }, [allSourcesPoll?.tasks, weekSummaryEnabled])
 
   useEffect(() => {
     const taskId = selectedTaskSummary?.task_id ?? ''
@@ -385,17 +417,20 @@ export default function SentinelFlowAlertsPage() {
     setSelectedTaskDetail(null)
     setDetailError(null)
     if (!taskId) return
-    void fetchAlertTaskDetail(taskId)
-      .then((response) => {
-        if (detailRequestSeq.current !== requestSeq) return
-        setSelectedTaskDetail(response.task)
-        setDetailError(null)
-      })
-      .catch((detailLoadError) => {
-        if (detailRequestSeq.current !== requestSeq) return
-        setSelectedTaskDetail(null)
-        setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
-      })
+    const timer = window.setTimeout(() => {
+      void fetchAlertTaskDetail(taskId)
+        .then((response) => {
+          if (detailRequestSeq.current !== requestSeq) return
+          setSelectedTaskDetail(response.task)
+          setDetailError(null)
+        })
+        .catch((detailLoadError) => {
+          if (detailRequestSeq.current !== requestSeq) return
+          setSelectedTaskDetail(null)
+          setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
+        })
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [selectedTaskSummary?.task_id])
   const selectedPayload = getSelectedAlertPayload(selectedTask)
   const selectedPayloadText = String(selectedPayload.payload ?? '').trim()
@@ -485,7 +520,7 @@ export default function SentinelFlowAlertsPage() {
   async function runAction(action: string) {
     setActionState({ action, running: true })
     setActionNotice(null)
-    void loadTasks({ silent: true })
+    void refreshTasks({ silent: true })
     try {
       const result = action === 'refresh_poll' || action === 'auto_run_pending' || action === 'auto_execute_start' || action === 'auto_execute_stop'
         ? await handleAlertAction(action, undefined, undefined, selectedSourceId ?? data?.source_id)
@@ -510,7 +545,7 @@ export default function SentinelFlowAlertsPage() {
         status: isApprovalPending ? 'pending_approval' : result.success ? 'success' : 'failed',
         timestamp: new Date().toISOString(),
       })
-      await loadTasks({ force: true })
+      await refreshTasks({ force: true })
     } catch (runError) {
       setActionNotice({ tone: 'error', text: runError instanceof Error ? runError.message : 'Unknown error' })
       publishRuntimeActivity({
@@ -536,7 +571,7 @@ export default function SentinelFlowAlertsPage() {
       if (!result.success) {
         setActionNotice({ tone: 'error', text: result.error ?? '审批处理失败。' })
       }
-      await loadTasks({ force: true })
+      await refreshTasks({ force: true })
     } catch (approvalError) {
       setActionNotice({ tone: 'error', text: approvalError instanceof Error ? approvalError.message : '审批处理失败。' })
     } finally {
@@ -657,6 +692,9 @@ export default function SentinelFlowAlertsPage() {
             style={queuePanelHeight ? { height: `${queuePanelHeight}px` } : undefined}
           >
             <h3>告警队列</h3>
+            {pollLoading && data ? (
+              <div className="mb-2 text-xs text-slate-500">正在后台刷新...</div>
+            ) : null}
             <div
               className="sentinelflow-alert-queue-scroll flex-1 min-h-0"
               style={queueListMaxHeight ? { maxHeight: `${queueListMaxHeight}px` } : undefined}
@@ -666,10 +704,10 @@ export default function SentinelFlowAlertsPage() {
                   <tr><th>告警</th><th>告警时间</th><th>状态</th><th>执行方式</th></tr>
                 </thead>
                 <tbody>
-                  {loading ? <tr><td colSpan={4}>正在加载...</td></tr> : null}
-                  {error ? <tr><td colSpan={4}>加载失败：{error}</td></tr> : null}
-                  {!loading && !error && tasks.length === 0 ? <tr><td colSpan={4}>{timeRange === 'today' ? '今日暂无告警任务。' : '本周暂无告警任务。'}</td></tr> : null}
-                  {!loading && !error ? visibleTasks.map((task) => (
+                  {queueLoading ? <tr><td colSpan={4}>正在加载...</td></tr> : null}
+                  {error && !data ? <tr><td colSpan={4}>加载失败：{error}</td></tr> : null}
+                  {!queueLoading && !error && tasks.length === 0 ? <tr><td colSpan={4}>{timeRange === 'today' ? '今日暂无告警任务。' : '本周暂无告警任务。'}</td></tr> : null}
+                  {!queueLoading && (!error || data) ? visibleTasks.map((task) => (
                     <tr
                       key={task.task_id}
                       className={[
@@ -684,7 +722,7 @@ export default function SentinelFlowAlertsPage() {
                       <td>{getTaskFlowLabel(task)}</td>
                     </tr>
                   )) : null}
-                  {!loading && !error && visibleTasks.length < tasks.length ? (
+                  {!queueLoading && (!error || data) && visibleTasks.length < tasks.length ? (
                     <tr>
                       <td colSpan={4}>
                         <button
@@ -863,10 +901,14 @@ export default function SentinelFlowAlertsPage() {
         </div>
       </Surface>
 
+      <div ref={weekSummaryRef}>
       <Surface
         title="研判与封禁摘要"
         subtitle="统计本周全部告警源的数据，不受上方「当前告警源」与「今日/本周」筛选影响。"
       >
+        {weekSummaryEnabled && allSourcesPollLoading && !allSourcesPoll?.tasks?.length ? (
+          <p className="mb-4 text-sm text-slate-500">正在加载本周统计...</p>
+        ) : null}
         <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="mb-3 text-sm font-semibold text-gray-900">研判结果概览（本周 · 全部告警源）</div>
@@ -913,6 +955,7 @@ export default function SentinelFlowAlertsPage() {
           </div>
         </div>
       </Surface>
+      </div>
     </div>
   )
 }

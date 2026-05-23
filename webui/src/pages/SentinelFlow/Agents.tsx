@@ -1,11 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight, Plus, RefreshCw } from 'lucide-react'
 import {
   createAgent,
   deleteAgent,
   fetchAgentDetail,
-  fetchAgents,
-  fetchSkills,
   saveAgent,
   type AgentDetail,
   type AgentSummary,
@@ -15,7 +13,7 @@ import PageHeader from '@/components/common/PageHeader'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import { brand, withProductName } from '@/config/brand'
-import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
+import { useSentinelFlowResourceStore } from '@/hooks/useSentinelFlowResourceStore'
 
 type AgentDraft = {
   name: string
@@ -375,8 +373,9 @@ function AgentForm({
 }
 
 export default function SentinelFlowAgentsPage() {
-  const { data, loading, error, reload } = useSentinelFlowAsyncData(fetchAgents, [])
-  const { data: skillData } = useSentinelFlowAsyncData(fetchSkills, [])
+  const { data, loading: agentsLoading, error, reload } = useSentinelFlowResourceStore('agents')
+  const { data: skillData } = useSentinelFlowResourceStore('skills')
+  const listLoading = agentsLoading && !data
   const [creating, setCreating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -389,6 +388,7 @@ export default function SentinelFlowAgentsPage() {
   const [promptExpanded, setPromptExpanded] = useState(false)
   const [advancedPromptExpanded, setAdvancedPromptExpanded] = useState(false)
   const [formError, setFormError] = useState('')
+  const detailRequestSeq = useRef(0)
 
   useEffect(() => {
     setSelected((current) => current ?? data?.agents?.[0] ?? null)
@@ -400,14 +400,26 @@ export default function SentinelFlowAgentsPage() {
       setEditing(false)
       return
     }
-    void fetchAgentDetail(selected.name).then((agent) => {
-      setDetail(agent)
-      setEditDraft(detailToDraft(agent))
-      setEditing(false)
-      setPromptExpanded(false)
-      setAdvancedPromptExpanded(false)
-    })
-  }, [selected])
+    const requestSeq = detailRequestSeq.current + 1
+    detailRequestSeq.current = requestSeq
+    setDetail(null)
+    setEditing(false)
+    const timer = window.setTimeout(() => {
+      void fetchAgentDetail(selected.name)
+        .then((agent) => {
+          if (detailRequestSeq.current !== requestSeq) return
+          setDetail(agent)
+          setEditDraft(detailToDraft(agent))
+          setPromptExpanded(false)
+          setAdvancedPromptExpanded(false)
+        })
+        .catch(() => {
+          if (detailRequestSeq.current !== requestSeq) return
+          setDetail(null)
+        })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [selected?.name])
 
   const agents = data?.agents ?? []
   const skills = skillData?.skills ?? []
@@ -512,7 +524,7 @@ export default function SentinelFlowAgentsPage() {
         description={withProductName('管理主 Agent、子 Agent 和技能权限。')}
         icon={<Bot className="w-8 h-8" />}
         action={
-          <button type="button" onClick={() => void reload()} className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50">
+          <button type="button" onClick={() => void reload({ force: true })} className="flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50">
             <RefreshCw className="w-4 h-4" />
             刷新
           </button>
@@ -571,9 +583,10 @@ export default function SentinelFlowAgentsPage() {
       {formError ? <div className="sentinelflow-message-block sentinelflow-message-error">{formError}</div> : null}
 
       <Surface title="Agent 列表" subtitle="当前展示已创建的项目级 Agent 定义。">
-        {loading ? <p className="sentinelflow-muted-text">正在读取 Agent 列表...</p> : null}
-        {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
-        {!loading && !error ? (
+        {agentsLoading && data ? <p className="sentinelflow-muted-text">正在后台刷新...</p> : null}
+        {listLoading ? <p className="sentinelflow-muted-text">正在读取 Agent 列表...</p> : null}
+        {error && !data ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
+        {!listLoading && (!error || data) ? (
           <div className="sentinelflow-independent-scroll-grid">
             <div className="sentinelflow-detail-panel sentinelflow-independent-scroll-panel">
               <div className="sentinelflow-task-list">
