@@ -4,7 +4,7 @@
 
 ### AI-Native SecOps 控制平面 — 多 Agent SOC 自动化平台
 
-[![版本](https://img.shields.io/badge/版本-1.1.0-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
+[![版本](https://img.shields.io/badge/版本-1.2.1-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#)
@@ -551,6 +551,11 @@ WebUI 和告警接入流水线不依赖 LLM Key 即可正常运行。但 AI Agen
 
 ## 发布说明
 
+- **v1.2.1** — WebUI 性能与布局优化、运行时审批/日志修复，以及完全独立的前端工程与样式体系。
+  - **WebUI** — 告警、Skills、Agents 列表引入 stale-while-revalidate 缓存；告警工作台 / Skills / Agents 首屏加载更快；平台设置支持折叠区块与收起摘要；`Surface` 面板可折叠；对话消息支持折叠；态势总览任务生命周期中文化；任务中心执行详情展示增强；Markdown 样式与前端脚手架改为 SentinelFlow 自研实现。
+  - **Runtime** — 修复二次审批复用旧 approval ID 的问题；工具调用摘要按真实执行时间线排序；提升 Skill 入参填写稳定性；思考模型顶层请求参数适配；优化运行日志展示提取逻辑。
+  - **工程** — 移除遗留的第三方 UI 归因文件；运行时与业务页面保持 SentinelFlow 独立实现。
+- **v1.2.0** — RAG 设置、运行日志追踪、面向更长任务的新上下文管理、`input_schema` 执行前校验、结单/闭环逻辑收紧、SQLite 与 poller 稳定性修复、告警工作台与 poll store 优化、思考模型适配，以及大量 WebUI 体验打磨。
 - **v1.1.0** — 多 Agent 执行完整性、按源告警任务、Workflow Runner、prompt window 管理、运行日志追踪、RAG 设置与思考模型适配。
 
 ## 文档

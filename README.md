@@ -4,7 +4,7 @@
 
 ### AI-Native SecOps Control Plane — Multi-Agent SOC Automation
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
+[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#)
@@ -552,6 +552,11 @@ Create a `workflow.json` file under `.sentinelflow/plugins/workflows/<workflow-i
 
 ## Release Notes
 
+- **v1.2.1** — WebUI performance and layout polish, runtime approval/logging fixes, and a fully independent frontend stack.
+  - **WebUI** — Stale-while-revalidate caching for alerts, skills, and agents; faster Alert Workbench / Skills / Agents list loading; collapsible Settings sections with collapsed summaries; collapsible `Surface` panels; conversation message collapse; Chinese task lifecycle labels on Overview; Task Center execution detail improvements; independent Markdown styles and frontend scaffolding.
+  - **Runtime** — Fix stale approval ID reuse on secondary approval; order tool-call summaries by real execution timeline; improve skill argument filling stability; top-level thinking-model request adapter; refine run-log display extraction.
+  - **Project** — Remove legacy third-party UI attribution files; keep runtime and business pages as SentinelFlow-native implementations.
+- **v1.2.0** — RAG settings, run-log tracing, expanded context management for longer tasks, `input_schema` pre-execution validation, closure/completion logic tightening, SQLite/poller stability fixes, alert workbench and poll-store optimizations, thinking-model adapter, and broad WebUI polish.
 - **v1.1.0** — Multi-agent execution integrity, source-aware alert tasks, workflow runner, prompt window management, run-log traceability, RAG settings, and thinking-model adapter.
 
 ## Documentation
