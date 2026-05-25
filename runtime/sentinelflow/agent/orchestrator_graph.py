@@ -239,6 +239,7 @@ def _build_worker_subgraph_tool(
             enable_read_skill_document=True,
             enable_execute_skill=True,
             executable_skill_names=list(executable_skills or []),
+            enable_synthesis_node=False,
         )
         try:
             worker_state = await subgraph.ainvoke(child_state)

@@ -32,6 +32,7 @@ from sentinelflow.agent.skill_run_analyzer import SkillRunAnalyzerMixin
 from sentinelflow.agent.text_extractor import (
     TextExtractorMixin,
     clean_model_text as _clean_model_text,
+    infer_explicit_disposition_from_text,
     normalize_markdown_line as _normalize_markdown_line,
 )
 from sentinelflow.config.runtime import build_llm_client_kwargs, load_runtime_config
@@ -1502,11 +1503,17 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             graph_result["approval_request"] = approval_request or {}
             graph_result["route"] = "approval_required"
             return graph_result
-        # Orchestrator graph has no synthesis_node; run synthesis in Python layer
+        # Orchestrator graph has no synthesis_node; run synthesis in Python layer when needed.
         if not graph_result.get("structured_judgment"):
-            graph_result["structured_judgment"] = await self._run_synthesis(
-                graph_result, effective_config=effective_config
-            )
+            if self._should_skip_orchestrator_synthesis(graph_result, action_hint):
+                LOGGER.debug(
+                    "Skipping orchestrator _run_synthesis: closure succeeded and "
+                    "final_response contains explicit disposition keywords."
+                )
+            else:
+                graph_result["structured_judgment"] = await self._run_synthesis(
+                    graph_result, effective_config=effective_config
+                )
         return await self._serialize_alert_result(
             alert,
             graph_result,
@@ -1514,6 +1521,27 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             agent_definition=primary_agent,
             effective_config=effective_config,
         )
+
+    def _should_skip_orchestrator_synthesis(
+        self,
+        graph_result: dict[str, Any],
+        action_hint: str | None,
+    ) -> bool:
+        """
+        Skip _run_synthesis when closure already succeeded and the primary Agent
+        final_response clearly states disposition via keyword matching.
+
+        Keep synthesis for: no closure, failed closure, vague final_response, or
+        disposition that would fall back to unknown/heuristic parsing.
+        """
+        final_text = str(graph_result.get("final_response", "")).strip()
+        if not infer_explicit_disposition_from_text(final_text):
+            return False
+        skill_runs = self._extract_skill_runs(graph_result)
+        closure_run = self._select_closure_run(skill_runs, action_hint)
+        if closure_run is None:
+            return False
+        return self._is_successful_closure_run(closure_run)
 
     async def _run_synthesis(
         self,

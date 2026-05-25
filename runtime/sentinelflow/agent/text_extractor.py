@@ -56,6 +56,37 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return decoded if isinstance(decoded, dict) else None
 
 
+def infer_explicit_disposition_from_text(final_text: str) -> str | None:
+    """
+    Return disposition only when final_text contains explicit judgment keywords.
+
+    Unlike _infer_disposition(), this returns None when no keyword matched,
+    indicating a vague conclusion that should not skip orchestrator synthesis.
+    """
+    cleaned = clean_model_text(final_text)
+    if not cleaned:
+        return None
+    normalized = cleaned.replace(" ", "")
+    lowered = cleaned.lower()
+    if any(keyword in normalized for keyword in ("非真实攻击", "不是真实攻击", "并非真实攻击", "不是攻击")):
+        if "误报" in normalized:
+            return "false_positive"
+        return "business_trigger"
+    if any(keyword in normalized for keyword in ("规则误报", "误报")):
+        return "false_positive"
+    if any(keyword in normalized for keyword in ("业务触发", "测试触发", "正常业务", "测试流量", "业务流量", "业务测试")):
+        return "business_trigger"
+    if any(keyword in normalized for keyword in ("真实攻击", "恶意攻击", "确认攻击", "高危攻击")):
+        return "true_attack"
+    if any(keyword in lowered for keyword in ("false positive", "false-positive", "false_positive")):
+        return "false_positive"
+    if any(keyword in lowered for keyword in ("business activity", "benign business", "benign traffic", "business traffic", "test traffic", "business_trigger")):
+        return "business_trigger"
+    if any(keyword in lowered for keyword in ("true attack", "confirmed attack", "real attack", "malicious attack", "true_attack")):
+        return "true_attack"
+    return None
+
+
 # ── Mixin class ───────────────────────────────────────────────────────────────
 
 class TextExtractorMixin:
@@ -67,25 +98,9 @@ class TextExtractorMixin:
     """
 
     def _infer_disposition(self, final_text: str, fallback: str) -> str:
-        cleaned = clean_model_text(final_text)
-        normalized = cleaned.replace(" ", "")
-        lowered = cleaned.lower()
-        if any(keyword in normalized for keyword in ("非真实攻击", "不是真实攻击", "并非真实攻击", "不是攻击")):
-            if "误报" in normalized:
-                return "false_positive"
-            return "business_trigger"
-        if any(keyword in normalized for keyword in ("规则误报", "误报")):
-            return "false_positive"
-        if any(keyword in normalized for keyword in ("业务触发", "测试触发", "正常业务", "测试流量", "业务流量", "业务测试")):
-            return "business_trigger"
-        if any(keyword in normalized for keyword in ("真实攻击", "恶意攻击", "确认攻击", "高危攻击")):
-            return "true_attack"
-        if any(keyword in lowered for keyword in ("false positive", "false-positive")):
-            return "false_positive"
-        if any(keyword in lowered for keyword in ("business activity", "benign business", "benign traffic", "business traffic", "test traffic")):
-            return "business_trigger"
-        if any(keyword in lowered for keyword in ("true attack", "confirmed attack", "real attack", "malicious attack")):
-            return "true_attack"
+        explicit = infer_explicit_disposition_from_text(final_text)
+        if explicit:
+            return explicit
         return fallback or "unknown"
 
     def _infer_summary(self, final_text: str, fallback: str) -> str:
