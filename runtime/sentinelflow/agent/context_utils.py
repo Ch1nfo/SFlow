@@ -1232,3 +1232,229 @@ def build_context_envelope(
         "authoritative_inputs": _json_safe(authoritative_inputs or {}),
         "constraints": list(constraints or default_constraints),
     }
+
+
+FINAL_SUMMARY_ALERT_PAYLOAD_CHARS = 600
+FINAL_SUMMARY_JUDGMENT_CHARS = 400
+FINAL_SUMMARY_RESPONSE_CHARS = 1200
+FINAL_SUMMARY_STEP_SUMMARY_CHARS = 300
+FINAL_SUMMARY_STEP_RESULT_CHARS = 200
+FINAL_SUMMARY_MAX_ACTION_STEPS = 12
+FINAL_SUMMARY_MAX_TRACE_STEPS = 20
+
+
+def is_reusable_final_response_markdown(text: Any) -> bool:
+    cleaned = str(text or "").strip()
+    if len(cleaned) < 80:
+        return False
+    if any(marker in cleaned for marker in ("##", "###", "| ---", "**", "---")):
+        return True
+    return len(cleaned) >= 120 and any(
+        keyword in cleaned for keyword in ("研判", "结论", "结单", "处置", "误报", "摘要")
+    )
+
+
+def compact_alert_for_final_summary(alert: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(alert, dict):
+        return {}
+    compact: dict[str, Any] = {}
+    for key in (
+        "eventIds",
+        "alert_name",
+        "sip",
+        "dip",
+        "sport",
+        "dport",
+        "alert_time",
+        "alert_source",
+        "handling_intent",
+    ):
+        value = alert.get(key)
+        if value not in (None, ""):
+            compact[key] = value
+    payload = str(alert.get("payload", "") or "").strip()
+    if payload:
+        compact["payload"] = compact_text(payload, FINAL_SUMMARY_ALERT_PAYLOAD_CHARS)
+    for key in ("current_judgment", "history_judgment"):
+        text = str(alert.get(key, "") or "").strip()
+        if text:
+            compact[key] = compact_text(text, FINAL_SUMMARY_JUDGMENT_CHARS)
+    return compact
+
+
+def _compact_action_step_result(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return _json_safe(result, max_depth=2)
+    chunks = result.get("chunks")
+    if isinstance(chunks, list) and chunks:
+        judgments: list[str] = []
+        for chunk in chunks[:5]:
+            if not isinstance(chunk, dict):
+                continue
+            label = str(chunk.get("judgment") or chunk.get("chunkTitle") or "").strip()
+            if label:
+                judgments.append(compact_text(label, FINAL_SUMMARY_STEP_RESULT_CHARS))
+        compact: dict[str, Any] = {"total": result.get("total", len(chunks))}
+        if judgments:
+            compact["judgments"] = judgments
+        return compact
+    safe = _json_safe(result, max_depth=2)
+    if isinstance(safe, dict):
+        return {
+            str(key): compact_text(value, FINAL_SUMMARY_STEP_RESULT_CHARS) if isinstance(value, str) else value
+            for key, value in safe.items()
+        }
+    return safe
+
+
+def compact_action_step_for_final_summary(step: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(step, dict):
+        return {}
+    arguments = step.get("arguments", {})
+    arguments = arguments if isinstance(arguments, dict) else {}
+    return {
+        "skill_name": str(step.get("skill_name", "")).strip(),
+        "success": bool(step.get("success")),
+        "source_name": str(step.get("source_name", "") or step.get("source_type", "")).strip(),
+        "arguments": _json_safe(arguments, max_depth=2),
+        "result": _compact_action_step_result(step.get("result", {})),
+    }
+
+
+def compact_action_steps_for_final_summary(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact_steps: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for step in reversed(steps or []):
+        if not isinstance(step, dict):
+            continue
+        normalized = compact_action_step_for_final_summary(step)
+        dedupe_key = json.dumps(
+            {
+                "skill_name": normalized.get("skill_name", ""),
+                "arguments": normalized.get("arguments", {}),
+                "source_name": normalized.get("source_name", ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        compact_steps.append(normalized)
+        if len(compact_steps) >= FINAL_SUMMARY_MAX_ACTION_STEPS:
+            break
+    compact_steps.reverse()
+    return compact_steps
+
+
+def compact_closure_step_for_final_summary(
+    closure_step: dict[str, Any],
+    closure_result: dict[str, Any],
+) -> dict[str, Any]:
+    closure_step = closure_step if isinstance(closure_step, dict) else {}
+    closure_result = closure_result if isinstance(closure_result, dict) else {}
+    arguments = closure_step.get("arguments", {})
+    arguments = arguments if isinstance(arguments, dict) else {}
+    return {
+        "attempted": bool(closure_step.get("attempted")),
+        "success": bool(closure_step.get("success")),
+        "skill_name": str(closure_step.get("skill_name", "")).strip(),
+        "source_name": str(closure_step.get("source_name", "") or closure_step.get("source_type", "")).strip(),
+        "summary": compact_text(closure_step.get("summary", ""), FINAL_SUMMARY_STEP_SUMMARY_CHARS),
+        "arguments": _json_safe(arguments, max_depth=2),
+        "result": _json_safe(closure_result, max_depth=2),
+    }
+
+
+def compact_execution_trace_for_final_summary(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact_trace: list[dict[str, Any]] = []
+    for item in trace or []:
+        if not isinstance(item, dict):
+            continue
+        phase = str(item.get("phase", "")).strip()
+        if phase in {"final_status", "final_judgment_synthesis"}:
+            continue
+        compact_trace.append(
+            {
+                "phase": phase,
+                "title": str(item.get("title", "")).strip(),
+                "summary": compact_text(item.get("summary", ""), FINAL_SUMMARY_STEP_SUMMARY_CHARS),
+                "success": item.get("success"),
+            }
+        )
+        if len(compact_trace) >= FINAL_SUMMARY_MAX_TRACE_STEPS:
+            break
+    return compact_trace
+
+
+def compact_workflow_runs_for_final_summary(workflow_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact_runs: list[dict[str, Any]] = []
+    for workflow_run in workflow_runs or []:
+        if not isinstance(workflow_run, dict):
+            continue
+        compact_runs.append(
+            {
+                "workflow_id": str(workflow_run.get("workflow_id", "")).strip(),
+                "workflow_name": str(workflow_run.get("workflow_name", "")).strip(),
+                "success": workflow_run.get("success"),
+                "summary": compact_text(workflow_run.get("summary", ""), FINAL_SUMMARY_STEP_SUMMARY_CHARS),
+            }
+        )
+    return compact_runs
+
+
+def build_compact_final_summary_context(
+    *,
+    alert: dict[str, Any],
+    action_hint: str | None,
+    graph_result: dict[str, Any],
+    disposition: str,
+    summary: str,
+    reason: str,
+    evidence: list[str],
+    action_steps: list[dict[str, Any]],
+    closure_step: dict[str, Any],
+    closure_result: dict[str, Any],
+    workflow_runs: list[dict[str, Any]],
+    final_facts: dict[str, Any],
+    execution_trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    graph_result = graph_result if isinstance(graph_result, dict) else {}
+    worker_summaries: list[dict[str, Any]] = []
+    for item in graph_result.get("worker_results", []) or []:
+        if not isinstance(item, dict):
+            continue
+        compact_worker = compact_worker_result_for_llm(item)
+        worker_summaries.append(
+            {
+                "worker": str(compact_worker.get("worker", "")).strip(),
+                "summary": compact_worker.get("summary", ""),
+                "key_facts": compact_worker.get("key_facts", {}),
+                "success": compact_worker.get("success"),
+            }
+        )
+    final_response = str(graph_result.get("final_response", "") or "").strip()
+    structured = graph_result.get("structured_judgment")
+    return {
+        "original_alert": compact_alert_for_final_summary(alert),
+        "action_hint": action_hint or "",
+        "current_structured_judgment": {
+            "disposition": disposition,
+            "summary": summary,
+            "reason": reason,
+            "evidence": evidence,
+        },
+        "agent_result": {
+            "final_response": compact_text(final_response, FINAL_SUMMARY_RESPONSE_CHARS) if final_response else "",
+            "structured_judgment": _json_safe(structured, max_depth=4) if isinstance(structured, dict) else structured,
+            "worker_result_summaries": worker_summaries,
+            "workflow_runs": compact_workflow_runs_for_final_summary(workflow_runs),
+        },
+        "skill_execution": {
+            "action_steps": compact_action_steps_for_final_summary(action_steps),
+            "closure": compact_closure_step_for_final_summary(closure_step, closure_result),
+        },
+        "final_facts": _json_safe(final_facts, max_depth=6) if isinstance(final_facts, dict) else final_facts,
+        "execution_trace": compact_execution_trace_for_final_summary(execution_trace),
+    }

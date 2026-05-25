@@ -12,10 +12,12 @@ from uuid import uuid4
 from sentinelflow.agent.checkpoint_state import deserialize_graph_state, serialize_graph_state
 from sentinelflow.agent.catalog import load_skill_catalog
 from sentinelflow.agent.context_utils import (
+    build_compact_final_summary_context,
     build_context_manifest,
     compact_worker_result_for_llm,
     extract_explicit_event_id_from_text,
     extract_key_facts,
+    is_reusable_final_response_markdown,
     summarize_tool_calls,
 )
 from sentinelflow.agent.graph import build_agent_graph
@@ -1607,43 +1609,22 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         final_facts: dict[str, Any],
         execution_trace: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        return {
-            "original_alert": alert,
-            "action_hint": action_hint or "",
-            "current_structured_judgment": {
-                "disposition": disposition,
-                "summary": summary,
-                "reason": reason,
-                "evidence": evidence,
-            },
-            "agent_result": {
-                "final_response": graph_result.get("final_response", ""),
-                "messages": graph_result.get("messages", []),
-                "tool_calls": graph_result.get("tool_calls", []),
-                "structured_judgment": graph_result.get("structured_judgment"),
-                "worker_results": graph_result.get("worker_results", []),
-                "worker_result_summaries": [
-                    {
-                        "worker": str(item.get("worker") or item.get("worker_agent") or "").strip(),
-                        "summary": _result_text_for_display(item),
-                        "key_facts": item.get("key_facts", {}),
-                        "success": item.get("success"),
-                    }
-                    for item in (graph_result.get("worker_results", []) or [])
-                    if isinstance(item, dict)
-                ],
-                "workflow_runs": workflow_runs,
-            },
-            "skill_execution": {
-                "skill_runs": skill_runs,
-                "action_steps": action_steps,
-                "closure_step": closure_step,
-                "closure_result": closure_result,
-                "actions": actions,
-            },
-            "final_facts": final_facts,
-            "execution_trace": execution_trace,
-        }
+        del skill_runs, actions
+        return build_compact_final_summary_context(
+            alert=alert,
+            action_hint=action_hint,
+            graph_result=graph_result,
+            disposition=disposition,
+            summary=summary,
+            reason=reason,
+            evidence=evidence,
+            action_steps=action_steps,
+            closure_step=closure_step,
+            closure_result=closure_result,
+            workflow_runs=workflow_runs,
+            final_facts=final_facts,
+            execution_trace=execution_trace,
+        )
 
     async def _run_prompt_synthesize_final_summary(
         self,
@@ -1675,6 +1656,21 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         prompt = str(getattr(prompt_agent, "prompt_synthesize", "") or "").strip()
         if not prompt:
             return "", None
+
+        agent_name = str(getattr(prompt_agent, "name", "") or graph_result.get("agent_name") or "").strip()
+        final_response = str(graph_result.get("final_response", "") or "").strip()
+        if is_reusable_final_response_markdown(final_response):
+            markdown = _clean_model_text(final_response).strip()
+            if markdown:
+                LOGGER.debug(
+                    "prompt_synthesize: reusing final_response markdown (%d chars), skipping LLM call.",
+                    len(markdown),
+                )
+                return markdown, {
+                    "success": True,
+                    "source": "final_response_reuse",
+                    "agent_name": agent_name,
+                }
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
@@ -1710,6 +1706,12 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 final_facts=final_facts,
                 execution_trace=execution_trace,
             )
+            context_json = json.dumps(context, ensure_ascii=False, indent=2, default=str)
+            LOGGER.debug(
+                "prompt_synthesize: compact context size=%d chars, estimated_tokens~=%d",
+                len(context_json),
+                max(1, len(context_json) // 4),
+            )
             llm = ChatOpenAI(
                 **build_llm_client_kwargs(
                     config,
@@ -1721,9 +1723,9 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                     SystemMessage(content=prompt),
                     HumanMessage(
                         content=(
-                            "以下 JSON 是本次告警处置完成后的完整上下文。"
+                            "以下 JSON 是本次告警处置完成后的压缩上下文（已去除完整对话、重复 Skill 原始返回和冗余 payload）。"
                             "请只按照 system prompt 的要求生成最终研判展示内容。\n\n"
-                            f"```json\n{json.dumps(context, ensure_ascii=False, indent=2, default=str)}\n```"
+                            f"```json\n{context_json}\n```"
                         )
                     ),
                 ]
@@ -1746,7 +1748,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             return markdown, {
                 "success": True,
                 "source": "prompt_synthesize",
-                "agent_name": str(getattr(prompt_agent, "name", "") or graph_result.get("agent_name") or "").strip(),
+                "agent_name": agent_name,
             }
         except Exception as exc:
             LOGGER.warning("prompt_synthesize final summary failed; falling back to structured judgment.", exc_info=True)
