@@ -4,10 +4,6 @@ class AgentRole(str, Enum):
     PRIMARY = "primary"
     WORKER = "worker"
 
-class AgentMode(str, Enum):
-    PRIMARY = "primary"
-    SUBAGENT = "subagent"
-
 class OrchestrationStrategy(str, Enum):
     SELF_HANDLE = "self_handle"
     FINISH = "finish"

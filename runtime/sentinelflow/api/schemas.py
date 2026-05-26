@@ -156,10 +156,8 @@ class AgentCreateRequest(BaseModel):
     prompt_command: str | None = Field(default=None, alias="promptCommand")
     prompt_alert: str | None = Field(default=None, alias="promptAlert")
     prompt_synthesize: str | None = Field(default=None, alias="promptSynthesize")
-    mode: str = "subagent"
     role: str | None = None
     enabled: bool = True
-    color: str | None = None
     skills: list[str] | None = None
     tools: list[str] | None = None
     doc_skill_mode: str = Field(default="all", alias="docSkillMode")

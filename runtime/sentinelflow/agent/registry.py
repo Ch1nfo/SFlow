@@ -21,10 +21,8 @@ def _read_bool(value: str | bool | None, default: bool = False) -> bool:
 class SentinelFlowAgentDefinition:
     name: str
     description: str
-    mode: str
     role: str
     enabled: bool
-    color: str
     prompt: str
     prompt_command: str
     prompt_alert: str
@@ -78,10 +76,8 @@ def _build_system_primary(agent_root: Path) -> SentinelFlowAgentDefinition:
     return SentinelFlowAgentDefinition(
         name=SYSTEM_PRIMARY_AGENT_NAME,
         description="系统自动生成的主 Agent，负责承接默认入口任务并统一调度子 Agent。",
-        mode="primary",
         role="primary",
         enabled=True,
-        color="#0f766e",
         prompt=SYSTEM_PRIMARY_DEFAULT_PROMPT,
         prompt_command="",
         prompt_alert="",
@@ -121,10 +117,8 @@ def _parse_agent_yaml(agent_dir: Path) -> SentinelFlowAgentDefinition:
     data: dict[str, object] = {
         "name": agent_dir.name,
         "description": "",
-        "mode": "subagent",
         "role": "primary" if agent_dir.name.endswith("primary") else "worker",
         "enabled": True,
-        "color": "",
         "skills": [],
         "tools": [],
         "doc_skill_mode": "all",
@@ -150,6 +144,7 @@ def _parse_agent_yaml(agent_dir: Path) -> SentinelFlowAgentDefinition:
         "has_prompt": prompt_path.is_file(),
     }
 
+    legacy_mode = ""
     current_list_key: str | None = None
     for line in raw.splitlines():
         stripped = line.strip()
@@ -190,13 +185,11 @@ def _parse_agent_yaml(agent_dir: Path) -> SentinelFlowAgentDefinition:
         elif line.startswith("description:"):
             data["description"] = line.split(":", 1)[1].strip()
         elif line.startswith("mode:"):
-            data["mode"] = line.split(":", 1)[1].strip()
+            legacy_mode = line.split(":", 1)[1].strip()
         elif line.startswith("role:"):
             data["role"] = line.split(":", 1)[1].strip()
         elif line.startswith("enabled:"):
             data["enabled"] = _read_bool(line.split(":", 1)[1].strip(), True)
-        elif line.startswith("color:"):
-            data["color"] = line.split(":", 1)[1].strip()
         elif line.startswith("doc_skill_mode:"):
             data["doc_skill_mode"] = line.split(":", 1)[1].strip() or "all"
         elif line.startswith("use_global_model:"):
@@ -223,10 +216,8 @@ def _parse_agent_yaml(agent_dir: Path) -> SentinelFlowAgentDefinition:
     return SentinelFlowAgentDefinition(
         name=str(data["name"]),
         description=str(data["description"]),
-        mode=str(data["mode"]),
-        role=str(data["role"] or ("primary" if str(data["mode"]) == "primary" else "worker")),
+        role=str(data["role"] or ("primary" if legacy_mode == "primary" else "worker")),
         enabled=bool(data["enabled"]),
-        color=str(data["color"]),
         prompt=str(data["prompt"]),
         prompt_command=str(data["prompt_command"]),
         prompt_alert=str(data["prompt_alert"]),

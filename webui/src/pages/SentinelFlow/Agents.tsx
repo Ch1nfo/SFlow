@@ -22,10 +22,8 @@ type AgentDraft = {
   promptCommand: string
   promptAlert: string
   promptSynthesize: string
-  mode: string
   role: string
   enabled: boolean
-  color: string
   useGlobalModel: boolean
   llmApiBaseUrl: string
   llmApiKey: string
@@ -50,10 +48,8 @@ const EMPTY_DRAFT: AgentDraft = {
   promptCommand: '',
   promptAlert: '',
   promptSynthesize: '',
-  mode: 'subagent',
   role: 'worker',
   enabled: true,
-  color: '#2563eb',
   useGlobalModel: true,
   llmApiBaseUrl: '',
   llmApiKey: '',
@@ -79,10 +75,8 @@ function detailToDraft(detail: AgentDetail): AgentDraft {
     promptCommand: detail.prompt_command || '',
     promptAlert: detail.prompt_alert || '',
     promptSynthesize: detail.prompt_synthesize || '',
-    mode: detail.mode,
-    role: detail.role || (detail.mode === 'primary' ? 'primary' : 'worker'),
+    role: detail.role || 'worker',
     enabled: detail.enabled,
-    color: detail.color || '#2563eb',
     useGlobalModel: detail.use_global_model,
     llmApiBaseUrl: detail.llm_api_base_url || '',
     llmApiKey: '',
@@ -110,10 +104,8 @@ function buildPayload(draft: AgentDraft) {
     promptCommand: isPrimary ? draft.promptCommand : '',
     promptAlert: isPrimary ? draft.promptAlert : '',
     promptSynthesize: isPrimary ? draft.promptSynthesize : '',
-    mode: draft.mode,
     role: draft.role,
     enabled: draft.enabled,
-    color: draft.color,
     skills: draft.execSkillAllowlist,
     tools: [],
     docSkillMode: draft.docSkillMode,
@@ -239,7 +231,6 @@ function AgentForm({
       </div>
 
       <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <input className="sentinelflow-settings-input" placeholder="颜色，例如 #2563eb" value={draft.color} onChange={(event) => onChange((current) => ({ ...current, color: event.target.value }))} />
         <select className="sentinelflow-settings-input" value={draft.useGlobalModel ? 'global' : 'custom'} onChange={(event) => onChange((current) => ({ ...current, useGlobalModel: event.target.value === 'global' }))}>
           <option value="global">使用统一模型</option>
           <option value="custom">独立配置模型</option>
@@ -249,14 +240,6 @@ function AgentForm({
           <option value="selected">纯文本 Skill 仅白名单可读</option>
           <option value="none">纯文本 Skill 全部禁用</option>
         </select>
-        {draft.role === 'primary' ? (
-          <select className="sentinelflow-settings-input" value={draft.mode} onChange={(event) => onChange((current) => ({ ...current, mode: event.target.value }))}>
-            <option value="primary">primary</option>
-            <option value="subagent">subagent</option>
-          </select>
-        ) : (
-          <input className="sentinelflow-settings-input" value="worker / subagent" disabled />
-        )}
       </div>
 
       {!draft.useGlobalModel ? (
@@ -461,7 +444,6 @@ export default function SentinelFlowAgentsPage() {
           ...current,
           name: saved.name,
           description: saved.description,
-          mode: saved.mode,
           role: saved.role,
           enabled: saved.enabled,
           location: saved.location,

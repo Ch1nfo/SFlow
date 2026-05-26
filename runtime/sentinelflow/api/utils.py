@@ -316,7 +316,11 @@ def _read_skill_code(skill_name: str) -> str:
 
 
 def _normalize_agent_role(req: AgentCreateRequest) -> str:
-    return (req.role or ("primary" if req.mode == "primary" else "worker")).strip() or "worker"
+    return (req.role or "worker").strip() or "worker"
+
+
+def _agent_mode_for_role(role: str) -> str:
+    return "primary" if role == "primary" else "subagent"
 
 
 def _assert_single_enabled_primary(req: AgentCreateRequest, current_name: str | None = None) -> None:
@@ -343,9 +347,7 @@ def _build_agent_yaml(req: AgentCreateRequest) -> str:
     ]
     if req.description_cn:
         lines.append(f"description_cn: {req.description_cn}")
-    lines.append(f"mode: {req.mode}")
-    if req.color:
-        lines.append(f"color: {req.color}")
+    lines.append(f"mode: {_agent_mode_for_role(role)}")
     if req.skills:
         lines.append("skills:")
         lines.extend([f"  - {item}" for item in req.skills])
@@ -400,7 +402,6 @@ def _list_agent_defs() -> list[dict[str, Any]]:
         {
             "name": a.name,
             "description": a.description,
-            "mode": a.mode,
             "role": a.role,
             "enabled": a.enabled,
             "location": a.location,
@@ -418,10 +419,8 @@ def _read_agent_yaml(agent_name: str) -> dict[str, Any]:
     return {
         "name": agent.name,
         "description": agent.description,
-        "mode": agent.mode,
         "role": agent.role,
         "enabled": agent.enabled,
-        "color": agent.color,
         "skills": agent.skills,
         "tools": agent.tools,
         "prompt": agent.prompt,

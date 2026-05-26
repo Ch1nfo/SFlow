@@ -419,7 +419,6 @@ export type ApprovalDecisionResponse = {
 export type AgentSummary = {
   name: string
   description: string
-  mode: string
   role?: string
   enabled?: boolean
   location: string
@@ -430,7 +429,6 @@ export type AgentSummary = {
 }
 
 export type AgentDetail = AgentSummary & {
-  color?: string
   prompt: string
   prompt_command?: string
   prompt_alert?: string
@@ -619,10 +617,8 @@ export async function createAgent(payload: {
   promptCommand?: string
   promptAlert?: string
   promptSynthesize?: string
-  mode?: string
   role?: string
   enabled?: boolean
-  color?: string
   skills?: string[]
   tools?: string[]
   docSkillMode?: string
@@ -650,10 +646,8 @@ export async function saveAgent(name: string, payload: {
   promptCommand?: string
   promptAlert?: string
   promptSynthesize?: string
-  mode?: string
   role?: string
   enabled?: boolean
-  color?: string
   skills?: string[]
   tools?: string[]
   docSkillMode?: string
