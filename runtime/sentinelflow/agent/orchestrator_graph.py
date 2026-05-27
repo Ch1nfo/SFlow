@@ -156,6 +156,43 @@ def _tool_payloads_from_messages(messages: list[Any]) -> list[dict[str, Any]]:
     return payloads
 
 
+def _required_terminal_skill_names(
+    alert_data: dict[str, Any],
+    executable_skills: list[str],
+    skill_runtime: SentinelFlowSkillRuntime,
+) -> set[str]:
+    """Return executable closure skills required by the delegated alert task."""
+    action_hint = str(alert_data.get("handling_intent", "")).strip()
+    if action_hint not in {"triage_close", "triage_dispose"}:
+        return set()
+    required: set[str] = set()
+    for skill_name in executable_skills:
+        try:
+            policy = skill_runtime.read_skill(skill_name).completion_policy
+        except Exception:
+            continue
+        if not isinstance(policy, dict):
+            continue
+        if bool(policy.get("enabled")) and str(policy.get("completion_effect", "")).strip() == "closure":
+            required.add(str(skill_name).strip())
+    return required
+
+
+def _has_terminal_skill_result(tool_calls_summary: list[dict[str, Any]], required_skills: set[str]) -> bool:
+    """Require a tool result, not a prose assertion that an action ran."""
+    for item in tool_calls_summary:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name", "")).strip() not in {"execute_skill", "execute_skill_no_args"}:
+            continue
+        args = item.get("args", {})
+        if not isinstance(args, dict) or str(args.get("skill_name", "")).strip() not in required_skills:
+            continue
+        if isinstance(item.get("result_summary"), dict):
+            return True
+    return False
+
+
 # ── Worker SubGraph Tool Builder ──────────────────────────────────────────────
 
 def _build_worker_subgraph_tool(
@@ -177,6 +214,7 @@ def _build_worker_subgraph_tool(
     of the worker's final response and skills used.
     """
     readable_skills, executable_skills = _resolve_worker_permissions(worker_agent_def, skill_runtime)
+    required_terminal_skills = _required_terminal_skill_names(alert_data, executable_skills, skill_runtime)
 
     async def _execute_worker_subgraph(task_prompt: str, state: OrchestratorState, step_idx: int) -> dict[str, Any]:
         child_checkpoint_thread_id = f"{str(state.get('checkpoint_thread_id', '')).strip() or uuid4().hex}:worker:{worker_agent_def.name}:{step_idx}"
@@ -266,16 +304,47 @@ def _build_worker_subgraph_tool(
                 "error": str(exc),
             }
 
+        def summarize_worker_tools(current_state: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            current_tool_calls: list[dict[str, Any]] = []
+            for message in current_state.get("messages", []):
+                current_tool_calls.extend(list(getattr(message, "tool_calls", None) or []))
+            return current_tool_calls, summarize_tool_calls(
+                current_tool_calls,
+                tool_messages=list(current_state.get("messages", [])),
+            )
+
+        tool_calls, tool_calls_summary = summarize_worker_tools(worker_state)
+        terminal_execution_missing = bool(required_terminal_skills) and not _has_terminal_skill_result(
+            tool_calls_summary,
+            required_terminal_skills,
+        )
+        if terminal_execution_missing and not worker_state.get("approval_pending"):
+            correction = HumanMessage(
+                content=(
+                    "执行校验失败：当前任务要求真实完成结单，但你尚未调用结单 Skill。"
+                    f"现在必须直接调用 `execute_skill` 执行 `{sorted(required_terminal_skills)[0]}`，"
+                    "使用 task_prompt 中已经给出的参数；不得以文字描述、模拟 JSON 或声称成功替代工具调用。"
+                )
+            )
+            retry_state = {
+                **worker_state,
+                "messages": list(worker_state.get("messages", [])) + [correction],
+                "input_seeded": True,
+            }
+            worker_state = await subgraph.ainvoke(retry_state)
+            tool_calls, tool_calls_summary = summarize_worker_tools(worker_state)
+            terminal_execution_missing = not _has_terminal_skill_result(
+                tool_calls_summary,
+                required_terminal_skills,
+            )
+
         final_text = ""
         skills_used: list[str] = []
-        tool_calls: list[dict[str, Any]] = []
         tool_result_facts: dict[str, Any] = {}
         for msg in worker_state.get("messages", []):
             msg_type = getattr(msg, "type", "")
             if msg_type == "ai" and getattr(msg, "content", ""):
                 final_text = msg.content
-            if getattr(msg, "tool_calls", None):
-                tool_calls.extend(msg.tool_calls)
             for tc in (getattr(msg, "tool_calls", None) or []):
                 if isinstance(tc, dict) and tc.get("name"):
                     skills_used.append(tc["name"])
@@ -288,9 +357,10 @@ def _build_worker_subgraph_tool(
                         parsed_content = content
                     tool_result_facts = extract_key_facts(tool_result_facts, parsed_content)
 
-        tool_calls_summary = summarize_tool_calls(
-            tool_calls,
-            tool_messages=list(worker_state.get("messages", [])),
+        execution_error = (
+            f"子 Agent 未实际调用要求的结单技能：{', '.join(sorted(required_terminal_skills))}。"
+            if terminal_execution_missing
+            else None
         )
         if tracer is not None:
             tracer.log_worker_boundary(
@@ -299,10 +369,11 @@ def _build_worker_subgraph_tool(
                 event_type="worker_finished",
                 title=f"子 Agent {worker_agent_def.name} · 执行完成",
                 extra={
-                    "success": bool(final_text),
+                    "success": bool(final_text) and not terminal_execution_missing,
                     "skills_used": skills_used,
                     "final_response": final_text,
                     "approval_pending": bool(worker_state.get("approval_pending")),
+                    "error": execution_error,
                 },
             )
         result = {
@@ -315,10 +386,10 @@ def _build_worker_subgraph_tool(
             "key_facts": extract_key_facts(prior_facts, alert_data, task_prompt, final_text, tool_calls_summary, tool_result_facts),
             "context_manifest": context_manifest,
             "context_warnings": _context_warnings_from_manifest(context_manifest),
-            "success": bool(final_text),
+            "success": bool(final_text) and not terminal_execution_missing,
             "approval_pending": bool(worker_state.get("approval_pending")),
             "approval_request": worker_state.get("approval_request", {}),
-            "error": None if final_text else "子 Agent 未返回有效结果。",
+            "error": execution_error or (None if final_text else "子 Agent 未返回有效结果。"),
         }
         if worker_state.get("approval_pending"):
             approval_request = worker_state.get("approval_request", {})

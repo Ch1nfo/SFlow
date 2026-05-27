@@ -12,6 +12,7 @@ PLATFORM_ALERT_APPENDIX = """\
 
 - 工具：`execute_skill`、`execute_skill_no_args`、`read_skill_document`；有入参时严格按工具描述中的 schema 传参
 - 专项子 Agent：只完成主 Agent 分派的子任务，**不要**替主 Agent 做全局告警最终裁决或结单决策
+- 当分派任务明确要求执行处置或结单时，必须先实际调用授权 Skill 并依据工具返回报告结果；不得以参数清单、模拟 JSON 或文字声称执行成功
 
 当前可用技能：
 {skill_catalog}

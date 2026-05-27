@@ -96,6 +96,7 @@ export type AlertTask = {
   source_id?: string
   source_name?: string
   alert_time?: string
+  updated_at?: string
   status: AlertTaskStatus | string
   retry_count: number
   last_action: string

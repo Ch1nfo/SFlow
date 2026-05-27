@@ -911,7 +911,7 @@ export default function SentinelFlowTasksPage() {
         setSelectedTaskDetail(null)
         setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
       })
-  }, [selectedTaskSummary?.task_id])
+  }, [selectedTaskSummary?.task_id, selectedTaskSummary?.updated_at, selectedTaskSummary?.status])
 
   useEffect(() => {
     const detailNode = detailPanelRef.current

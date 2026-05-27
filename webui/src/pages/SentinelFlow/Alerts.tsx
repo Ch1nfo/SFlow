@@ -463,7 +463,7 @@ export default function SentinelFlowAlertsPage() {
         })
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [selectedTaskSummary?.task_id])
+  }, [selectedTaskSummary?.task_id, selectedTaskSummary?.updated_at, selectedTaskSummary?.status])
   const selectedPayload = getSelectedAlertPayload(selectedTask)
   const selectedPayloadText = String(selectedPayload.payload ?? '').trim()
   const shouldCollapsePayload = payloadNeedsCollapse(selectedPayloadText)

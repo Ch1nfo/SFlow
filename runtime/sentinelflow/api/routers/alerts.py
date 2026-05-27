@@ -752,26 +752,12 @@ def _select_current_approval(payload: dict[str, Any], fallback_approval: dict[st
     return fallback_approval
 
 
-def _resolve_stale_approval_id(approval_id: str) -> str:
-    approval = skill_approval_service.get_by_id(approval_id)
-    if approval is None or approval.status == "pending":
-        return approval_id
-    latest = skill_approval_service.get_latest_pending_for_scope(approval.scope_type, approval.scope_ref)
-    if latest is not None and latest.approval_id != approval_id:
-        return latest.approval_id
-    return approval_id
-
-
 async def _resolve_approval_json(
     approval_id: str,
     decision: str,
     *,
     status_callback=None,
 ) -> dict[str, Any]:
-    resolved_approval_id = _resolve_stale_approval_id(approval_id)
-    if resolved_approval_id != approval_id:
-        approval_id = resolved_approval_id
-
     approval = skill_approval_service.get_by_id(approval_id)
     if approval is None:
         return _build_approval_resolution_response(
