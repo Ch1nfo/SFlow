@@ -1240,11 +1240,13 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         messages = final_state.get("messages", [])
 
         # Final supervisor response = last AI message with non-empty content
+        from sentinelflow.agent.schemas import stringify_llm_content
+
         final_text = ""
         for msg in reversed(messages):
             msg_type = getattr(msg, "type", "")
-            content = getattr(msg, "content", "")
-            if msg_type == "ai" and content:
+            content = stringify_llm_content(getattr(msg, "content", ""))
+            if msg_type == "ai" and content.strip():
                 final_text = _clean_model_text(content)
                 break
 
@@ -1675,18 +1677,11 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         agent_definition=None,
         effective_config=None,
     ) -> tuple[str, dict[str, Any] | None]:
-        task_outcome = final_facts.get("task_outcome", {}) if isinstance(final_facts, dict) else {}
-        status = str(task_outcome.get("status", "")).strip()
-        if task_outcome.get("success") is not True or status not in {"succeeded", "completed"}:
-            return "", None
-
         prompt_agent = self._resolve_prompt_synthesize_agent(agent_definition, graph_result)
-        prompt = str(getattr(prompt_agent, "prompt_synthesize", "") or "").strip()
-        if not prompt:
-            return "", None
-
         agent_name = str(getattr(prompt_agent, "name", "") or graph_result.get("agent_name") or "").strip()
         final_response = str(graph_result.get("final_response", "") or "").strip()
+        # Reuse primary-agent markdown even when external closure is still pending
+        # (e.g. disposal done + calling status updated, but 结单 skill not run).
         if is_reusable_final_response_markdown(final_response):
             markdown = _clean_model_text(final_response).strip()
             if markdown:
@@ -1699,6 +1694,15 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                     "source": "final_response_reuse",
                     "agent_name": agent_name,
                 }
+
+        task_outcome = final_facts.get("task_outcome", {}) if isinstance(final_facts, dict) else {}
+        status = str(task_outcome.get("status", "")).strip()
+        if task_outcome.get("success") is not True or status not in {"succeeded", "completed"}:
+            return "", None
+
+        prompt = str(getattr(prompt_agent, "prompt_synthesize", "") or "").strip()
+        if not prompt:
+            return "", None
 
         try:
             from langchain_core.messages import HumanMessage, SystemMessage
@@ -1842,11 +1846,12 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         serialized_messages: list[dict[str, Any]] = []
         tool_calls: list[dict[str, Any]] = []
 
+        from sentinelflow.agent.schemas import stringify_llm_content
+
         for msg in messages:
             msg_type = getattr(msg, "type", msg.__class__.__name__.lower())
-            content = getattr(msg, "content", "")
-            if isinstance(content, str):
-                content = _clean_model_text(content)
+            raw_content = getattr(msg, "content", "")
+            content = _clean_model_text(stringify_llm_content(raw_content))
             item: dict[str, Any] = {"type": msg_type, "content": content}
             if getattr(msg, "tool_calls", None):
                 item["tool_calls"] = msg.tool_calls
