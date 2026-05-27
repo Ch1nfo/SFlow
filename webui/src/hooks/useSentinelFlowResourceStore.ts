@@ -21,8 +21,14 @@ type ReloadOptions = {
   silent?: boolean
 }
 
+type InternalLoadOptions = ReloadOptions & {
+  background?: boolean
+}
+
 type ResourceEntry<T> = ResourceSnapshot<T> & {
   inFlight: Promise<T | null> | null
+  pendingForceReload: InternalLoadOptions | null
+  forceFlushPromise: Promise<T | null> | null
   subscribers: Set<() => void>
 }
 
@@ -38,6 +44,8 @@ function getEntry<K extends ResourceKey>(key: K): ResourceEntry<ResourceData<K>>
     error: null,
     updatedAt: 0,
     inFlight: null,
+    pendingForceReload: null,
+    forceFlushPromise: null,
     subscribers: new Set(),
   }
   entries.set(key, created as ResourceEntry<ResourceData<ResourceKey>>)
@@ -57,24 +65,22 @@ function notify<T>(entry: ResourceEntry<T>) {
   entry.subscribers.forEach((subscriber) => subscriber())
 }
 
-async function loadResource<K extends ResourceKey>(
+async function performResourceFetch<K extends ResourceKey>(
   key: K,
-  options: ReloadOptions = {},
+  options: InternalLoadOptions = {},
 ): Promise<ResourceData<K> | null> {
   const entry = getEntry(key)
-  const now = Date.now()
-  if (!options.force && entry.data && now - entry.updatedAt < FRESH_MS) {
-    return entry.data
-  }
   if (entry.inFlight) {
     return entry.inFlight as Promise<ResourceData<K> | null>
   }
-  const shouldShowLoading = !options.silent && !entry.data
+
+  const shouldShowLoading = !options.silent && !options.background && !entry.data
   if (shouldShowLoading) {
     entry.loading = true
     entry.error = null
     notify(entry)
   }
+
   entry.inFlight = LOADERS[key]()
     .then((next) => {
       entry.data = next as ResourceData<K>
@@ -93,8 +99,61 @@ async function loadResource<K extends ResourceKey>(
       entry.inFlight = null
       notify(entry)
     }) as Promise<ResourceData<K> | null>
+
   notify(entry)
   return entry.inFlight as Promise<ResourceData<K> | null>
+}
+
+async function flushForceResourceReloads<K extends ResourceKey>(key: K): Promise<ResourceData<K> | null> {
+  const entry = getEntry(key)
+  if (entry.forceFlushPromise) {
+    return entry.forceFlushPromise as Promise<ResourceData<K> | null>
+  }
+
+  entry.forceFlushPromise = (async () => {
+    while (entry.inFlight || entry.pendingForceReload) {
+      if (entry.inFlight) {
+        await entry.inFlight
+        continue
+      }
+      const pending = entry.pendingForceReload
+      if (!pending) continue
+      entry.pendingForceReload = null
+      await performResourceFetch(key, { ...pending, force: true })
+    }
+    return entry.data as ResourceData<K> | null
+  })().finally(() => {
+    entry.forceFlushPromise = null
+  }) as Promise<ResourceData<K> | null>
+
+  return entry.forceFlushPromise
+}
+
+async function loadResource<K extends ResourceKey>(
+  key: K,
+  options: InternalLoadOptions = {},
+): Promise<ResourceData<K> | null> {
+  const entry = getEntry(key)
+  const now = Date.now()
+  const isFresh = Boolean(entry.data) && now - entry.updatedAt < FRESH_MS
+
+  if (!options.force && isFresh && !options.background) {
+    if (!entry.inFlight) {
+      void loadResource(key, { force: true, silent: true, background: true })
+    }
+    return entry.data as ResourceData<K>
+  }
+
+  if (options.force && (entry.inFlight || entry.forceFlushPromise)) {
+    entry.pendingForceReload = options
+    return flushForceResourceReloads(key)
+  }
+
+  if (entry.inFlight) {
+    return entry.inFlight as Promise<ResourceData<K> | null>
+  }
+
+  return performResourceFetch(key, options)
 }
 
 export function useSentinelFlowResourceStore<K extends ResourceKey>(
@@ -109,8 +168,8 @@ export function useSentinelFlowResourceStore<K extends ResourceKey>(
     const sync = () => setState(snapshot(entry))
     entry.subscribers.add(sync)
     sync()
-    if (autoLoad && !entry.data && !entry.inFlight) {
-      void loadResource(key)
+    if (autoLoad && !entry.inFlight) {
+      void loadResource(key, entry.data ? { silent: true } : undefined)
     }
     return () => {
       entry.subscribers.delete(sync)

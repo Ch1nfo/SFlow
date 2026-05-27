@@ -22,20 +22,33 @@ const ALERT_QUEUE_INITIAL_RENDER_COUNT = 60
 const ALERT_QUEUE_RENDER_INCREMENT = 60
 type AlertTimeRange = 'today' | 'week'
 
-const EMPTY_ALERTS_SUMMARY = {
-  judgment: {
-    business_trigger: 0,
-    false_positive: 0,
-    true_attack: 0,
-    unknown: 0,
-  },
-  operations: {
-    closed_success: 0,
-    disposed_success: 0,
-    manual_completed: 0,
-    banned_ip_count: 0,
-    banned_ips: [] as string[],
-  },
+function WeekSummarySkeleton() {
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="mb-3 h-4 w-44 animate-pulse rounded bg-slate-200" />
+        <div className="grid gap-3 md:grid-cols-2">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div key={index} className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+              <div className="h-3 w-16 animate-pulse rounded bg-slate-200" />
+              <div className="mt-3 h-8 w-10 animate-pulse rounded bg-slate-200" />
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="rounded-xl border border-gray-200 bg-white p-5">
+        <div className="mb-3 h-4 w-40 animate-pulse rounded bg-slate-200" />
+        <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+          <div className="h-3 w-16 animate-pulse rounded bg-slate-200" />
+          <div className="mt-3 h-8 w-10 animate-pulse rounded bg-slate-200" />
+        </div>
+        <div className="mt-4 rounded-lg border border-slate-100 bg-slate-50 p-4">
+          <div className="h-3 w-20 animate-pulse rounded bg-slate-200" />
+          <div className="mt-3 h-6 w-32 animate-pulse rounded bg-slate-200" />
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function readStoredSelectedSourceId(): string | null {
@@ -300,6 +313,7 @@ export default function SentinelFlowAlertsPage() {
   const [detailError, setDetailError] = useState<string | null>(null)
   const [visibleTaskCount, setVisibleTaskCount] = useState(ALERT_QUEUE_INITIAL_RENDER_COUNT)
   const [weekSummaryEnabled, setWeekSummaryEnabled] = useState(false)
+  const [weekSummaryLoadState, setWeekSummaryLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
   const weekSummaryRef = useRef<HTMLDivElement | null>(null)
@@ -314,7 +328,6 @@ export default function SentinelFlowAlertsPage() {
   } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: true })
   const {
     data: allSourcesPoll,
-    loading: allSourcesPollLoading,
     reload: reloadAllSourcesPoll,
   } = useSentinelFlowPollStore('all', { autoLoad: false })
   const queueLoading = pollLoading && !data
@@ -324,7 +337,10 @@ export default function SentinelFlowAlertsPage() {
 
   const refreshTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
     await reloadPollStore(options)
-  }, [reloadPollStore])
+    if (weekSummaryEnabled) {
+      await reloadAllSourcesPoll(options)
+    }
+  }, [reloadPollStore, reloadAllSourcesPoll, weekSummaryEnabled])
 
   useEffect(() => {
     if (!data) return
@@ -358,8 +374,31 @@ export default function SentinelFlowAlertsPage() {
 
   useEffect(() => {
     if (!weekSummaryEnabled) return
-    void reloadAllSourcesPoll({ silent: true })
+    let cancelled = false
+    setWeekSummaryLoadState('loading')
+    void reloadAllSourcesPoll({ silent: true }).then(({ data, error }) => {
+      if (cancelled) return
+      if (error && !data) {
+        setWeekSummaryLoadState('error')
+        return
+      }
+      setWeekSummaryLoadState('ready')
+    })
+    return () => {
+      cancelled = true
+    }
   }, [weekSummaryEnabled, reloadAllSourcesPoll])
+
+  const retryWeekSummary = useCallback(() => {
+    setWeekSummaryLoadState('loading')
+    void reloadAllSourcesPoll({ force: true, silent: true }).then(({ data, error }) => {
+      if (error && !data) {
+        setWeekSummaryLoadState('error')
+        return
+      }
+      setWeekSummaryLoadState('ready')
+    })
+  }, [reloadAllSourcesPoll])
 
   useSentinelFlowLiveRefresh(
     () => refreshTasks({ silent: true }),
@@ -402,13 +441,11 @@ export default function SentinelFlowAlertsPage() {
   const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
   const summary = useMemo(() => buildAlertsSummary(tasks), [tasks])
   const weekSummary = useMemo(() => {
-    if (!weekSummaryEnabled || !allSourcesPoll?.tasks?.length) {
-      return EMPTY_ALERTS_SUMMARY
-    }
+    if (weekSummaryLoadState !== 'ready') return null
     const now = new Date()
-    const allSourceTasks = allSourcesPoll.tasks.filter((task) => matchesAlertTimeRange(task, 'week', now))
+    const allSourceTasks = (allSourcesPoll?.tasks ?? []).filter((task) => matchesAlertTimeRange(task, 'week', now))
     return buildAlertsSummary(allSourceTasks)
-  }, [allSourcesPoll?.tasks, weekSummaryEnabled])
+  }, [allSourcesPoll?.tasks, weekSummaryLoadState])
 
   useEffect(() => {
     const taskId = selectedTaskSummary?.task_id ?? ''
@@ -520,7 +557,6 @@ export default function SentinelFlowAlertsPage() {
   async function runAction(action: string) {
     setActionState({ action, running: true })
     setActionNotice(null)
-    void refreshTasks({ silent: true })
     try {
       const result = action === 'refresh_poll' || action === 'auto_run_pending' || action === 'auto_execute_start' || action === 'auto_execute_stop'
         ? await handleAlertAction(action, undefined, undefined, selectedSourceId ?? data?.source_id)
@@ -906,9 +942,16 @@ export default function SentinelFlowAlertsPage() {
         title="研判与封禁摘要"
         subtitle="统计本周全部告警源的数据，不受上方「当前告警源」与「今日/本周」筛选影响。"
       >
-        {weekSummaryEnabled && allSourcesPollLoading && !allSourcesPoll?.tasks?.length ? (
-          <p className="mb-4 text-sm text-slate-500">正在加载本周统计...</p>
-        ) : null}
+        {weekSummaryLoadState === 'loading' ? (
+          <WeekSummarySkeleton />
+        ) : weekSummaryLoadState === 'error' ? (
+          <div className="sentinelflow-message-block sentinelflow-message-error">
+            <p>本周统计加载失败，请稍后重试。</p>
+            <button type="button" className="sentinelflow-ghost-button mt-3" onClick={retryWeekSummary}>
+              重新加载
+            </button>
+          </div>
+        ) : weekSummary ? (
         <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <div className="mb-3 text-sm font-semibold text-gray-900">研判结果概览（本周 · 全部告警源）</div>
@@ -954,6 +997,7 @@ export default function SentinelFlowAlertsPage() {
             </div>
           </div>
         </div>
+        ) : null}
       </Surface>
       </div>
     </div>

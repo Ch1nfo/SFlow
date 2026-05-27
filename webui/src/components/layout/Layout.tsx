@@ -101,20 +101,20 @@ export default function Layout() {
 
   const refreshAlertNotice = useMemo(
     () => async () => {
-      const result = await reloadAllPoll({ silent: true })
-      if (!result) return
-      const currentTaskIds = new Set((result.tasks ?? []).map((task) => task.task_id).filter(Boolean))
+      const { data: pollResult } = await reloadAllPoll({ silent: true })
+      if (!pollResult) return
+      const currentTaskIds = new Set((pollResult.tasks ?? []).map((task) => task.task_id).filter(Boolean))
       if (knownTaskIdsRef.current === null) {
         knownTaskIdsRef.current = currentTaskIds
         return
       }
       const previous = knownTaskIdsRef.current
       const groupsBySource = new Map<string, NewAlertNoticeGroup>()
-      for (const task of result.tasks ?? []) {
+      for (const task of pollResult.tasks ?? []) {
         const taskId = task.task_id
         if (!taskId || previous.has(taskId)) continue
         const sourceId = task.source_id?.trim() || 'default'
-        const sourceName = getAlertTaskSourceName(task, result)
+        const sourceName = getAlertTaskSourceName(task, pollResult)
         const groupKey = `${sourceId}:${sourceName}`
         const currentGroup = groupsBySource.get(groupKey)
         if (currentGroup) {

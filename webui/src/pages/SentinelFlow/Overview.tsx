@@ -28,8 +28,8 @@ export default function SentinelFlowOverviewPage() {
   }, [reloadHealth, reloadPoll, reloadSkills, reloadSummary])
 
   const refreshOverview = useCallback(() => {
-    void Promise.all([reloadHealth(), reloadPoll({ silent: true }), reloadSummary()])
-  }, [reloadHealth, reloadPoll, reloadSummary])
+    void Promise.all([reloadHealth(), reloadPoll({ silent: true }), reloadSkills({ silent: true }), reloadSummary()])
+  }, [reloadHealth, reloadPoll, reloadSkills, reloadSummary])
 
   useSentinelFlowLiveRefresh(refreshOverview, { intervalMs: 5000 })
 

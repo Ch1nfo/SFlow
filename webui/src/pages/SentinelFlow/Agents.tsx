@@ -418,7 +418,7 @@ export default function SentinelFlowAgentsPage() {
     setFormError('')
     try {
       await createAgent(buildPayload(draft))
-      await reload()
+      await reload({ force: true })
       setDraft(EMPTY_DRAFT)
       setAdvancedPromptExpanded(false)
       setCreateFormExpanded(false)
@@ -437,7 +437,7 @@ export default function SentinelFlowAgentsPage() {
       const saved = await saveAgent(selected.name, buildPayload(editDraft))
       setDetail(saved)
       setEditDraft(detailToDraft(saved))
-      await reload()
+      await reload({ force: true })
       setSelected((current) => {
         if (!current) return current
         return {
@@ -471,7 +471,7 @@ export default function SentinelFlowAgentsPage() {
     setDeleting(true)
     try {
       await deleteAgent(selected.name)
-      await reload()
+      await reload({ force: true })
       setSelected(null)
       setDetail(null)
       setEditDraft(EMPTY_DRAFT)

@@ -211,7 +211,7 @@ export default function SentinelFlowSkillsPage() {
     setFormError(null)
     try {
       const created = await createSkill(draft)
-      await reload()
+      await reload({ force: true })
       setSelectedSkill({
         name: created.name,
         description: created.description,
@@ -253,7 +253,7 @@ export default function SentinelFlowSkillsPage() {
         entry: saved.entry,
         mode: saved.mode,
       })
-      await reload()
+      await reload({ force: true })
       setEditingSkillName(null)
       setDebuggingSkillName(null)
       setCreateFormExpanded(false)
@@ -275,7 +275,7 @@ export default function SentinelFlowSkillsPage() {
     setDeleting(true)
     try {
       await deleteSkill(selectedSkill.name)
-      await reload()
+      await reload({ force: true })
       setSelectedSkill(null)
       setDetail(null)
       setEditingSkillName(null)

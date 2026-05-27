@@ -13,8 +13,15 @@ type ReloadOptions = {
   silent?: boolean
 }
 
+export type PollReloadResult = {
+  data: PollAlertsResponse | null
+  error: string | null
+}
+
 type PollStoreEntry = PollStoreSnapshot & {
-  inFlight: Promise<PollAlertsResponse | null> | null
+  inFlight: Promise<PollReloadResult> | null
+  pendingForceReload: ReloadOptions | null
+  forceFlushPromise: Promise<PollReloadResult> | null
   subscribers: Set<() => void>
 }
 
@@ -35,6 +42,8 @@ function getEntry(sourceId?: string | null): PollStoreEntry {
     error: null,
     updatedAt: 0,
     inFlight: null,
+    pendingForceReload: null,
+    forceFlushPromise: null,
     subscribers: new Set(),
   }
   entries.set(key, created)
@@ -54,12 +63,15 @@ function notify(entry: PollStoreEntry) {
   entry.subscribers.forEach((subscriber) => subscriber())
 }
 
-async function loadPollState(sourceId: string, options: ReloadOptions = {}): Promise<PollAlertsResponse | null> {
-  const entry = getEntry(sourceId)
-  const now = Date.now()
-  if (!options.force && entry.data && now - entry.updatedAt < FRESH_MS) {
-    return entry.data
+function buildReloadResult(entry: PollStoreEntry): PollReloadResult {
+  return {
+    data: entry.data,
+    error: entry.error,
   }
+}
+
+async function performPollFetch(sourceId: string, options: ReloadOptions = {}): Promise<PollReloadResult> {
+  const entry = getEntry(sourceId)
   if (entry.inFlight) {
     return entry.inFlight
   }
@@ -81,14 +93,13 @@ async function loadPollState(sourceId: string, options: ReloadOptions = {}): Pro
         alias.updatedAt = entry.updatedAt
         notify(alias)
       }
-      return next
+      return buildReloadResult(entry)
     })
     .catch((error) => {
-      // 静默刷新失败时保留旧数据，避免后台轮询偶发错误挡住整页列表。
       if (!options.silent || !entry.data) {
         entry.error = error instanceof Error ? error.message : 'Unknown error'
       }
-      return entry.data
+      return buildReloadResult(entry)
     })
     .finally(() => {
       entry.loading = false
@@ -97,6 +108,45 @@ async function loadPollState(sourceId: string, options: ReloadOptions = {}): Pro
     })
   notify(entry)
   return entry.inFlight
+}
+
+async function flushForcePollReloads(sourceId: string): Promise<PollReloadResult> {
+  const entry = getEntry(sourceId)
+  if (entry.forceFlushPromise) {
+    return entry.forceFlushPromise
+  }
+  entry.forceFlushPromise = (async () => {
+    while (entry.inFlight || entry.pendingForceReload) {
+      if (entry.inFlight) {
+        await entry.inFlight
+        continue
+      }
+      const pending = entry.pendingForceReload
+      if (!pending) continue
+      entry.pendingForceReload = null
+      await performPollFetch(sourceId, { ...pending, force: true })
+    }
+    return buildReloadResult(entry)
+  })().finally(() => {
+    entry.forceFlushPromise = null
+  })
+  return entry.forceFlushPromise
+}
+
+async function loadPollState(sourceId: string, options: ReloadOptions = {}): Promise<PollReloadResult> {
+  const entry = getEntry(sourceId)
+  const now = Date.now()
+  if (!options.force && entry.data && now - entry.updatedAt < FRESH_MS) {
+    return buildReloadResult(entry)
+  }
+  if (options.force && (entry.inFlight || entry.forceFlushPromise)) {
+    entry.pendingForceReload = options
+    return flushForcePollReloads(sourceId)
+  }
+  if (entry.inFlight) {
+    return entry.inFlight
+  }
+  return performPollFetch(sourceId, options)
 }
 
 export function useSentinelFlowPollStore(sourceId?: string | null, options?: { autoLoad?: boolean }) {
