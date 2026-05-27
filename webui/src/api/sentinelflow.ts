@@ -128,6 +128,26 @@ export type PollAlertsResponse = {
   errors: string[]
 }
 
+export type AlertHeadlinesResponse = {
+  tasks: Array<{
+    task_id: string
+    source_id: string
+    source_name: string
+    updated_at: string
+    title: string
+  }>
+  new_task_ids: string[]
+  groups_by_source: Array<{
+    source_id: string
+    source_name: string
+    count: number
+    task_ids: string[]
+  }>
+  status_counts: Record<string, number>
+  tasks_total: number
+  latest_updated_at: string
+}
+
 export type AlertActionResponse = {
   action: string
   success: boolean
@@ -363,6 +383,25 @@ export type DashboardSummaryResponse = {
   }>
 }
 
+export type AlertPeriodSummaryResponse = {
+  since: string
+  source_id: string
+  tasks_in_period: number
+  judgment: {
+    business_trigger: number
+    false_positive: number
+    true_attack: number
+    unknown: number
+  }
+  operations: {
+    closed_success: number
+    disposed_success: number
+    manual_completed: number
+    banned_ip_count: number
+    banned_ips: string[]
+  }
+}
+
 export type WorkflowSummary = {
   id: string
   name: string
@@ -493,9 +532,23 @@ export async function fetchDashboardSummary(): Promise<DashboardSummaryResponse>
   return getJson('/api/sentinelflow/dashboard/summary')
 }
 
+export async function fetchAlertPeriodSummary(since: string, sourceId = 'all'): Promise<AlertPeriodSummaryResponse> {
+  const params = new URLSearchParams({ since })
+  if (sourceId) params.set('sourceId', sourceId)
+  return getJson(`/api/sentinelflow/alerts/summary/period?${params.toString()}`)
+}
+
 export async function fetchPollAlerts(sourceId?: string): Promise<PollAlertsResponse> {
   const suffix = sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ''
   return getJson(`/api/sentinelflow/alerts/state${suffix}`)
+}
+
+export async function fetchAlertHeadlines(sourceId?: string, since?: string): Promise<AlertHeadlinesResponse> {
+  const params = new URLSearchParams()
+  if (sourceId) params.set('sourceId', sourceId)
+  if (since) params.set('since', since)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return getJson(`/api/sentinelflow/alerts/state/headlines${suffix}`)
 }
 
 export async function fetchAllPollAlerts(): Promise<PollAlertsResponse> {

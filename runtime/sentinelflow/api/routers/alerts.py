@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 import queue
 import threading
@@ -17,6 +18,7 @@ from sentinelflow.api.utils import _extract_alert_payload, _resolve_task
 from sentinelflow.config.runtime import load_runtime_config, save_runtime_config
 
 router = APIRouter(prefix="/api/sentinelflow")
+logger = logging.getLogger(__name__)
 
 active_command_cancellations: dict[str, threading.Event] = {}
 active_command_lock = threading.Lock()
@@ -73,18 +75,29 @@ def _save_source_auto_execute(source_id: str, enabled: bool) -> None:
 
 
 def _state_tasks_payload(source_id: str | None, *, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
-    return dispatch_service.list_task_summaries(
+    started = time.monotonic()
+    tasks, total = dispatch_service.list_task_rows(
         None if source_id in {None, "", "all"} else source_id,
         limit=limit,
         offset=offset,
     )
+    logger.info(
+        "alerts_state_tasks duration_ms=%s row_count=%s total=%s source_id=%s limit=%s offset=%s",
+        round((time.monotonic() - started) * 1000, 2),
+        len(tasks),
+        total,
+        source_id or "all",
+        limit,
+        offset,
+    )
+    return tasks, total
 
 
 def _task_status_counts_payload(source_id: str | None) -> dict[str, int]:
     return dispatch_service.task_status_counts(None if source_id in {None, "", "all"} else source_id)
 
 
-def _all_alerts_state(*, limit: int = 500, offset: int = 0) -> dict[str, Any]:
+def _all_alerts_state(*, limit: int = 120, offset: int = 0) -> dict[str, Any]:
     source_ids = _all_source_ids()
     tasks, total_tasks = _state_tasks_payload(None, limit=limit, offset=offset)
     status_counts = _task_status_counts_payload(None)
@@ -318,61 +331,23 @@ def _resolve_task_outcome_status(task, result: dict[str, Any]) -> str:
 
 
 def _dashboard_summary() -> dict[str, Any]:
-    tasks = dispatch_service.list_tasks()
+    aggregates = dispatch_service.dashboard_aggregates()
     agents = [
         agent
         for agent in list_agent_definitions(AGENT_ROOT, include_system_primary=True)
         if agent.enabled and agent.role == "worker"
     ]
-    dispositions = {
-        "business_trigger": 0,
-        "false_positive": 0,
-        "true_attack": 0,
-        "unknown": 0,
-    }
-    closed_success = 0
-    disposed_success = 0
-    manual_completed = 0
-    banned_ips: set[str] = set()
-    recent_results: list[dict[str, Any]] = []
-
-    for task in tasks:
-        result = task.last_result_data if isinstance(task.last_result_data, dict) else {}
-        disposition = _resolve_result_disposition(result)
-        if disposition not in dispositions:
-            disposition = "unknown"
-        dispositions[disposition] += 1
-        task_outcome_status = _resolve_task_outcome_status(task, result)
-        if task_outcome_status == "succeeded":
-            if task.last_action == "triage_close":
-                closed_success += 1
-            if task.last_action == "triage_dispose":
-                disposed_success += 1
-        if task_outcome_status == "completed":
-            manual_completed += 1
-
-        banned_ips.update(_collect_banned_ips_from_result(result))
-
-        if len(recent_results) < 8 and result:
-            recent_results.append(
-                {
-                    "task_id": task.task_id,
-                    "event_ids": task.event_ids,
-                    "title": task.title,
-                    "status": task.status,
-                    "last_action": task.last_action,
-                    "disposition": disposition,
-                }
-            )
+    status_counts = aggregates["status_counts"]
+    dispositions = aggregates["dispositions"]
 
     return {
         "totals": {
-            "tasks": len(tasks),
-            "queued": len([task for task in tasks if task.status == "queued"]),
-            "running": len([task for task in tasks if task.status == "running"]),
-            "awaiting_approval": len([task for task in tasks if task.status == "awaiting_approval"]),
-            "succeeded": len([task for task in tasks if task.status == "succeeded"]),
-            "failed": len([task for task in tasks if task.status == "failed"]),
+            "tasks": aggregates["total_tasks"],
+            "queued": status_counts.get("queued", 0),
+            "running": status_counts.get("running", 0),
+            "awaiting_approval": status_counts.get("awaiting_approval", 0),
+            "succeeded": status_counts.get("succeeded", 0),
+            "failed": status_counts.get("failed", 0),
             "audit_events": len(audit_service.list_events()),
             "skills": len(skill_runtime.list_skills()),
             "workflows": len(list(WORKFLOW_ROOT.glob("*/workflow.json"))) if WORKFLOW_ROOT.is_dir() else 0,
@@ -380,13 +355,13 @@ def _dashboard_summary() -> dict[str, Any]:
         },
         "judgment": dispositions,
         "operations": {
-            "closed_success": closed_success,
-            "disposed_success": disposed_success,
-            "manual_completed": manual_completed,
-            "banned_ip_count": len(banned_ips),
-            "banned_ips": sorted(banned_ips),
+            "closed_success": aggregates["closed_success"],
+            "disposed_success": aggregates["disposed_success"],
+            "manual_completed": aggregates["manual_completed"],
+            "banned_ip_count": len(aggregates["banned_ips"]),
+            "banned_ips": aggregates["banned_ips"],
         },
-        "recent_results": recent_results,
+        "recent_results": aggregates["recent_results"],
     }
 
 
@@ -400,7 +375,7 @@ def dashboard_summary() -> dict[str, Any]:
 @router.get("/alerts/poll")
 async def poll_alerts(
     sourceId: str | None = None,
-    limit: int = Query(500, ge=1, le=1000),
+    limit: int = Query(120, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     source_id = _resolve_source_id(sourceId)
@@ -430,29 +405,60 @@ async def poll_alerts(
 @router.get("/alerts/state")
 def alerts_state(
     sourceId: str | None = None,
-    limit: int = Query(500, ge=1, le=1000),
+    limit: int = Query(120, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
+    started = time.monotonic()
     source_id = _resolve_source_id(sourceId)
     if source_id == "all":
-        return _all_alerts_state(limit=limit, offset=offset)
-    result = polling_service.get_latest_result(source_id, include_tasks=False)
-    auto_state = auto_execution_service.state(source_id)
-    tasks, total_tasks = _state_tasks_payload(source_id, limit=limit, offset=offset)
-    status_counts = _task_status_counts_payload(source_id)
-    payload = _serialize(result)
-    payload["tasks"] = tasks
-    payload["tasks_total"] = total_tasks
-    payload["tasks_limit"] = limit
-    payload["tasks_offset"] = offset
-    payload["queued_count"] = status_counts.get("queued", 0)
-    payload["completed_count"] = status_counts.get("completed", 0)
-    payload["failed_count"] = status_counts.get("failed", 0)
-    payload["auto_execute_enabled"] = auto_state["enabled"]
-    payload["auto_execute_running"] = auto_state["running"]
-    payload["source_id"] = source_id
-    payload["alert_sources"] = _alert_sources_payload()
+        payload = _all_alerts_state(limit=limit, offset=offset)
+    else:
+        result = polling_service.get_latest_result(source_id, include_tasks=False)
+        auto_state = auto_execution_service.state(source_id)
+        tasks, total_tasks = _state_tasks_payload(source_id, limit=limit, offset=offset)
+        status_counts = _task_status_counts_payload(source_id)
+        payload = _serialize(result)
+        payload["tasks"] = tasks
+        payload["tasks_total"] = total_tasks
+        payload["tasks_limit"] = limit
+        payload["tasks_offset"] = offset
+        payload["queued_count"] = status_counts.get("queued", 0)
+        payload["completed_count"] = status_counts.get("completed", 0)
+        payload["failed_count"] = status_counts.get("failed", 0)
+        payload["auto_execute_enabled"] = auto_state["enabled"]
+        payload["auto_execute_running"] = auto_state["running"]
+        payload["source_id"] = source_id
+        payload["alert_sources"] = _alert_sources_payload()
+    logger.info(
+        "alerts_state duration_ms=%s source_id=%s limit=%s offset=%s tasks=%s",
+        round((time.monotonic() - started) * 1000, 2),
+        source_id,
+        limit,
+        offset,
+        len(payload.get("tasks") or []),
+    )
     return payload
+
+
+@router.get("/alerts/summary/period")
+def alerts_period_summary(
+    since: str = Query(..., min_length=1),
+    sourceId: str | None = None,
+) -> dict[str, Any]:
+    source_id = _resolve_source_id(sourceId)
+    effective_source_id = None if source_id == "all" else source_id
+    return dispatch_service.period_aggregates(since=since, source_id=effective_source_id)
+
+
+@router.get("/alerts/state/headlines")
+def alerts_state_headlines(
+    sourceId: str | None = None,
+    since: str | None = None,
+    limit: int = Query(200, ge=1, le=500),
+) -> dict[str, Any]:
+    source_id = _resolve_source_id(sourceId)
+    effective_source_id = None if source_id in {"all"} else source_id
+    return dispatch_service.list_task_headlines(since=since, source_id=effective_source_id, limit=limit)
 
 
 @router.get("/alerts/tasks/{task_id}")

@@ -21,7 +21,7 @@ class AlertPollingService:
         self.client = client
         self.dedup = dedup
         self.dispatch_service = dispatch_service
-        self._latest_result = PollingDispatchResult(tasks=self.dispatch_service.list_tasks())
+        self._latest_result = PollingDispatchResult(tasks=[])
         self._latest_results: dict[str, PollingDispatchResult] = {}
         self._next_poll_at: dict[str, float] = {}
         self._loop_task: asyncio.Task[None] | None = None
@@ -42,7 +42,7 @@ class AlertPollingService:
                 return selected
         return sources[0]
 
-    def get_latest_result(self, source_id: str | None = None, *, include_tasks: bool = True) -> PollingDispatchResult:
+    def get_latest_result(self, source_id: str | None = None, *, include_tasks: bool = False) -> PollingDispatchResult:
         source = self._resolve_source(source_id)
         effective_source_id = source.id if source is not None else (source_id or "default")
         latest = self._latest_results.get(effective_source_id, self._latest_result)
@@ -220,17 +220,18 @@ class AlertPollingService:
             
         combined_errors = fallback_errors + errors
 
+        status_counts = self.dispatch_service.task_status_counts(source.id)
         latest = PollingDispatchResult(
             fetched_count=len(alerts),
-            queued_count=len(queued_tasks),
+            queued_count=status_counts.get("queued", len(queued_tasks)),
             updated_count=updated,
-            completed_count=len(completed),
+            completed_count=status_counts.get("completed", len(completed)),
             skipped_count=skipped,
             failed_count=len(combined_errors),
             snapshot_complete=snapshot_complete,
             auto_execute_enabled=self._latest_results.get(source.id, self._latest_result).auto_execute_enabled,
             auto_execute_running=self._latest_results.get(source.id, self._latest_result).auto_execute_running,
-            tasks=self.dispatch_service.list_tasks(source_id=source.id),
+            tasks=[],
             errors=combined_errors,
         )
         self._latest_results[source.id] = latest

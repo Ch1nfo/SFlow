@@ -1,8 +1,10 @@
 import sqlite3
 import json
+import logging
 import os
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -16,6 +18,16 @@ from sentinelflow.config.runtime import CONFIG_DIR
 DB_PATH = CONFIG_DIR / "sys_queue.db"
 DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
 BAN_IP_FIELDS = {"ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "name"}
+DEFAULT_LIST_TASK_LIMIT = 120
+SCHEMA_META_BANNED_IPS_BACKFILL_KEY = "alert_tasks_banned_ips_backfill_v1"
+SCHEMA_META_INVALID_RESULT_JSON_AUDIT_KEY = "alert_tasks_invalid_result_json_audit_v1"
+TASK_ROW_COLUMNS = """
+    task_id, event_ids, workflow_name, title, description, source_id, source_name,
+    alert_time, updated_at, sort_time, status, retry_count, last_action,
+    last_result_success, last_result_error, disposition, outcome_status,
+    banned_ips, result_summary
+"""
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -263,6 +275,148 @@ def _parse_task_datetime(value: str, default_tz) -> datetime | None:
         parsed = parsed.replace(tzinfo=default_tz or timezone.utc)
     return parsed.astimezone(timezone.utc)
 
+
+def _resolve_disposition_from_result(result: dict[str, Any]) -> str:
+    final_facts = result.get("final_facts")
+    if isinstance(final_facts, dict):
+        judgment = final_facts.get("judgment", {})
+        if isinstance(judgment, dict):
+            value = str(judgment.get("disposition", "")).strip()
+            if value:
+                return value
+    return str(result.get("disposition", "")).strip() or "unknown"
+
+
+def _resolve_outcome_status_from_result(result: dict[str, Any], status: str = "") -> str:
+    final_facts = result.get("final_facts")
+    if isinstance(final_facts, dict):
+        outcome = final_facts.get("task_outcome", {})
+        if isinstance(outcome, dict):
+            value = str(outcome.get("status", "")).strip()
+            if value:
+                return value
+    return str(status or "").strip()
+
+
+def _derive_task_storage_fields(
+    *,
+    alert_time: str = "",
+    updated_at: str = "",
+    status: str = "",
+    last_result_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    effective_updated = str(updated_at or "").strip() or _now_iso()
+    sort_time = str(alert_time or "").strip() or effective_updated
+    result = last_result_data if isinstance(last_result_data, dict) else {}
+    disposition = _resolve_disposition_from_result(result)
+    outcome_status = _resolve_outcome_status_from_result(result, status)
+    banned = sorted(_collect_banned_ips_from_result(result))
+    summary_text = str(result.get("summary") or result.get("reason") or "").strip()
+    if len(summary_text) > 500:
+        summary_text = summary_text[:497] + "..."
+    return {
+        "sort_time": sort_time,
+        "disposition": disposition,
+        "outcome_status": outcome_status,
+        "banned_ips": json.dumps(banned, ensure_ascii=False),
+        "result_summary": summary_text,
+    }
+
+
+def _decode_updates_result_data(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _enrich_updates_with_derived_fields(
+    updates: dict[str, Any],
+    current: AlertHandlingTask | None = None,
+) -> dict[str, Any]:
+    if not any(key in updates for key in ("alert_time", "updated_at", "status", "last_result_data")):
+        return updates
+    alert_time = str(updates.get("alert_time", current.alert_time if current else "") or "")
+    updated_at = str(updates.get("updated_at", current.updated_at if current else "") or "")
+    status = str(updates.get("status", current.status if current else "") or "")
+    if "last_result_data" in updates:
+        result = _decode_updates_result_data(updates["last_result_data"])
+    elif current and isinstance(current.last_result_data, dict):
+        result = current.last_result_data
+    else:
+        result = {}
+    derived = _derive_task_storage_fields(
+        alert_time=alert_time,
+        updated_at=updated_at,
+        status=status,
+        last_result_data=result,
+    )
+    return {**updates, **derived}
+
+
+def _log_query_duration(name: str, started: float, **fields: Any) -> None:
+    duration_ms = round((time.monotonic() - started) * 1000, 2)
+    logger.info(
+        "dispatch_query %s duration_ms=%s %s",
+        name,
+        duration_ms,
+        " ".join(f"{key}={value}" for key, value in fields.items()),
+    )
+
+
+SQL_DISPOSITION_EXPR = """
+COALESCE(
+    NULLIF(disposition, ''),
+    CASE WHEN json_valid(last_result_data) = 1 THEN NULLIF(json_extract(last_result_data, '$.final_facts.judgment.disposition'), '') END,
+    CASE WHEN json_valid(last_result_data) = 1 THEN NULLIF(json_extract(last_result_data, '$.disposition'), '') END,
+    'unknown'
+)
+"""
+
+SQL_OUTCOME_STATUS_EXPR = """
+COALESCE(
+    NULLIF(outcome_status, ''),
+    CASE WHEN json_valid(last_result_data) = 1 THEN NULLIF(json_extract(last_result_data, '$.final_facts.task_outcome.status'), '') END,
+    status
+)
+"""
+
+DISPOSITION_BUCKETS = ("business_trigger", "false_positive", "true_attack", "unknown")
+
+
+def _bucket_disposition(value: str) -> str:
+    disposition = str(value or "unknown").strip() or "unknown"
+    return disposition if disposition in DISPOSITION_BUCKETS else "unknown"
+
+
+def _parse_banned_ips_column(raw: Any) -> list[str]:
+    if not raw:
+        return []
+    try:
+        values = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(values, list):
+        return []
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def _period_filter_sql(*, since: str, source_id: str | None = None) -> tuple[str, list[Any]]:
+    clauses = ["(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time >= ?)"]
+    params: list[Any] = [since]
+    if source_id:
+        clauses.append("source_id = ?")
+        params.append(source_id)
+    return " AND ".join(clauses), params
+
+
 class AlertDispatchService:
     """Dispatches fresh alerts into queued SentinelFlow handling tasks (SQLite backed)."""
 
@@ -303,6 +457,7 @@ class AlertDispatchService:
         self.recover_stale_running_tasks()
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        self._ensure_schema_meta_table(conn)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(alert_tasks)").fetchall()}
         if "alert_time" not in columns:
             conn.execute("ALTER TABLE alert_tasks ADD COLUMN alert_time TEXT DEFAULT ''")
@@ -315,12 +470,134 @@ class AlertDispatchService:
         if "updated_at" not in columns:
             conn.execute("ALTER TABLE alert_tasks ADD COLUMN updated_at TEXT DEFAULT ''")
             conn.execute("UPDATE alert_tasks SET updated_at = COALESCE(updated_at, '') WHERE updated_at = ''")
+        if "sort_time" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN sort_time TEXT NOT NULL DEFAULT ''")
+        if "disposition" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN disposition TEXT DEFAULT ''")
+        if "outcome_status" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN outcome_status TEXT DEFAULT ''")
+        if "banned_ips" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN banned_ips TEXT")
+        if "result_summary" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN result_summary TEXT DEFAULT ''")
+        conn.execute("UPDATE alert_tasks SET sort_time = COALESCE(NULLIF(alert_time, ''), updated_at) WHERE sort_time IS NULL OR sort_time = ''")
+        conn.execute(
+            f"""
+            UPDATE alert_tasks
+            SET disposition = {SQL_DISPOSITION_EXPR}
+            WHERE disposition IS NULL OR disposition = ''
+            """
+        )
+        conn.execute(
+            f"""
+            UPDATE alert_tasks
+            SET outcome_status = {SQL_OUTCOME_STATUS_EXPR}
+            WHERE outcome_status IS NULL OR outcome_status = ''
+            """
+        )
+        self._maybe_backfill_banned_ips(conn)
+        self._maybe_audit_invalid_result_json(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_event_ids ON alert_tasks(event_ids)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_source_event ON alert_tasks(source_id, event_ids)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_source_status ON alert_tasks(source_id, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_status ON alert_tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_event_status ON alert_tasks(event_ids, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_updated_at ON alert_tasks(updated_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_sort_time ON alert_tasks(sort_time DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_source_sort ON alert_tasks(source_id, sort_time DESC)")
+
+    def _ensure_schema_meta_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+
+    def _get_schema_meta(self, conn: sqlite3.Connection, key: str) -> str:
+        row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else ""
+
+    def _set_schema_meta(self, conn: sqlite3.Connection, key: str, value: str) -> None:
+        conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)", (key, value))
+
+    def _is_banned_ips_backfill_complete(self, conn: sqlite3.Connection) -> bool:
+        return self._get_schema_meta(conn, SCHEMA_META_BANNED_IPS_BACKFILL_KEY) == "completed"
+
+    def _maybe_backfill_banned_ips(self, conn: sqlite3.Connection) -> None:
+        if self._is_banned_ips_backfill_complete(conn):
+            return
+        rows = conn.execute(
+            """
+            SELECT task_id, last_result_data
+            FROM alert_tasks
+            WHERE banned_ips IS NULL OR banned_ips IN ('', '[]')
+            """
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            banned: list[str] = []
+            raw = row["last_result_data"]
+            if raw and str(raw).strip() not in {"", "{}"}:
+                try:
+                    result = json.loads(raw)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Skipping banned_ips backfill for task %s due to invalid JSON.",
+                        row["task_id"],
+                    )
+                else:
+                    if isinstance(result, dict):
+                        banned = sorted(_collect_banned_ips_from_result(result))
+            conn.execute(
+                "UPDATE alert_tasks SET banned_ips = ? WHERE task_id = ?",
+                (json.dumps(banned, ensure_ascii=False), row["task_id"]),
+            )
+            updated += 1
+        conn.execute(
+            """
+            UPDATE alert_tasks
+            SET banned_ips = '[]'
+            WHERE banned_ips IS NULL OR banned_ips = ''
+            """
+        )
+        self._set_schema_meta(conn, SCHEMA_META_BANNED_IPS_BACKFILL_KEY, "completed")
+        logger.info("Completed banned_ips backfill for %s alert task(s).", updated)
+
+    def _maybe_audit_invalid_result_json(self, conn: sqlite3.Connection) -> None:
+        if self._get_schema_meta(conn, SCHEMA_META_INVALID_RESULT_JSON_AUDIT_KEY) == "completed":
+            return
+        invalid_count = 0
+        sample_ids: list[str] = []
+        for row in conn.execute(
+            """
+            SELECT task_id FROM alert_tasks
+            WHERE last_result_data IS NOT NULL
+              AND last_result_data NOT IN ('', '{}')
+              AND json_valid(last_result_data) = 0
+            """
+        ):
+            invalid_count += 1
+            if len(sample_ids) < 5:
+                sample_ids.append(str(row["task_id"]))
+        if invalid_count:
+            logger.warning(
+                "alert_tasks contains invalid last_result_data JSON for %s task(s); sample task_ids=%s",
+                invalid_count,
+                sample_ids,
+            )
+        self._set_schema_meta(conn, SCHEMA_META_INVALID_RESULT_JSON_AUDIT_KEY, "completed")
+
+    def _aggregate_banned_ips(self, conn: sqlite3.Connection, *, where_clause: str = "", params: tuple[Any, ...] = ()) -> list[str]:
+        query = "SELECT banned_ips FROM alert_tasks"
+        if where_clause:
+            query += f" WHERE {where_clause}"
+        banned_ips: set[str] = set()
+        for row in conn.execute(query, params).fetchall():
+            banned_ips.update(_parse_banned_ips_column(row["banned_ips"]))
+        return sorted(banned_ips)
 
     def _get_conn(self) -> sqlite3.Connection:
         return open_sqlite_connection(DB_PATH)
@@ -364,26 +641,41 @@ class AlertDispatchService:
         return value
 
     def _save_task(self, task: AlertHandlingTask) -> None:
+        updated_at = task.updated_at or _now_iso()
+        derived = _derive_task_storage_fields(
+            alert_time=task.alert_time,
+            updated_at=updated_at,
+            status=task.status,
+            last_result_data=task.last_result_data if isinstance(task.last_result_data, dict) else {},
+        )
         with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
             conn.execute('''
                 INSERT OR REPLACE INTO alert_tasks
-                (task_id, event_ids, workflow_name, title, description, source_id, source_name, alert_time, updated_at, status, retry_count, last_action, last_result_success, last_result_error, last_result_data, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (task_id, event_ids, workflow_name, title, description, source_id, source_name, alert_time, updated_at, sort_time, status, retry_count, last_action, last_result_success, last_result_error, last_result_data, payload, disposition, outcome_status, banned_ips, result_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 task.task_id, task.event_ids, task.workflow_name, task.title, task.description,
                 task.source_id, task.source_name,
-                task.alert_time, task.updated_at or _now_iso(), task.status, task.retry_count, task.last_action,
+                task.alert_time, updated_at, derived["sort_time"], task.status, task.retry_count, task.last_action,
                 1 if task.last_result_success else (0 if task.last_result_success is False else None),
-                task.last_result_error, json.dumps(task.last_result_data), json.dumps(task.payload)
+                task.last_result_error, json.dumps(task.last_result_data), json.dumps(task.payload),
+                derived["disposition"], derived["outcome_status"], derived["banned_ips"], derived["result_summary"],
             ))
 
     def _insert_task_if_event_absent(self, task: AlertHandlingTask) -> bool:
+        updated_at = task.updated_at or _now_iso()
+        derived = _derive_task_storage_fields(
+            alert_time=task.alert_time,
+            updated_at=updated_at,
+            status=task.status,
+            last_result_data=task.last_result_data if isinstance(task.last_result_data, dict) else {},
+        )
         with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
             cursor = conn.execute(
                 '''
                 INSERT INTO alert_tasks
-                (task_id, event_ids, workflow_name, title, description, source_id, source_name, alert_time, updated_at, status, retry_count, last_action, last_result_success, last_result_error, last_result_data, payload)
-                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                (task_id, event_ids, workflow_name, title, description, source_id, source_name, alert_time, updated_at, sort_time, status, retry_count, last_action, last_result_success, last_result_error, last_result_data, payload, disposition, outcome_status, banned_ips, result_summary)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 WHERE NOT EXISTS (
                     SELECT 1 FROM alert_tasks WHERE source_id = ? AND event_ids = ?
                 )
@@ -397,7 +689,8 @@ class AlertDispatchService:
                     task.source_id,
                     task.source_name,
                     task.alert_time,
-                    task.updated_at or _now_iso(),
+                    updated_at,
+                    derived["sort_time"],
                     task.status,
                     task.retry_count,
                     task.last_action,
@@ -405,6 +698,10 @@ class AlertDispatchService:
                     task.last_result_error,
                     json.dumps(task.last_result_data),
                     json.dumps(task.payload),
+                    derived["disposition"],
+                    derived["outcome_status"],
+                    derived["banned_ips"],
+                    derived["result_summary"],
                     task.source_id,
                     task.event_ids,
                 ),
@@ -425,17 +722,21 @@ class AlertDispatchService:
             "updated_at": updates.get("updated_at") or _now_iso(),
         }
 
-        assignments = ", ".join(f"{column} = ?" for column in updates)
-        params: list[Any] = list(updates.values())
-        query = f"UPDATE alert_tasks SET {assignments} WHERE task_id = ?"
-        params.append(task_id)
-        if expected_statuses:
-            status_list = list(expected_statuses)
-            placeholders = ", ".join("?" for _ in status_list)
-            query += f" AND status IN ({placeholders})"
-            params.extend(status_list)
-
         with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+            current_row = conn.execute("SELECT * FROM alert_tasks WHERE task_id = ?", (task_id,)).fetchone()
+            current = self._row_to_task(current_row) if current_row else None
+            updates = _enrich_updates_with_derived_fields(updates, current)
+
+            assignments = ", ".join(f"{column} = ?" for column in updates)
+            params: list[Any] = list(updates.values())
+            query = f"UPDATE alert_tasks SET {assignments} WHERE task_id = ?"
+            params.append(task_id)
+            if expected_statuses:
+                status_list = list(expected_statuses)
+                placeholders = ", ".join("?" for _ in status_list)
+                query += f" AND status IN ({placeholders})"
+                params.extend(status_list)
+
             cursor = conn.execute(query, tuple(params))
             if cursor.rowcount <= 0:
                 return None
@@ -847,29 +1148,25 @@ class AlertDispatchService:
                 rows = conn.execute("SELECT * FROM alert_tasks").fetchall()
             return [self._row_to_task(row) for row in rows]
 
-    def list_task_summaries(
+    def list_task_rows(
         self,
         source_id: str | None = None,
         *,
-        limit: int = 500,
+        limit: int = DEFAULT_LIST_TASK_LIMIT,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        normalized_limit = max(1, min(int(limit or 500), 1000))
+        started = time.monotonic()
+        normalized_limit = max(1, min(int(limit or DEFAULT_LIST_TASK_LIMIT), 1000))
         normalized_offset = max(0, int(offset or 0))
-        columns = """
-            task_id, event_ids, workflow_name, title, description, source_id, source_name,
-            alert_time, updated_at, status, retry_count, last_action, last_result_success,
-            last_result_error, last_result_data, payload
-        """
         with self.lock, sqlite_connection(DB_PATH) as conn:
             if source_id:
                 total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks WHERE source_id = ?", (source_id,)).fetchone()[0])
                 rows = conn.execute(
                     f"""
-                    SELECT {columns}
+                    SELECT {TASK_ROW_COLUMNS}
                     FROM alert_tasks
                     WHERE source_id = ?
-                    ORDER BY COALESCE(NULLIF(alert_time, ''), updated_at) DESC, updated_at DESC
+                    ORDER BY sort_time DESC
                     LIMIT ? OFFSET ?
                     """,
                     (source_id, normalized_limit, normalized_offset),
@@ -878,14 +1175,33 @@ class AlertDispatchService:
                 total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks").fetchone()[0])
                 rows = conn.execute(
                     f"""
-                    SELECT {columns}
+                    SELECT {TASK_ROW_COLUMNS}
                     FROM alert_tasks
-                    ORDER BY COALESCE(NULLIF(alert_time, ''), updated_at) DESC, updated_at DESC
+                    ORDER BY sort_time DESC
                     LIMIT ? OFFSET ?
                     """,
                     (normalized_limit, normalized_offset),
                 ).fetchall()
-        return [self._row_to_task_summary(row) for row in rows], total
+        summaries = [self._row_to_task_summary(row) for row in rows]
+        _log_query_duration(
+            "list_task_rows",
+            started,
+            row_count=len(summaries),
+            total=total,
+            source_id=source_id or "all",
+            limit=normalized_limit,
+            offset=normalized_offset,
+        )
+        return summaries, total
+
+    def list_task_summaries(
+        self,
+        source_id: str | None = None,
+        *,
+        limit: int = DEFAULT_LIST_TASK_LIMIT,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        return self.list_task_rows(source_id, limit=limit, offset=offset)
 
     def task_status_counts(self, source_id: str | None = None) -> dict[str, int]:
         query = "SELECT status, COUNT(*) AS count FROM alert_tasks"
@@ -897,6 +1213,261 @@ class AlertDispatchService:
         with self.lock, sqlite_connection(DB_PATH) as conn:
             rows = conn.execute(query, params).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
+
+    def dashboard_aggregates(self) -> dict[str, Any]:
+        started = time.monotonic()
+        disposition_buckets = {bucket: 0 for bucket in DISPOSITION_BUCKETS}
+        with self.lock, sqlite_connection(DB_PATH) as conn:
+            total_tasks = int(conn.execute("SELECT COUNT(*) FROM alert_tasks").fetchone()[0])
+            status_counts = {
+                str(row["status"]): int(row["count"])
+                for row in conn.execute("SELECT status, COUNT(*) AS count FROM alert_tasks GROUP BY status").fetchall()
+            }
+            disposition_rows = conn.execute(
+                f"""
+                SELECT {SQL_DISPOSITION_EXPR} AS disposition, COUNT(*) AS count
+                FROM alert_tasks
+                GROUP BY disposition
+                """
+            ).fetchall()
+            closed_success = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM alert_tasks
+                    WHERE last_action = 'triage_close'
+                      AND {SQL_OUTCOME_STATUS_EXPR} = 'succeeded'
+                    """
+                ).fetchone()[0]
+            )
+            disposed_success = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM alert_tasks
+                    WHERE last_action = 'triage_dispose'
+                      AND {SQL_OUTCOME_STATUS_EXPR} = 'succeeded'
+                    """
+                ).fetchone()[0]
+            )
+            manual_completed = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM alert_tasks
+                    WHERE {SQL_OUTCOME_STATUS_EXPR} = 'completed'
+                    """
+                ).fetchone()[0]
+            )
+            recent_rows = conn.execute(
+                f"""
+                SELECT task_id, event_ids, title, status, last_action,
+                       {SQL_DISPOSITION_EXPR} AS disposition
+                FROM alert_tasks
+                WHERE last_result_success = 1
+                   OR COALESCE(NULLIF(result_summary, ''), '') != ''
+                   OR COALESCE(NULLIF(disposition, ''), '') NOT IN ('', 'unknown')
+                ORDER BY updated_at DESC
+                LIMIT 8
+                """
+            ).fetchall()
+            banned_ips = self._aggregate_banned_ips(conn)
+
+        for row in disposition_rows:
+            disposition_buckets[_bucket_disposition(str(row["disposition"]))] += int(row["count"])
+
+        recent_results = [
+            {
+                "task_id": row["task_id"],
+                "event_ids": row["event_ids"],
+                "title": row["title"],
+                "status": row["status"],
+                "last_action": row["last_action"],
+                "disposition": str(row["disposition"] or "unknown").strip() or "unknown",
+            }
+            for row in recent_rows
+        ]
+        _log_query_duration("dashboard_aggregates", started, row_count=total_tasks)
+        return {
+            "total_tasks": total_tasks,
+            "status_counts": status_counts,
+            "dispositions": disposition_buckets,
+            "closed_success": closed_success,
+            "disposed_success": disposed_success,
+            "manual_completed": manual_completed,
+            "banned_ips": banned_ips,
+            "recent_results": recent_results,
+        }
+
+    def period_aggregates(
+        self,
+        *,
+        since: str,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        since_value = str(since or "").strip()
+        if not since_value:
+            raise ValueError("since is required for period aggregates")
+        where_clause, params = _period_filter_sql(since=since_value, source_id=source_id)
+        disposition_buckets = {bucket: 0 for bucket in DISPOSITION_BUCKETS}
+        with self.lock, sqlite_connection(DB_PATH) as conn:
+            tasks_in_period = int(
+                conn.execute(f"SELECT COUNT(*) FROM alert_tasks WHERE {where_clause}", tuple(params)).fetchone()[0]
+            )
+            disposition_rows = conn.execute(
+                f"""
+                SELECT {SQL_DISPOSITION_EXPR} AS disposition, COUNT(*) AS count
+                FROM alert_tasks
+                WHERE {where_clause}
+                GROUP BY disposition
+                """,
+                tuple(params),
+            ).fetchall()
+            manual_completed = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM alert_tasks
+                    WHERE {where_clause}
+                      AND {SQL_OUTCOME_STATUS_EXPR} = 'completed'
+                    """,
+                    tuple(params),
+                ).fetchone()[0]
+            )
+            closed_success = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM alert_tasks
+                    WHERE {where_clause}
+                      AND last_action = 'triage_close'
+                      AND {SQL_OUTCOME_STATUS_EXPR} = 'succeeded'
+                    """,
+                    tuple(params),
+                ).fetchone()[0]
+            )
+            disposed_success = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM alert_tasks
+                    WHERE {where_clause}
+                      AND last_action = 'triage_dispose'
+                      AND {SQL_OUTCOME_STATUS_EXPR} = 'succeeded'
+                    """,
+                    tuple(params),
+                ).fetchone()[0]
+            )
+            banned_ips = self._aggregate_banned_ips(conn, where_clause=where_clause, params=tuple(params))
+
+        for row in disposition_rows:
+            disposition_buckets[_bucket_disposition(str(row["disposition"]))] += int(row["count"])
+
+        _log_query_duration(
+            "period_aggregates",
+            started,
+            row_count=tasks_in_period,
+            source_id=source_id or "all",
+            since=since_value,
+        )
+        return {
+            "since": since_value,
+            "source_id": source_id or "all",
+            "tasks_in_period": tasks_in_period,
+            "judgment": disposition_buckets,
+            "operations": {
+                "closed_success": closed_success,
+                "disposed_success": disposed_success,
+                "manual_completed": manual_completed,
+                "banned_ip_count": len(banned_ips),
+                "banned_ips": banned_ips,
+            },
+        }
+
+    def list_task_headlines(
+        self,
+        *,
+        since: str | None = None,
+        source_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        normalized_limit = max(1, min(int(limit or 200), 500))
+        clauses: list[str] = []
+        params: list[Any] = []
+        if source_id:
+            clauses.append("source_id = ?")
+            params.append(source_id)
+        if since:
+            clauses.append("updated_at > ?")
+            params.append(since)
+        where_clause = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.lock, sqlite_connection(DB_PATH) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT task_id, source_id, source_name, updated_at, title
+                FROM alert_tasks
+                {where_clause}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                tuple([*params, normalized_limit]),
+            ).fetchall()
+            status_query = "SELECT status, COUNT(*) AS count FROM alert_tasks"
+            status_params: tuple[Any, ...] = ()
+            if source_id:
+                status_query += " WHERE source_id = ?"
+                status_params = (source_id,)
+            status_query += " GROUP BY status"
+            status_counts = {
+                str(row["status"]): int(row["count"])
+                for row in conn.execute(status_query, status_params).fetchall()
+            }
+            total_tasks = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM alert_tasks" + (" WHERE source_id = ?" if source_id else ""),
+                    (source_id,) if source_id else (),
+                ).fetchone()[0]
+            )
+            latest_updated_at = conn.execute(
+                "SELECT MAX(updated_at) FROM alert_tasks" + (" WHERE source_id = ?" if source_id else ""),
+                (source_id,) if source_id else (),
+            ).fetchone()[0]
+
+        tasks = [
+            {
+                "task_id": row["task_id"],
+                "source_id": row["source_id"] if "source_id" in row.keys() else "default",
+                "source_name": row["source_name"] if "source_name" in row.keys() else "默认告警源",
+                "updated_at": row["updated_at"] if "updated_at" in row.keys() else "",
+                "title": row["title"],
+            }
+            for row in rows
+        ]
+        groups: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            source_key = str(task["source_id"] or "default")
+            group = groups.get(source_key)
+            if group is None:
+                groups[source_key] = {
+                    "source_id": source_key,
+                    "source_name": task["source_name"],
+                    "count": 1,
+                    "task_ids": [task["task_id"]],
+                }
+            else:
+                group["count"] += 1
+                group["task_ids"].append(task["task_id"])
+        _log_query_duration(
+            "list_task_headlines",
+            started,
+            row_count=len(tasks),
+            source_id=source_id or "all",
+            since=since or "",
+        )
+        return {
+            "tasks": tasks,
+            "new_task_ids": [task["task_id"] for task in tasks],
+            "groups_by_source": list(groups.values()),
+            "status_counts": status_counts,
+            "tasks_total": total_tasks,
+            "latest_updated_at": str(latest_updated_at or ""),
+        }
 
     def _compact_result_data(self, raw: str | None) -> dict[str, Any]:
         if not raw:
@@ -983,6 +1554,30 @@ class AlertDispatchService:
 
     def _row_to_task_summary(self, row) -> dict[str, Any]:
         result_success = row["last_result_success"]
+        disposition = str(row["disposition"] if "disposition" in row.keys() else "").strip() or "unknown"
+        outcome_status = str(row["outcome_status"] if "outcome_status" in row.keys() else "").strip()
+        banned_ips_raw = row["banned_ips"] if "banned_ips" in row.keys() else "[]"
+        banned_ips: list[str] = []
+        if banned_ips_raw:
+            try:
+                parsed = json.loads(banned_ips_raw)
+                if isinstance(parsed, list):
+                    banned_ips = [str(item).strip() for item in parsed if str(item).strip()]
+            except json.JSONDecodeError:
+                banned_ips = []
+        result_summary = str(row["result_summary"] if "result_summary" in row.keys() else "").strip()
+        compact_result: dict[str, Any] = {
+            "disposition": disposition,
+            "summary": result_summary,
+            "final_facts": {
+                "judgment": {"disposition": disposition},
+            },
+        }
+        if outcome_status:
+            compact_result["final_facts"]["task_outcome"] = {"status": outcome_status}
+        if banned_ips:
+            compact_result["banned_ips"] = banned_ips
+            compact_result["banned_ip_count"] = len(banned_ips)
         return {
             "task_id": row["task_id"],
             "event_ids": row["event_ids"],
@@ -998,8 +1593,8 @@ class AlertDispatchService:
             "last_action": row["last_action"],
             "last_result_success": bool(result_success) if result_success is not None else None,
             "last_result_error": row["last_result_error"],
-            "last_result_data": self._compact_result_data(row["last_result_data"] if "last_result_data" in row.keys() else None),
-            "payload": self._compact_payload(row["payload"] if "payload" in row.keys() else None),
+            "last_result_data": compact_result,
+            "payload": {},
             "summary": True,
         }
 

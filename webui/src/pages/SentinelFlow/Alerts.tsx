@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, RefreshCw, Siren } from 'lucide-react'
 import {
   decideApproval,
+  fetchAlertPeriodSummary,
   fetchAlertTaskDetail,
   handleAlertAction,
   type AlertActionResponse,
+  type AlertPeriodSummaryResponse,
   type AlertTask,
 } from '@/api/sentinelflow'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
@@ -271,6 +273,10 @@ function getStartOfWeek(value: Date): Date {
   return startOfDay
 }
 
+function getStartOfWeekIso(value: Date): string {
+  return getStartOfWeek(value).toISOString()
+}
+
 function matchesAlertTimeRange(task: AlertTask, range: AlertTimeRange, now: Date): boolean {
   const alertDate = parseAlertDate(task.alert_time)
   if (!alertDate) return true
@@ -314,6 +320,7 @@ export default function SentinelFlowAlertsPage() {
   const [visibleTaskCount, setVisibleTaskCount] = useState(ALERT_QUEUE_INITIAL_RENDER_COUNT)
   const [weekSummaryEnabled, setWeekSummaryEnabled] = useState(false)
   const [weekSummaryLoadState, setWeekSummaryLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [weekSummary, setWeekSummary] = useState<AlertPeriodSummaryResponse | null>(null)
   const queuePanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
   const weekSummaryRef = useRef<HTMLDivElement | null>(null)
@@ -326,21 +333,34 @@ export default function SentinelFlowAlertsPage() {
     error,
     reload: reloadPollStore,
   } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: true })
-  const {
-    data: allSourcesPoll,
-    reload: reloadAllSourcesPoll,
-  } = useSentinelFlowPollStore('all', { autoLoad: false })
   const queueLoading = pollLoading && !data
   const autoExecuteEnabled = Boolean(data?.auto_execute_enabled)
   const autoExecuteRunning = Boolean(data?.auto_execute_running)
   const liveRefreshing = autoExecuteEnabled || actionState.running || (data?.tasks ?? []).some((task) => task.status === 'running')
 
+  const loadWeekSummary = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
+    if (!options?.silent) {
+      setWeekSummaryLoadState('loading')
+    }
+    try {
+      const since = getStartOfWeekIso(new Date())
+      const summary = await fetchAlertPeriodSummary(since, 'all')
+      setWeekSummary(summary)
+      setWeekSummaryLoadState('ready')
+    } catch {
+      if (!options?.silent) {
+        setWeekSummary(null)
+        setWeekSummaryLoadState('error')
+      }
+    }
+  }, [])
+
   const refreshTasks = useCallback(async (options?: { force?: boolean; silent?: boolean }) => {
     await reloadPollStore(options)
     if (weekSummaryEnabled) {
-      await reloadAllSourcesPoll(options)
+      await loadWeekSummary({ force: options?.force, silent: options?.silent ?? true })
     }
-  }, [reloadPollStore, reloadAllSourcesPoll, weekSummaryEnabled])
+  }, [reloadPollStore, weekSummaryEnabled, loadWeekSummary])
 
   useEffect(() => {
     if (!data) return
@@ -374,31 +394,12 @@ export default function SentinelFlowAlertsPage() {
 
   useEffect(() => {
     if (!weekSummaryEnabled) return
-    let cancelled = false
-    setWeekSummaryLoadState('loading')
-    void reloadAllSourcesPoll({ silent: true }).then(({ data, error }) => {
-      if (cancelled) return
-      if (error && !data) {
-        setWeekSummaryLoadState('error')
-        return
-      }
-      setWeekSummaryLoadState('ready')
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [weekSummaryEnabled, reloadAllSourcesPoll])
+    void loadWeekSummary()
+  }, [weekSummaryEnabled, loadWeekSummary])
 
   const retryWeekSummary = useCallback(() => {
-    setWeekSummaryLoadState('loading')
-    void reloadAllSourcesPoll({ force: true, silent: true }).then(({ data, error }) => {
-      if (error && !data) {
-        setWeekSummaryLoadState('error')
-        return
-      }
-      setWeekSummaryLoadState('ready')
-    })
-  }, [reloadAllSourcesPoll])
+    void loadWeekSummary({ force: true })
+  }, [loadWeekSummary])
 
   useSentinelFlowLiveRefresh(
     () => refreshTasks({ silent: true }),
@@ -440,12 +441,6 @@ export default function SentinelFlowAlertsPage() {
   const selectedTaskSummary = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
   const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
   const summary = useMemo(() => buildAlertsSummary(tasks), [tasks])
-  const weekSummary = useMemo(() => {
-    if (weekSummaryLoadState !== 'ready') return null
-    const now = new Date()
-    const allSourceTasks = (allSourcesPoll?.tasks ?? []).filter((task) => matchesAlertTimeRange(task, 'week', now))
-    return buildAlertsSummary(allSourceTasks)
-  }, [allSourcesPoll?.tasks, weekSummaryLoadState])
 
   useEffect(() => {
     const taskId = selectedTaskSummary?.task_id ?? ''

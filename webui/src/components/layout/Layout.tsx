@@ -16,9 +16,8 @@ import {
   Workflow as WorkflowIcon,
 } from 'lucide-react'
 import { brand, withProductName } from '@/config/brand'
-import { type AlertTask, type PollAlertsResponse } from '@/api/sentinelflow'
+import { fetchAlertHeadlines } from '@/api/sentinelflow'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
-import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 
 type NavItem = {
   name: string
@@ -44,22 +43,8 @@ type NewAlertNotice = {
   timestamp: string
 }
 
-function getPayloadSourceName(payload: AlertTask['payload']): string {
-  const value = payload.alert_source_name
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function getAlertTaskSourceName(task: AlertTask, result: PollAlertsResponse): string {
-  const sourceName = task.source_name?.trim()
-  if (sourceName) return sourceName
-
-  const payloadSourceName = getPayloadSourceName(task.payload)
-  if (payloadSourceName) return payloadSourceName
-
-  const sourceId = task.source_id?.trim()
-  const matchedSourceName = result.alert_sources?.find((source) => source.id === sourceId)?.name.trim()
-  return matchedSourceName || '默认告警源'
-}
+const ALERT_NOTICE_ROUTES = new Set(['/', '/alerts', '/tasks'])
+const ALERT_NOTICE_INTERVAL_MS = 20000
 
 export default function Layout() {
   const location = useLocation()
@@ -67,7 +52,7 @@ export default function Layout() {
   const [expandedContentVisible, setExpandedContentVisible] = useState(true)
   const [newAlertNotice, setNewAlertNotice] = useState<NewAlertNotice | null>(null)
   const knownTaskIdsRef = useRef<Set<string> | null>(null)
-  const { reload: reloadAllPoll } = useSentinelFlowPollStore('all')
+  const alertNoticeEnabled = ALERT_NOTICE_ROUTES.has(location.pathname)
 
   const navigation = useMemo<NavSection[]>(
     () => [
@@ -101,20 +86,24 @@ export default function Layout() {
 
   const refreshAlertNotice = useMemo(
     () => async () => {
-      const { data: pollResult } = await reloadAllPoll({ silent: true })
-      if (!pollResult) return
-      const currentTaskIds = new Set((pollResult.tasks ?? []).map((task) => task.task_id).filter(Boolean))
+      let headlines
+      try {
+        headlines = await fetchAlertHeadlines('all')
+      } catch {
+        return
+      }
+      const currentTaskIds = new Set(headlines.tasks.map((task) => task.task_id).filter(Boolean))
       if (knownTaskIdsRef.current === null) {
         knownTaskIdsRef.current = currentTaskIds
         return
       }
       const previous = knownTaskIdsRef.current
       const groupsBySource = new Map<string, NewAlertNoticeGroup>()
-      for (const task of pollResult.tasks ?? []) {
+      for (const task of headlines.tasks) {
         const taskId = task.task_id
         if (!taskId || previous.has(taskId)) continue
         const sourceId = task.source_id?.trim() || 'default'
-        const sourceName = getAlertTaskSourceName(task, pollResult)
+        const sourceName = task.source_name?.trim() || '默认告警源'
         const groupKey = `${sourceId}:${sourceName}`
         const currentGroup = groupsBySource.get(groupKey)
         if (currentGroup) {
@@ -130,10 +119,13 @@ export default function Layout() {
         setNewAlertNotice({ total, groups, timestamp: new Date().toISOString() })
       }
     },
-    [reloadAllPoll],
+    [],
   )
 
-  useSentinelFlowLiveRefresh(refreshAlertNotice, { intervalMs: 5000 })
+  useSentinelFlowLiveRefresh(refreshAlertNotice, {
+    enabled: alertNoticeEnabled,
+    intervalMs: ALERT_NOTICE_INTERVAL_MS,
+  })
 
   useEffect(() => {
     if (!newAlertNotice) return
