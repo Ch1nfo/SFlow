@@ -13,6 +13,7 @@ from sentinelflow.agent.context_utils import (
 from sentinelflow.agent.message_trace import build_skill_input_audit_record
 from sentinelflow.agent.run_log_tracer import get_active_tracer, scope_label
 from sentinelflow.agent.state import SentinelFlowAgentState
+from sentinelflow.domain.enums import SkillType
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 
@@ -424,6 +425,21 @@ def build_agent_tools(
                     {"success": False, "data": {}, "error": "用户已停止当前任务。"},
                     ensure_ascii=False,
                 )
+            skill, resolve_error = _resolve_skill_or_error(skill_name)
+            if resolve_error is not None:
+                return resolve_error
+            if skill.spec.type == SkillType.DOC:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "data": {"skill_name": skill_name},
+                        "error": (
+                            f"Skill「{skill_name}」是纯文本文档型 Skill，不能使用 execute_skill；"
+                            f'请改用 read_skill_document("{skill_name}") 读取说明。'
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             executable_skills_raw = state.get("executable_skills")
             executable_skills = set(executable_skills_raw or [])
             if executable_skills_raw is not None and skill_name not in executable_skills:
@@ -439,9 +455,6 @@ def build_agent_tools(
                     {"success": False, "data": {}, "error": f"当前 Agent 未被授权执行技能 {skill_name}。"},
                     ensure_ascii=False,
                 )
-            skill, resolve_error = _resolve_skill_or_error(skill_name)
-            if resolve_error is not None:
-                return resolve_error
             input_schema = getattr(skill.spec, "input_schema", {})
             input_schema = input_schema if isinstance(input_schema, dict) else {}
             schema_validation = validate_skill_input_schema(
@@ -583,6 +596,21 @@ def build_agent_tools(
                     {"success": False, "data": {}, "error": "用户已停止当前任务。"},
                     ensure_ascii=False,
                 )
+            skill, resolve_error = _resolve_skill_or_error(skill_name)
+            if resolve_error is not None:
+                return resolve_error
+            if skill.spec.type == SkillType.DOC:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "data": {"skill_name": skill_name},
+                        "error": (
+                            f"Skill「{skill_name}」是纯文本文档型 Skill，不能使用 execute_skill_no_args；"
+                            f'请改用 read_skill_document("{skill_name}") 读取说明。'
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
             executable_skills_raw = state.get("executable_skills")
             executable_skills = set(executable_skills_raw or [])
             if executable_skills_raw is not None and skill_name not in executable_skills:
@@ -590,9 +618,6 @@ def build_agent_tools(
                     {"success": False, "data": {}, "error": f"当前 Agent 未被授权执行技能 {skill_name}。"},
                     ensure_ascii=False,
                 )
-            skill, resolve_error = _resolve_skill_or_error(skill_name)
-            if resolve_error is not None:
-                return resolve_error
             no_args: dict[str, Any] = {}
             input_schema = getattr(skill.spec, "input_schema", {})
             input_schema = input_schema if isinstance(input_schema, dict) else {}
