@@ -30,13 +30,77 @@ const DEBUG_LOG_UNLOCK_CLICKS = 5
 const RUN_LOG_INITIAL_RENDER_COUNT = 80
 const RUN_LOG_RENDER_INCREMENT = 80
 
-function hasStoredSettingsDraft(): boolean {
-  if (typeof window === 'undefined') return false
-  return window.sessionStorage.getItem(SETTINGS_DRAFT_KEY) !== null
+function comparableAlertSource(source: AlertSourceDraft) {
+  return {
+    id: source.id,
+    name: source.name,
+    enabled: source.enabled,
+    type: source.type,
+    url: source.url,
+    method: source.method,
+    headers: source.headers,
+    query: source.query,
+    body: source.body,
+    timeout: String(source.timeout),
+    samplePayload: source.samplePayload,
+    parserRule: source.parserRule ?? {},
+    scriptCode: source.scriptCode,
+    scriptTimeout: String(source.scriptTimeout),
+    autoExecuteEnabled: source.autoExecuteEnabled,
+    pollIntervalSeconds: String(source.pollIntervalSeconds),
+    failedRetryIntervalSeconds: String(source.failedRetryIntervalSeconds),
+    analysisPrompt: source.analysisPrompt,
+  }
 }
 
-function serializeSettingsDraft(draft: SettingsDraft): string {
-  return JSON.stringify(draft)
+function comparableSettingsDraft(draft: SettingsDraft) {
+  return {
+    agentEnabled: draft.agentEnabled,
+    llmApiBaseUrl: draft.llmApiBaseUrl,
+    llmModel: draft.llmModel,
+    llmTemperature: String(draft.llmTemperature),
+    llmTimeout: String(draft.llmTimeout),
+    llmThinkingAdapterEnabled: draft.llmThinkingAdapterEnabled,
+    weeklyAlertCleanupEnabled: draft.weeklyAlertCleanupEnabled,
+    runLogRetentionDays: String(draft.runLogRetentionDays),
+    alertSources: draft.alertSources.map(comparableAlertSource),
+  }
+}
+
+function settingsDraftContentEqual(left: SettingsDraft, right: SettingsDraft): boolean {
+  return JSON.stringify(comparableSettingsDraft(left)) === JSON.stringify(comparableSettingsDraft(right))
+}
+
+function applySelectedSourceMirror(draft: SettingsDraft, sourceId: string): SettingsDraft {
+  const source = draft.alertSources.find((item) => item.id === sourceId) ?? draft.alertSources[0]
+  if (!source) return draft
+  return {
+    ...draft,
+    selectedSourceId: source.id,
+    pollIntervalSeconds: source.pollIntervalSeconds,
+    failedRetryIntervalSeconds: source.failedRetryIntervalSeconds,
+    alertSourceEnabled: source.enabled,
+    alertSourceType: source.type,
+    alertSourceUrl: source.url,
+    alertSourceMethod: source.method,
+    alertSourceHeaders: source.headers,
+    alertSourceQuery: source.query,
+    alertSourceBody: source.body,
+    alertSourceTimeout: source.timeout,
+    alertSourceSamplePayload: source.samplePayload,
+    alertParserRule: source.parserRule,
+    alertScriptCode: source.scriptCode,
+    alertScriptTimeout: source.scriptTimeout,
+    alertSourceName: source.name,
+    alertSourceAnalysisPrompt: source.analysisPrompt,
+  }
+}
+
+function mergeServerDraftWithSelection(serverDraft: SettingsDraft, current: SettingsDraft): SettingsDraft {
+  const sourceId = current.alertSources.some((source) => source.id === current.selectedSourceId)
+    ? current.selectedSourceId
+    : serverDraft.selectedSourceId
+  return applySelectedSourceMirror(serverDraft, sourceId)
 }
 
 type SettingsDraft = {
@@ -465,7 +529,7 @@ export default function SentinelFlowSettingsPage() {
   const runLogEventRefs = useRef<Record<string, HTMLDetailsElement | null>>({})
   const debugLogRequestSeq = useRef(0)
   const serverDraftRef = useRef<SettingsDraft | null>(null)
-  const hadStoredDraftRef = useRef(hasStoredSettingsDraft())
+  const userEditedRef = useRef(false)
 
   const jumpToRunLogPrompt = useCallback((ref: Record<string, unknown>) => {
     if (!debugLogDetail?.events?.length) return
@@ -557,7 +621,7 @@ export default function SentinelFlowSettingsPage() {
   function applyServerSettingsToDraft(nextSettings: RuntimeSettingsResponse) {
     const nextDraft = buildDraft(nextSettings)
     serverDraftRef.current = nextDraft
-    hadStoredDraftRef.current = false
+    userEditedRef.current = false
     setServerDraftChanged(false)
     setDraft(nextDraft)
   }
@@ -565,17 +629,14 @@ export default function SentinelFlowSettingsPage() {
   useEffect(() => {
     if (!settings) return
     const nextServerDraft = buildDraft(settings)
-    const previousServerDraft = serverDraftRef.current
-    const currentDraftHasSessionEdits = hadStoredDraftRef.current && serializeSettingsDraft(draft) !== serializeSettingsDraft(nextServerDraft)
-    const currentDraftIsDirty = previousServerDraft !== null && serializeSettingsDraft(draft) !== serializeSettingsDraft(previousServerDraft)
     serverDraftRef.current = nextServerDraft
-    if (currentDraftHasSessionEdits || currentDraftIsDirty) {
+    if (userEditedRef.current && !settingsDraftContentEqual(draft, nextServerDraft)) {
       setServerDraftChanged(true)
       return
     }
-    hadStoredDraftRef.current = false
+    userEditedRef.current = false
     setServerDraftChanged(false)
-    setDraft(nextServerDraft)
+    setDraft((current) => mergeServerDraftWithSelection(nextServerDraft, current))
   }, [settings])
 
   useEffect(() => {
@@ -602,6 +663,7 @@ export default function SentinelFlowSettingsPage() {
   }
 
   function updateDraft<K extends keyof SettingsDraft>(key: K, value: SettingsDraft[K]) {
+    userEditedRef.current = true
     setDraft((current) => {
       const next = { ...current, [key]: value }
       if (key === 'alertSourceName') return updateSelectedSource(next, { name: String(value) })
@@ -625,33 +687,11 @@ export default function SentinelFlowSettingsPage() {
   }
 
   function selectSource(sourceId: string) {
-    setDraft((current) => {
-      const source = current.alertSources.find((item) => item.id === sourceId) ?? current.alertSources[0]
-      if (!source) return current
-      return {
-        ...current,
-        selectedSourceId: source.id,
-        pollIntervalSeconds: source.pollIntervalSeconds,
-        failedRetryIntervalSeconds: source.failedRetryIntervalSeconds,
-        alertSourceEnabled: source.enabled,
-        alertSourceType: source.type,
-        alertSourceUrl: source.url,
-        alertSourceMethod: source.method,
-        alertSourceHeaders: source.headers,
-        alertSourceQuery: source.query,
-        alertSourceBody: source.body,
-        alertSourceTimeout: source.timeout,
-        alertSourceSamplePayload: source.samplePayload,
-        alertParserRule: source.parserRule,
-        alertScriptCode: source.scriptCode,
-        alertScriptTimeout: source.scriptTimeout,
-        alertSourceName: source.name,
-        alertSourceAnalysisPrompt: source.analysisPrompt,
-      }
-    })
+    setDraft((current) => applySelectedSourceMirror(current, sourceId))
   }
 
   function addSource() {
+    userEditedRef.current = true
     setDraft((current) => {
       const source = createBlankSource(current.alertSources.length)
       return {
@@ -679,6 +719,7 @@ export default function SentinelFlowSettingsPage() {
   }
 
   function deleteSelectedSource() {
+    userEditedRef.current = true
     setDraft((current) => {
       if (current.alertSources.length <= 1) return current
       const remaining = current.alertSources.filter((source) => source.id !== current.selectedSourceId)
@@ -1064,7 +1105,7 @@ export default function SentinelFlowSettingsPage() {
               className="ml-3 font-semibold text-amber-950 underline"
               onClick={() => {
                 if (!serverDraftRef.current) return
-                hadStoredDraftRef.current = false
+                userEditedRef.current = false
                 setServerDraftChanged(false)
                 setDraft(serverDraftRef.current)
               }}
