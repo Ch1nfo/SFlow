@@ -4,7 +4,7 @@
 
 ### AI-Native SecOps Control Plane — Multi-Agent SOC Automation
 
-[![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#)
@@ -35,6 +35,14 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **SOC Execution Guardrails** — Authority traces, key facts, task-anchor selection, and pre-execution input checks help agents keep target IPs, recipients, event IDs, and closure facts precise
 - **Thinking-Model Adapter** — Optional settings toggle for providers such as DeepSeek that need explicit `thinking: disabled` request bodies
 - **Fine-Grained Governance** — Per-agent skill permissions, mode-aware worker allowlists, execution approval gates, audit logging, and agent-level model overrides
+
+## What's New in v1.3.0
+
+- **Large-alert-volume stability path** — Alert lists, dashboard counters, weekly summaries, and new-alert notifications now use lightweight row queries or dedicated SQL aggregates instead of pulling full task payloads, keeping the WebUI responsive on large SQLite queues.
+- **More reliable live data loading** — Poll/resource stores now use background refresh, coalesced force reloads, and safer cache reuse so Alerts, Overview, Skills, and Agents pages remain smooth during frequent polling.
+- **Plain-text skill invocation hardening** — `execute_skill` accepts normalized plain-text JSON arguments, surfaces `input_schema` hints directly to the model, and keeps schema validation/audit records tighter for hybrid skills.
+- **Real closure execution enforcement** — When a delegated task requires a terminal closure/disposal action, workers must actually call the authorized closure skill; prose claims or mocked JSON no longer count as successful completion.
+- **Safer Settings persistence UX** — The Settings page now tracks real dirty-state changes more accurately, avoiding false "unsaved changes" behavior during ordinary configuration edits.
 
 ## Screenshots
 
@@ -68,6 +76,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **SKILL.md-based discovery** — Each skill is a directory with a `SKILL.md` (YAML frontmatter + documentation body) and an optional `main.py` entrypoint
 - **Two skill types**: `doc` (knowledge-only, read by agent) and `hybrid` (doc + executable subprocess)
 - **Per-agent permission control** — `doc_skill_allowlist`, `exec_skill_allowlist`, `approval_required` flags per skill; `approval_required` only applies to the Conversation Console and manual single-alert handling, each execution is approved separately, while auto-execution / auto-retry / debug bypass approval
+- **Schema-aware plain-text invocation** — `execute_skill` can normalize plain JSON-string arguments, expose authorized skill `input_schema` hints to the model, and preserve validation/audit records before subprocess execution
 - **Subprocess execution** — Skills run in isolated subprocesses with structured JSON I/O; audit logging built in
 - **Compact LLM surface** — Large tool outputs and skill documents are kept in runtime state/run logs but summarized before they re-enter the LLM context
 - **In-WebUI Skill Management** — Create, edit, delete, inspect, and debug skills directly from the dedicated Skills page
@@ -81,6 +90,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Flexible field mapping** — Point-path-based rules map arbitrary JSON structures to SentinelFlow's canonical alert schema (`eventIds`, `alert_name`, `sip`, `dip`, `alert_time`, etc.)
 - **Source-aware deduplication & idempotency** — SQLite-backed dedup store prevents re-queueing already-active alerts while keeping identical event IDs from different sources isolated
 - **Per-source polling scheduler** — Each enabled source can poll on its own interval; the UI can trigger immediate polling for the selected source, while the API also supports all-source polling
+- **Large-queue query path** — Alert queues use lightweight row/headline queries, denormalized result columns, index-friendly `sort_time`, and dedicated period aggregates for dashboards plus weekly summaries
 - **Fallback & retry** — Failed tasks can be retried manually or automatically after the retry interval configured for the matching alert source
 
 ### Task Queue & Execution
@@ -93,6 +103,7 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Full execution trace** — Every task stores a structured `execution_trace` covering alert receipt, workflow usage, agent analysis, skill calls, approval state, closure result, and final status
 - **Fact-based result convergence** — Final status, judgment, disposal outcome, closure state, and workflow usage are converged into structured `final_facts`
 - **Completion Policy Semantics** — Skill-level `completion_policy` distinguishes enrichment, containment, notification, and closure effects so task state follows real execution facts rather than loose text summaries
+- **Terminal execution integrity** — For delegated closure/disposal tasks, SentinelFlow verifies that the worker produced a real closure-skill tool result instead of only describing the action in natural language
 - **Run Log Traceability** — LLM prompt views, window statistics, worker boundaries, constructed skill arguments, approvals, and final task results are recorded for audit and troubleshooting
 
 ### Security Operations WebUI
@@ -102,6 +113,8 @@ Modern Security Operations Centers face an overwhelming volume of alerts — mos
 - **Task Center** — Review queue state, retry failed work, approve pending skills, and inspect full-process execution details from a task-first view
 - **Conversation Console** — Free-form command interface with multi-session history, streaming replies, collapsible worker/skill summaries, execution context details, and inline approval cards
 - **Configuration Center** — Unified settings page for LLM credentials, thinking-model adapter, multi-source alert connection, parser rules, polling schedules, retry intervals, run-log retention, and auto-execution toggles — all persisted without restarting the server
+- **Stable cache-backed live refresh** — Alerts, Overview, Skills, and Agents pages use shared stores with stale-while-revalidate style refresh, queued force reloads, and reduced duplicate fetches during high-frequency polling
+- **Settings dirty-state guard** — The Settings form tracks actual persisted changes more accurately, reducing false unsaved-change prompts during normal editing
 - **RAG Settings** — Configure the built-in RAG skill, retrieval parameters, API key, rerank model, and agent availability from the WebUI
 - **Run Log Viewer** — Inspect per-alert execution logs, prompt windows, worker/skill events, and argument provenance from the Settings page debug panel
 - **Skill Management** — Create, view, edit, and delete skills; run debug executions with custom arguments
@@ -552,6 +565,11 @@ Create a `workflow.json` file under `.sentinelflow/plugins/workflows/<workflow-i
 
 ## Release Notes
 
+- **v1.3.0** — Large-queue performance hardening, more reliable WebUI live refresh, stricter real-action completion semantics, and cleaner configuration editing for production SOC workloads.
+  - **Performance** — Alert state APIs now use lightweight list/headline queries, denormalized result fields, index-friendly `sort_time`, dedicated dashboard aggregates, and period summaries for weekly statistics.
+  - **WebUI** — Alert, Overview, Skills, and Agents data loading is smoother under frequent polling through shared cache stores, background refresh, queued force reloads, and reduced duplicate fetches; Settings dirty-state detection now avoids false unsaved-change prompts.
+  - **Runtime** — Plain-text Skill calls normalize JSON-string arguments, expose authorized `input_schema` hints, and keep validation/audit records tighter; delegated closure/disposal work now requires an actual closure Skill tool result instead of accepting prose-only completion claims.
+  - **Operations** — Dashboard and workbench summaries remain stable on larger SQLite queues, and task result extraction is more reliable for judgment/disposal display.
 - **v1.2.1** — WebUI performance and layout polish, runtime approval/logging fixes, and a fully independent frontend stack.
   - **WebUI** — Stale-while-revalidate caching for alerts, skills, and agents; faster Alert Workbench / Skills / Agents list loading; collapsible Settings sections with collapsed summaries; collapsible `Surface` panels; conversation message collapse; Chinese task lifecycle labels on Overview; Task Center execution detail improvements; independent Markdown styles and frontend scaffolding.
   - **Runtime** — Fix stale approval ID reuse on secondary approval; order tool-call summaries by real execution timeline; improve skill argument filling stability; top-level thinking-model request adapter; refine run-log display extraction.

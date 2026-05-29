@@ -4,7 +4,7 @@
 
 ### AI-Native SecOps 控制平面 — 多 Agent SOC 自动化平台
 
-[![版本](https://img.shields.io/badge/版本-1.2.1-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
+[![版本](https://img.shields.io/badge/版本-1.3.0-blue.svg)](https://github.com/Ch1nfo/SentinelFlow/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
 [![平台](https://img.shields.io/badge/平台-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#)
@@ -35,6 +35,14 @@
 - **SOC 执行护栏** — 通过权威事实、关键字段、任务锚点识别和执行前参数校验，让 Agent 更准确识别 IP、收信人、告警 ID 和结单状态
 - **思考模型适配开关** — 在平台设置中可按需启用 DeepSeek 等 thinking 模型所需的 `thinking: disabled` 请求体
 - **细粒度治理策略** — 按 Agent 配置 Skill 权限、按模式分离 Worker 委派权限、执行审批门控、审计日志和 Agent 级模型覆盖
+
+## v1.3.0 更新重点
+
+- **大体量告警下的数据展示稳定性** — 告警列表、总览计数、本周摘要和新告警提示改为走轻量行查询或专用 SQL 聚合，而不是拉取整批任务大字段，因此在大型 SQLite 队列下 WebUI 仍可保持流畅。
+- **更可靠的实时数据加载** — Poll/Resource Store 增加后台刷新、强制刷新合并和更稳妥的缓存复用，告警、总览、Skills、Agents 页面在高频轮询下更平稳。
+- **纯文本 Skill 调用增强** — `execute_skill` 现在可规范化纯文本 JSON 入参，并把授权 Skill 的 `input_schema` 提示直接暴露给模型，Skill 入参校验和审计也更完整。
+- **真实结单执行校验** — 当子 Agent 被分派到需要处置或结单的任务时，必须实际调用授权结单 Skill；仅用文字描述或模拟 JSON 声称成功将不再被视为完成。
+- **配置中心保存态更准确** — 设置页的脏状态判断已修正，日常编辑时不会再更容易误报“存在未保存改动”。
 
 ## 界面预览
 
@@ -68,6 +76,7 @@
 - **基于 SKILL.md 的自动发现** — 每个 Skill 是一个目录，包含带 YAML 头部的 `SKILL.md`（供 Agent 阅读）和可选的 `main.py` 执行入口
 - **两种 Skill 类型**：`doc`（纯知识型，供 Agent 阅读）和 `hybrid`（文档 + 可执行子进程）
 - **按 Agent 权限控制** — `doc_skill_allowlist`、`exec_skill_allowlist`、每个 Skill 的 `approval_required` 标志；`approval_required` 仅对对话与手动单告警生效，且每次执行都需要单独审批，自动执行 / 自动重试 / 调试会绕过审批
+- **Schema 感知的纯文本调用** — `execute_skill` 可规范化纯 JSON 字符串入参，将授权 Skill 的 `input_schema` 直接提示给模型，并在真正进入子进程前保留完整校验/审计信息
 - **子进程隔离执行** — Skill 在隔离子进程中运行，结构化 JSON 输入/输出，内置审计日志
 - **紧凑 LLM 数据面** — 大型工具输出和 Skill 文档保留在 runtime state/run log 中，重新进入 LLM 上下文前会先摘要化
 - **WebUI 内 Skill 管理** — 直接在独立 Skills 页面创建、编辑、删除、查看并在线调试 Skill
@@ -81,6 +90,7 @@
 - **灵活字段映射** — 基于点路径表达式，将任意 JSON 结构映射到 SentinelFlow 标准字段（`eventIds`、`alert_name`、`sip`、`dip`、`alert_time` 等）
 - **按源去重与幂等** — SQLite 支撑的去重存储，防止活跃告警重复入队，同时隔离不同告警源中相同 event ID 的任务
 - **按源轮询调度器** — 每个启用的告警源可按自己的间隔轮询；UI 支持对当前源立即触发轮询，API 也支持全部源轮询
+- **大队列性能路径** — 告警队列改为轻量列表/标题查询、结果摘要字段反规范化、可索引 `sort_time` 排序，以及面向总览与本周统计的专用时间段聚合接口
 - **容错与重试** — 失败任务可手动重试，也可按对应告警源配置的重试间隔自动重新处理
 
 ### 任务队列与执行
@@ -93,6 +103,7 @@
 - **结构化执行链路** — 每个任务存储完整 `execution_trace`，涵盖告警接收、Workflow 使用、Agent 研判、Skill 调用、审批状态、结单结果和最终状态
 - **基于事实的结果收敛** — 最终状态、研判分类、处置结果、结单状态和 Workflow 使用情况会统一收敛到结构化 `final_facts`
 - **闭环策略语义** — Skill 级 `completion_policy` 区分情报查询、遏制封禁、终态通知和正式结单，让任务状态以真实执行事实为准，而不是依赖松散文本描述
+- **终态动作执行完整性** — 对需要处置/结单的委派任务，SentinelFlow 会校验子 Agent 是否真正产生了结单 Skill 的工具结果，而不接受仅用自然语言描述“已经执行”
 - **运行日志可追溯** — LLM prompt view、窗口大小、Worker 边界、构造后的 Skill 入参、审批事件和最终任务结果均会进入运行日志，便于审计和排错
 
 ### 安全运营 WebUI
@@ -102,6 +113,8 @@
 - **任务中心** — 以任务为中心查看队列状态、重试失败任务、处理待审批 Skill，并检查完整处置全流程
 - **对话指挥台** — 自由文本指令界面，支持多会话、流式响应、可折叠子 Agent/Skill 摘要、执行上下文详情和内联审批卡片
 - **配置中心** — 统一配置页面，涵盖 LLM 凭据、思考模型适配、多告警源连接、解析规则、轮询参数、失败重试间隔、运行日志保留策略、自动执行开关——所有配置实时持久化，无需重启服务
+- **稳定的缓存式实时刷新** — 告警、总览、Skills、Agents 页面采用共享 Store、类似 stale-while-revalidate 的刷新策略、强制刷新排队和更少的重复请求，适合高频轮询场景
+- **设置页脏状态保护** — 配置表单对“是否已改动”的判断更准确，减少正常编辑过程中的误报和不必要提示
 - **RAG 设置** — 通过 WebUI 配置内置 RAG Skill、知识库 ID、检索参数、API Key、重排模型和 Agent 可用性
 - **运行日志查看器** — 在平台设置的调试面板中查看单告警执行日志、prompt window、Worker/Skill 事件和入参来源
 - **Skill 管理** — 创建、查看、编辑、删除 Skill；支持携带自定义参数进行在线调试执行
@@ -551,6 +564,11 @@ WebUI 和告警接入流水线不依赖 LLM Key 即可正常运行。但 AI Agen
 
 ## 发布说明
 
+- **v1.3.0** — 大队列性能加固、WebUI 实时刷新稳定性提升、更严格的真实动作完成语义，以及面向生产 SOC 场景的配置编辑体验优化。
+  - **性能** — 告警状态接口改为轻量列表/标题查询、结果摘要字段反规范化、可索引 `sort_time` 排序、专用总览聚合和本周统计时间段聚合。
+  - **WebUI** — 告警、总览、Skills、Agents 页面在高频轮询下通过共享缓存、后台刷新、强制刷新排队和更少重复请求保持流畅；设置页脏状态判断减少误报未保存改动。
+  - **Runtime** — 纯文本 Skill 调用会规范化 JSON 字符串入参，向模型暴露授权 `input_schema` 提示，并保留更完整的校验/审计记录；委派的处置/结单任务现在必须产生真实结单 Skill 工具结果，不再接受仅文字声称完成。
+  - **运营** — 总览与告警工作台在更大的 SQLite 队列下保持稳定，研判/处置展示的数据提取也更可靠。
 - **v1.2.1** — WebUI 性能与布局优化、运行时审批/日志修复，以及完全独立的前端工程与样式体系。
   - **WebUI** — 告警、Skills、Agents 列表引入 stale-while-revalidate 缓存；告警工作台 / Skills / Agents 首屏加载更快；平台设置支持折叠区块与收起摘要；`Surface` 面板可折叠；对话消息支持折叠；态势总览任务生命周期中文化；任务中心执行详情展示增强；Markdown 样式与前端脚手架改为 SentinelFlow 自研实现。
   - **Runtime** — 修复二次审批复用旧 approval ID 的问题；工具调用摘要按真实执行时间线排序；提升 Skill 入参填写稳定性；思考模型顶层请求参数适配；优化运行日志展示提取逻辑。
