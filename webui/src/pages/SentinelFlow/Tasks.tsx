@@ -19,14 +19,14 @@ import { withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
+import { resolveSelectedTaskDisplay } from '@/utils/sentinelflowTaskDetail'
 import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalState'
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, publishRuntimeActivity, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 type TaskFilter = 'all' | 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'completed' | 'pending_closure' | 'failed'
 const TASK_FILTER_KEY = 'sentinelflow:tasks:filter'
-const TASK_LIST_INITIAL_RENDER_COUNT = 120
-const TASK_LIST_RENDER_INCREMENT = 120
+const TASK_LIST_PAGE_SIZE = 60
 
 type ToolInvocationResult = {
   key: string
@@ -819,7 +819,15 @@ function ProcessTrace({ trace, traceOwnerId }: { trace: ExecutionTraceItem[]; tr
 }
 
 export default function SentinelFlowTasksPage() {
-  const { data: poll, loading, error, reload: reloadPoll } = useSentinelFlowPollStore('all')
+  const {
+    data: poll,
+    loading,
+    loadingMore,
+    error,
+    hasMore,
+    reload: reloadPoll,
+    loadMore,
+  } = useSentinelFlowPollStore('all', { pageSize: TASK_LIST_PAGE_SIZE })
   const { data: settings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => {
     const current = readRuntimeActivity()
@@ -833,7 +841,6 @@ export default function SentinelFlowTasksPage() {
   const [processExpanded, setProcessExpanded] = useState(false)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
-  const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_LIST_INITIAL_RENDER_COUNT)
   const taskListPanelRef = useRef<HTMLDivElement | null>(null)
   const detailPanelRef = useRef<HTMLDivElement | null>(null)
   const detailRequestSeq = useRef(0)
@@ -867,7 +874,7 @@ export default function SentinelFlowTasksPage() {
         })
     return [...base].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
   }, [filter, tasks])
-  const visibleFilteredTasks = filteredTasks.slice(0, visibleTaskCount)
+  const totalTaskCount = poll?.tasks_total ?? tasks.length
 
   useEffect(() => {
     setSelectedTaskId((current) => {
@@ -883,23 +890,29 @@ export default function SentinelFlowTasksPage() {
     setProcessExpanded(false)
   }, [selectedTaskId])
 
-  useEffect(() => {
-    setVisibleTaskCount(TASK_LIST_INITIAL_RENDER_COUNT)
-  }, [filter])
-
   const selectedTaskSummary =
     filteredTasks.find((task) => task.task_id === selectedTaskId) ??
     filteredTasks[0] ??
     null
-  const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
+  const selectedTask = useMemo(
+    () => resolveSelectedTaskDisplay(selectedTaskDetail, selectedTaskSummary),
+    [selectedTaskDetail, selectedTaskSummary],
+  )
 
   useEffect(() => {
     const taskId = selectedTaskSummary?.task_id ?? ''
     const requestSeq = detailRequestSeq.current + 1
     detailRequestSeq.current = requestSeq
-    setSelectedTaskDetail(null)
+
+    if (!taskId) {
+      setSelectedTaskDetail(null)
+      setDetailError(null)
+      return
+    }
+
+    setSelectedTaskDetail((prev) => (prev?.task_id === taskId ? prev : null))
     setDetailError(null)
-    if (!taskId) return
+
     void fetchAlertTaskDetail(taskId)
       .then((response) => {
         if (detailRequestSeq.current !== requestSeq) return
@@ -908,7 +921,7 @@ export default function SentinelFlowTasksPage() {
       })
       .catch((detailLoadError) => {
         if (detailRequestSeq.current !== requestSeq) return
-        setSelectedTaskDetail(null)
+        setSelectedTaskDetail((prev) => (prev?.task_id === taskId ? prev : null))
         setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
       })
   }, [selectedTaskSummary?.task_id, selectedTaskSummary?.updated_at, selectedTaskSummary?.status])
@@ -1144,11 +1157,6 @@ export default function SentinelFlowTasksPage() {
       <Surface title="任务工作面" subtitle="左侧选择任务，右侧查看详情与完整处置全流程。">
         {loading ? <p className="sentinelflow-muted-text">正在读取任务分发结果...</p> : null}
         {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
-        {poll && typeof poll.tasks_total === 'number' && poll.tasks_total > (poll.tasks?.length ?? 0) ? (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            当前接口仅返回前 {poll.tasks?.length ?? 0} 条任务，共 {poll.tasks_total} 条；筛选和统计可能只覆盖已加载任务。
-          </div>
-        ) : null}
         {!loading && !error ? (
           <div className="sentinelflow-grid-2 items-start">
             <div
@@ -1162,7 +1170,7 @@ export default function SentinelFlowTasksPage() {
                 style={taskListMaxHeight ? { maxHeight: `${taskListMaxHeight}px` } : undefined}
               >
                 <div className="sentinelflow-task-list">
-                  {filteredTasks.length ? visibleFilteredTasks.map((task) => (
+                  {filteredTasks.length ? filteredTasks.map((task) => (
                     <button key={task.task_id} type="button" className={`sentinelflow-task-tile${selectedTask?.task_id === task.task_id ? ' sentinelflow-task-tile-active' : ''}`} onClick={() => setSelectedTaskId(task.task_id)}>
                       <div className="sentinelflow-response-row">
                         <strong>{task.title}</strong>
@@ -1172,13 +1180,16 @@ export default function SentinelFlowTasksPage() {
                       <span>{getTaskFlowLabel(task)}</span>
                     </button>
                   )) : <p className="sentinelflow-muted-text">当前筛选条件下没有任务。</p>}
-                  {visibleFilteredTasks.length < filteredTasks.length ? (
+                  {hasMore ? (
                     <button
                       type="button"
                       className="sentinelflow-ghost-button w-full"
-                      onClick={() => setVisibleTaskCount((current) => current + TASK_LIST_RENDER_INCREMENT)}
+                      onClick={() => void loadMore()}
+                      disabled={loadingMore}
                     >
-                      显示更多任务（{visibleFilteredTasks.length}/{filteredTasks.length}）
+                      {loadingMore
+                        ? '正在加载...'
+                        : `显示更多任务（${tasks.length}${typeof totalTaskCount === 'number' ? `/${totalTaskCount}` : ''}）`}
                     </button>
                   ) : null}
                 </div>

@@ -1154,35 +1154,68 @@ class AlertDispatchService:
         *,
         limit: int = DEFAULT_LIST_TASK_LIMIT,
         offset: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
+        since: str | None = None,
+        cursor_sort_time: str | None = None,
+        cursor_task_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, str] | None]:
+        """Return a page of compact task summaries.
+
+        Ordering is ``sort_time DESC, task_id DESC`` so that keyset pagination is
+        stable. When ``cursor_sort_time`` is provided we page via keyset (cheap on a
+        large DB); otherwise we fall back to ``LIMIT/OFFSET``. ``since`` filters on the
+        indexable ``sort_time`` column so per-view (today/week) loading stays fast.
+        Returns ``(summaries, total, next_cursor)`` where ``next_cursor`` is ``None``
+        when the page is the last one.
+        """
         started = time.monotonic()
         normalized_limit = max(1, min(int(limit or DEFAULT_LIST_TASK_LIMIT), 1000))
         normalized_offset = max(0, int(offset or 0))
+        since_value = str(since or "").strip()
+        cursor_time = str(cursor_sort_time or "").strip()
+        cursor_id = str(cursor_task_id or "").strip()
+        use_cursor = bool(cursor_time)
+
+        filter_clauses: list[str] = []
+        filter_params: list[Any] = []
+        if source_id:
+            filter_clauses.append("source_id = ?")
+            filter_params.append(source_id)
+        if since_value:
+            # Reuse the same alert_time window semantics as period_aggregates so the
+            # list and the period summary agree; tasks without alert_time still show.
+            filter_clauses.append("(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time >= ?)")
+            filter_params.append(since_value)
+
+        count_sql = "SELECT COUNT(*) FROM alert_tasks"
+        if filter_clauses:
+            count_sql += " WHERE " + " AND ".join(filter_clauses)
+
+        page_clauses = list(filter_clauses)
+        page_params = list(filter_params)
+        if use_cursor:
+            page_clauses.append("(sort_time < ? OR (sort_time = ? AND task_id < ?))")
+            page_params.extend([cursor_time, cursor_time, cursor_id])
+        select_sql = f"SELECT {TASK_ROW_COLUMNS} FROM alert_tasks"
+        if page_clauses:
+            select_sql += " WHERE " + " AND ".join(page_clauses)
+        select_sql += " ORDER BY sort_time DESC, task_id DESC LIMIT ?"
+        if use_cursor:
+            page_params.append(normalized_limit)
+        else:
+            select_sql += " OFFSET ?"
+            page_params.extend([normalized_limit, normalized_offset])
+
         with self.lock, sqlite_connection(DB_PATH) as conn:
-            if source_id:
-                total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks WHERE source_id = ?", (source_id,)).fetchone()[0])
-                rows = conn.execute(
-                    f"""
-                    SELECT {TASK_ROW_COLUMNS}
-                    FROM alert_tasks
-                    WHERE source_id = ?
-                    ORDER BY sort_time DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (source_id, normalized_limit, normalized_offset),
-                ).fetchall()
-            else:
-                total = int(conn.execute("SELECT COUNT(*) FROM alert_tasks").fetchone()[0])
-                rows = conn.execute(
-                    f"""
-                    SELECT {TASK_ROW_COLUMNS}
-                    FROM alert_tasks
-                    ORDER BY sort_time DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (normalized_limit, normalized_offset),
-                ).fetchall()
+            total = int(conn.execute(count_sql, tuple(filter_params)).fetchone()[0])
+            rows = conn.execute(select_sql, tuple(page_params)).fetchall()
         summaries = [self._row_to_task_summary(row) for row in rows]
+        next_cursor: dict[str, str] | None = None
+        if summaries and len(summaries) == normalized_limit:
+            last = summaries[-1]
+            next_cursor = {
+                "sort_time": str(last.get("sort_time") or ""),
+                "task_id": str(last.get("task_id") or ""),
+            }
         _log_query_duration(
             "list_task_rows",
             started,
@@ -1191,8 +1224,10 @@ class AlertDispatchService:
             source_id=source_id or "all",
             limit=normalized_limit,
             offset=normalized_offset,
+            since=since_value,
+            cursor=cursor_time,
         )
-        return summaries, total
+        return summaries, total, next_cursor
 
     def list_task_summaries(
         self,
@@ -1200,8 +1235,18 @@ class AlertDispatchService:
         *,
         limit: int = DEFAULT_LIST_TASK_LIMIT,
         offset: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
-        return self.list_task_rows(source_id, limit=limit, offset=offset)
+        since: str | None = None,
+        cursor_sort_time: str | None = None,
+        cursor_task_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, str] | None]:
+        return self.list_task_rows(
+            source_id,
+            limit=limit,
+            offset=offset,
+            since=since,
+            cursor_sort_time=cursor_sort_time,
+            cursor_task_id=cursor_task_id,
+        )
 
     def task_status_counts(self, source_id: str | None = None) -> dict[str, int]:
         query = "SELECT status, COUNT(*) AS count FROM alert_tasks"
@@ -1588,6 +1633,7 @@ class AlertDispatchService:
             "source_name": row["source_name"] if "source_name" in row.keys() else "默认告警源",
             "alert_time": row["alert_time"] if "alert_time" in row.keys() else "",
             "updated_at": row["updated_at"] if "updated_at" in row.keys() else "",
+            "sort_time": row["sort_time"] if "sort_time" in row.keys() else "",
             "status": row["status"],
             "retry_count": row["retry_count"],
             "last_action": row["last_action"],
@@ -1600,19 +1646,32 @@ class AlertDispatchService:
 
     def clear_demo_tasks(self) -> int:
         removed_keys: list[str] = []
-        tasks = self.list_tasks()
-        
-        for task in tasks:
-            payload = task.payload if isinstance(task.payload, dict) else {}
+        removed_task_ids: list[str] = []
+        # Read only the payload (needed to identify the demo source) plus the keys;
+        # skip the large last_result_data blob entirely.
+        with self.lock, sqlite_connection(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT task_id, source_id, event_ids, payload FROM alert_tasks"
+            ).fetchall()
+        for row in rows:
+            payload = _decode_updates_result_data(row["payload"])
             alert_data = payload.get("alert_data") if isinstance(payload.get("alert_data"), dict) else {}
             if str(alert_data.get("alert_source", "")).strip() == "sentinelflow_demo":
-                removed_keys.append(f"{task.source_id}:{task.event_ids}")
-                with self.lock, sqlite_transaction(DB_PATH) as conn:
-                    conn.execute("DELETE FROM alert_tasks WHERE task_id = ?", (task.task_id,))
-        
+                removed_task_ids.append(row["task_id"])
+                removed_keys.append(f"{row['source_id']}:{row['event_ids']}")
+
+        if not removed_task_ids:
+            return 0
+
+        with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+            for start in range(0, len(removed_task_ids), 500):
+                chunk = removed_task_ids[start : start + 500]
+                placeholders = ",".join(["?"] * len(chunk))
+                conn.execute(f"DELETE FROM alert_tasks WHERE task_id IN ({placeholders})", tuple(chunk))
+
         for key in removed_keys:
             self.dedup.forget(key)
-            
+
         return len(removed_keys)
 
     def delete_tasks_before(self, cutoff: datetime) -> int:
@@ -1620,19 +1679,31 @@ class AlertDispatchService:
         cutoff_utc = cutoff.astimezone(timezone.utc) if cutoff.tzinfo else cutoff.replace(tzinfo=timezone.utc)
         removed_keys: list[str] = []
         removed_task_ids: list[str] = []
-        for task in self.list_tasks():
-            candidate_time = _parse_task_datetime(task.alert_time, default_tz) or _parse_task_datetime(task.updated_at, default_tz)
+        # Only read light columns (never the large payload / last_result_data blobs)
+        # so cleanup stays cheap on a multi-hundred-MB database.
+        with self.lock, sqlite_connection(DB_PATH) as conn:
+            rows = conn.execute(
+                "SELECT task_id, source_id, event_ids, alert_time, updated_at FROM alert_tasks"
+            ).fetchall()
+        for row in rows:
+            candidate_time = (
+                _parse_task_datetime(row["alert_time"], default_tz)
+                or _parse_task_datetime(row["updated_at"], default_tz)
+            )
             if candidate_time is None or candidate_time >= cutoff_utc:
                 continue
-            removed_task_ids.append(task.task_id)
-            removed_keys.append(f"{task.source_id}:{task.event_ids}")
+            removed_task_ids.append(row["task_id"])
+            removed_keys.append(f"{row['source_id']}:{row['event_ids']}")
 
         if not removed_task_ids:
             return 0
 
         with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
-            for task_id in removed_task_ids:
-                conn.execute("DELETE FROM alert_tasks WHERE task_id = ?", (task_id,))
+            for start in range(0, len(removed_task_ids), 500):
+                chunk = removed_task_ids[start : start + 500]
+                placeholders = ",".join(["?"] * len(chunk))
+                conn.execute(f"DELETE FROM alert_tasks WHERE task_id IN ({placeholders})", tuple(chunk))
+            conn.execute("PRAGMA incremental_vacuum")
 
         for key in removed_keys:
             self.dedup.forget(key)

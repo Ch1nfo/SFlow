@@ -77,7 +77,8 @@ function draftToPayload(draft: WorkflowDraft) {
 
 export default function SentinelFlowWorkflowsPage() {
   const { data: settings, reload: reloadSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
-  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all')
+  // Per-workflow task counts span more than one page, so request a wide single page.
+  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all', { pageSize: 500 })
   const { data: workflowsData, reload: reloadWorkflows } = useSentinelFlowAsyncData(fetchWorkflows, [])
   const { data: agentsData, reload: reloadAgents } = useSentinelFlowResourceStore('agents')
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)

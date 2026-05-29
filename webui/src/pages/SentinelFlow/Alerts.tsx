@@ -18,10 +18,10 @@ import { publishRuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
+import { resolveSelectedTaskDisplay } from '@/utils/sentinelflowTaskDetail'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
 const ALERT_QUEUE_INITIAL_RENDER_COUNT = 60
-const ALERT_QUEUE_RENDER_INCREMENT = 60
 type AlertTimeRange = 'today' | 'week'
 
 function WeekSummarySkeleton() {
@@ -253,14 +253,6 @@ function formatAlertTime(value: string | undefined): string {
   return text || '未提供'
 }
 
-function parseAlertDate(value: string | undefined): Date | null {
-  const text = String(value ?? '').trim()
-  if (!text) return null
-  const normalized = text.includes('T') ? text : text.replace(' ', 'T')
-  const parsed = new Date(normalized)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
 function getStartOfDay(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate())
 }
@@ -277,13 +269,12 @@ function getStartOfWeekIso(value: Date): string {
   return getStartOfWeek(value).toISOString()
 }
 
-function matchesAlertTimeRange(task: AlertTask, range: AlertTimeRange, now: Date): boolean {
-  const alertDate = parseAlertDate(task.alert_time)
-  if (!alertDate) return true
-  if (range === 'today') {
-    return alertDate >= getStartOfDay(now)
-  }
-  return alertDate >= getStartOfWeek(now)
+function getStartOfDayIso(value: Date): string {
+  return getStartOfDay(value).toISOString()
+}
+
+function getAlertRangeSince(range: AlertTimeRange, value: Date): string {
+  return range === 'today' ? getStartOfDayIso(value) : getStartOfWeekIso(value)
 }
 
 function getSelectedAlertPayload(task: AlertTask | null): Record<string, unknown> {
@@ -317,7 +308,6 @@ export default function SentinelFlowAlertsPage() {
   const [actionNotice, setActionNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
-  const [visibleTaskCount, setVisibleTaskCount] = useState(ALERT_QUEUE_INITIAL_RENDER_COUNT)
   const [weekSummaryEnabled, setWeekSummaryEnabled] = useState(false)
   const [weekSummaryLoadState, setWeekSummaryLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [weekSummary, setWeekSummary] = useState<AlertPeriodSummaryResponse | null>(null)
@@ -327,12 +317,20 @@ export default function SentinelFlowAlertsPage() {
   const detailRequestSeq = useRef(0)
   const [queuePanelHeight, setQueuePanelHeight] = useState<number | null>(null)
   const [queueListMaxHeight, setQueueListMaxHeight] = useState<number | null>(null)
+  const rangeSince = useMemo(() => getAlertRangeSince(timeRange, new Date()), [timeRange])
   const {
     data,
     loading: pollLoading,
+    loadingMore,
     error,
+    hasMore,
     reload: reloadPollStore,
-  } = useSentinelFlowPollStore(selectedSourceId, { autoLoad: true })
+    loadMore,
+  } = useSentinelFlowPollStore(selectedSourceId, {
+    autoLoad: true,
+    since: rangeSince,
+    pageSize: ALERT_QUEUE_INITIAL_RENDER_COUNT,
+  })
   const queueLoading = pollLoading && !data
   const autoExecuteEnabled = Boolean(data?.auto_execute_enabled)
   const autoExecuteRunning = Boolean(data?.auto_execute_running)
@@ -406,17 +404,16 @@ export default function SentinelFlowAlertsPage() {
     { intervalMs: liveRefreshing ? 2000 : 5000 },
   )
 
-  const allTasks = useMemo(() => {
+  // The server already filters by the selected time window (since) and paginates
+  // newest-first, so we render the accumulated list directly. A defensive sort keeps
+  // ordering stable across merge/append.
+  const tasks = useMemo(() => {
     const sourceTasks = data?.tasks ?? []
     return [...sourceTasks].sort((left, right) => toSortableTime(right.alert_time) - toSortableTime(left.alert_time))
   }, [data?.tasks])
 
-  const tasks = useMemo(() => {
-    const now = new Date()
-    return allTasks.filter((task) => matchesAlertTimeRange(task, timeRange, now))
-  }, [allTasks, timeRange])
-
-  const visibleTasks = useMemo(() => tasks.slice(0, visibleTaskCount), [tasks, visibleTaskCount])
+  const visibleTasks = tasks
+  const totalTaskCount = data?.tasks_total ?? tasks.length
   const alertSources = data?.alert_sources ?? []
   const selectedSource = alertSources.find((source) => source.id === (selectedSourceId ?? data?.source_id)) ?? alertSources[0] ?? null
 
@@ -434,21 +431,28 @@ export default function SentinelFlowAlertsPage() {
     setActionNotice(null)
   }, [selectedTaskId])
 
-  useEffect(() => {
-    setVisibleTaskCount(ALERT_QUEUE_INITIAL_RENDER_COUNT)
-  }, [timeRange, selectedSourceId])
-
   const selectedTaskSummary = tasks.find((task) => task.task_id === selectedTaskId) ?? tasks[0] ?? null
-  const selectedTask = selectedTaskDetail?.task_id === selectedTaskSummary?.task_id ? selectedTaskDetail : selectedTaskSummary
+  const selectedTask = useMemo(
+    () => resolveSelectedTaskDisplay(selectedTaskDetail, selectedTaskSummary),
+    [selectedTaskDetail, selectedTaskSummary],
+  )
   const summary = useMemo(() => buildAlertsSummary(tasks), [tasks])
 
   useEffect(() => {
     const taskId = selectedTaskSummary?.task_id ?? ''
     const requestSeq = detailRequestSeq.current + 1
     detailRequestSeq.current = requestSeq
-    setSelectedTaskDetail(null)
+
+    if (!taskId) {
+      setSelectedTaskDetail(null)
+      setDetailError(null)
+      return
+    }
+
+    // Only clear detail when switching tasks; polling status/updated_at changes refetch in background.
+    setSelectedTaskDetail((prev) => (prev?.task_id === taskId ? prev : null))
     setDetailError(null)
-    if (!taskId) return
+
     const timer = window.setTimeout(() => {
       void fetchAlertTaskDetail(taskId)
         .then((response) => {
@@ -458,7 +462,7 @@ export default function SentinelFlowAlertsPage() {
         })
         .catch((detailLoadError) => {
           if (detailRequestSeq.current !== requestSeq) return
-          setSelectedTaskDetail(null)
+          setSelectedTaskDetail((prev) => (prev?.task_id === taskId ? prev : null))
           setDetailError(detailLoadError instanceof Error ? detailLoadError.message : '任务详情加载失败，当前展示列表摘要。')
         })
     }, 0)
@@ -489,7 +493,7 @@ export default function SentinelFlowAlertsPage() {
   const selectedApprovalRequest = (selectedResult.approval_request as Record<string, unknown> | undefined) ?? {}
   const selectedApprovalId = String(selectedApprovalRequest.approval_id ?? '').trim()
   const selectedApprovalStatus = String(selectedApprovalRequest.status ?? '').trim()
-  const selectedApprovalCanResolve = Boolean(selectedTask)
+  const selectedApprovalCanResolve = selectedTask != null
     && getEffectiveTaskStatus(selectedTask) === 'awaiting_approval'
     && Boolean(selectedApprovalId)
     && (!selectedApprovalStatus || selectedApprovalStatus === 'pending')
@@ -710,12 +714,6 @@ export default function SentinelFlowAlertsPage() {
             {actionNotice.text}
           </div>
         ) : null}
-        {data && typeof data.tasks_total === 'number' && data.tasks_total > (data.tasks?.length ?? 0) ? (
-          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            当前接口仅返回前 {data.tasks?.length ?? 0} 条任务，共 {data.tasks_total} 条；列表统计可能只覆盖已加载任务。
-          </div>
-        ) : null}
-
         <div className="sentinelflow-grid-2 items-start">
           <div
             ref={queuePanelRef}
@@ -753,15 +751,18 @@ export default function SentinelFlowAlertsPage() {
                       <td>{getTaskFlowLabel(task)}</td>
                     </tr>
                   )) : null}
-                  {!queueLoading && (!error || data) && visibleTasks.length < tasks.length ? (
+                  {!queueLoading && (!error || data) && hasMore ? (
                     <tr>
                       <td colSpan={4}>
                         <button
                           type="button"
                           className="sentinelflow-ghost-button w-full"
-                          onClick={() => setVisibleTaskCount((current) => current + ALERT_QUEUE_RENDER_INCREMENT)}
+                          onClick={() => void loadMore()}
+                          disabled={loadingMore}
                         >
-                          显示更多告警（{visibleTasks.length}/{tasks.length}）
+                          {loadingMore
+                            ? '正在加载...'
+                            : `显示更多告警（${tasks.length}${typeof totalTaskCount === 'number' ? `/${totalTaskCount}` : ''}）`}
                         </button>
                       </td>
                     </tr>

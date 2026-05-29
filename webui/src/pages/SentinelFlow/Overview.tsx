@@ -15,7 +15,8 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 export default function SentinelFlowOverviewPage() {
   const { data: health, reload: reloadHealth } = useSentinelFlowAsyncData(fetchHealth, [])
-  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all')
+  // Dashboard counts span more than one page, so request a wide single page.
+  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all', { pageSize: 500 })
   const { data: skills, reload: reloadSkills } = useSentinelFlowResourceStore('skills')
   const { data: summary, reload: reloadSummary } = useSentinelFlowAsyncData(fetchDashboardSummary, [])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => readRuntimeActivity())

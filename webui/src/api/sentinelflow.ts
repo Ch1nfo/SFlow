@@ -97,6 +97,7 @@ export type AlertTask = {
   source_name?: string
   alert_time?: string
   updated_at?: string
+  sort_time?: string
   status: AlertTaskStatus | string
   retry_count: number
   last_action: string
@@ -104,6 +105,12 @@ export type AlertTask = {
   last_result_error?: string | null
   last_result_data: AlertTaskResultData
   payload: Record<string, unknown>
+  summary?: boolean
+}
+
+export type TaskCursor = {
+  sort_time: string
+  task_id: string
 }
 
 export type PollAlertsResponse = {
@@ -126,6 +133,8 @@ export type PollAlertsResponse = {
   tasks_total?: number
   tasks_limit?: number
   tasks_offset?: number
+  tasks_since?: string
+  tasks_cursor?: TaskCursor | null
   errors: string[]
 }
 
@@ -539,8 +548,23 @@ export async function fetchAlertPeriodSummary(since: string, sourceId = 'all'): 
   return getJson(`/api/sentinelflow/alerts/summary/period?${params.toString()}`)
 }
 
-export async function fetchPollAlerts(sourceId?: string): Promise<PollAlertsResponse> {
-  const suffix = sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ''
+export type PollAlertsParams = {
+  sourceId?: string
+  since?: string
+  limit?: number
+  cursorSortTime?: string
+  cursorTaskId?: string
+}
+
+export async function fetchPollAlerts(params?: string | PollAlertsParams): Promise<PollAlertsResponse> {
+  const normalized: PollAlertsParams = typeof params === 'string' ? { sourceId: params } : (params ?? {})
+  const search = new URLSearchParams()
+  if (normalized.sourceId) search.set('sourceId', normalized.sourceId)
+  if (normalized.since) search.set('since', normalized.since)
+  if (typeof normalized.limit === 'number') search.set('limit', String(normalized.limit))
+  if (normalized.cursorSortTime) search.set('cursorSortTime', normalized.cursorSortTime)
+  if (normalized.cursorTaskId) search.set('cursorTaskId', normalized.cursorTaskId)
+  const suffix = search.toString() ? `?${search.toString()}` : ''
   return getJson(`/api/sentinelflow/alerts/state${suffix}`)
 }
 

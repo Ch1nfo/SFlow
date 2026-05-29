@@ -74,32 +74,59 @@ def _save_source_auto_execute(source_id: str, enabled: bool) -> None:
     save_runtime_config({"alert_sources": next_sources})
 
 
-def _state_tasks_payload(source_id: str | None, *, limit: int, offset: int) -> tuple[list[dict[str, Any]], int]:
+def _state_tasks_payload(
+    source_id: str | None,
+    *,
+    limit: int,
+    offset: int,
+    since: str | None = None,
+    cursor_sort_time: str | None = None,
+    cursor_task_id: str | None = None,
+) -> tuple[list[dict[str, Any]], int, dict[str, str] | None]:
     started = time.monotonic()
-    tasks, total = dispatch_service.list_task_rows(
+    tasks, total, next_cursor = dispatch_service.list_task_rows(
         None if source_id in {None, "", "all"} else source_id,
         limit=limit,
         offset=offset,
+        since=since,
+        cursor_sort_time=cursor_sort_time,
+        cursor_task_id=cursor_task_id,
     )
     logger.info(
-        "alerts_state_tasks duration_ms=%s row_count=%s total=%s source_id=%s limit=%s offset=%s",
+        "alerts_state_tasks duration_ms=%s row_count=%s total=%s source_id=%s limit=%s offset=%s since=%s cursor=%s",
         round((time.monotonic() - started) * 1000, 2),
         len(tasks),
         total,
         source_id or "all",
         limit,
         offset,
+        since or "",
+        cursor_sort_time or "",
     )
-    return tasks, total
+    return tasks, total, next_cursor
 
 
 def _task_status_counts_payload(source_id: str | None) -> dict[str, int]:
     return dispatch_service.task_status_counts(None if source_id in {None, "", "all"} else source_id)
 
 
-def _all_alerts_state(*, limit: int = 120, offset: int = 0) -> dict[str, Any]:
+def _all_alerts_state(
+    *,
+    limit: int = 120,
+    offset: int = 0,
+    since: str | None = None,
+    cursor_sort_time: str | None = None,
+    cursor_task_id: str | None = None,
+) -> dict[str, Any]:
     source_ids = _all_source_ids()
-    tasks, total_tasks = _state_tasks_payload(None, limit=limit, offset=offset)
+    tasks, total_tasks, next_cursor = _state_tasks_payload(
+        None,
+        limit=limit,
+        offset=offset,
+        since=since,
+        cursor_sort_time=cursor_sort_time,
+        cursor_task_id=cursor_task_id,
+    )
     status_counts = _task_status_counts_payload(None)
     latest_results = [polling_service.get_latest_result(source_id, include_tasks=False) for source_id in source_ids]
     auto_states = [auto_execution_service.state(source_id) for source_id in source_ids]
@@ -119,6 +146,8 @@ def _all_alerts_state(*, limit: int = 120, offset: int = 0) -> dict[str, Any]:
         "tasks_total": total_tasks,
         "tasks_limit": limit,
         "tasks_offset": offset,
+        "tasks_since": since or "",
+        "tasks_cursor": next_cursor,
         "errors": [error for result in latest_results for error in result.errors],
     }
 
@@ -385,13 +414,14 @@ async def poll_alerts(
         return _all_alerts_state(limit=limit, offset=offset)
     result = await polling_service.poll_once(source_id)
     auto_state = auto_execution_service.state(source_id)
-    tasks, total_tasks = _state_tasks_payload(source_id, limit=limit, offset=offset)
+    tasks, total_tasks, next_cursor = _state_tasks_payload(source_id, limit=limit, offset=offset)
     status_counts = _task_status_counts_payload(source_id)
     payload = _serialize(result)
     payload["tasks"] = tasks
     payload["tasks_total"] = total_tasks
     payload["tasks_limit"] = limit
     payload["tasks_offset"] = offset
+    payload["tasks_cursor"] = next_cursor
     payload["queued_count"] = status_counts.get("queued", 0)
     payload["completed_count"] = status_counts.get("completed", 0)
     payload["failed_count"] = status_counts.get("failed", 0)
@@ -407,21 +437,39 @@ def alerts_state(
     sourceId: str | None = None,
     limit: int = Query(120, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    since: str | None = None,
+    cursorSortTime: str | None = None,
+    cursorTaskId: str | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     source_id = _resolve_source_id(sourceId)
     if source_id == "all":
-        payload = _all_alerts_state(limit=limit, offset=offset)
+        payload = _all_alerts_state(
+            limit=limit,
+            offset=offset,
+            since=since,
+            cursor_sort_time=cursorSortTime,
+            cursor_task_id=cursorTaskId,
+        )
     else:
         result = polling_service.get_latest_result(source_id, include_tasks=False)
         auto_state = auto_execution_service.state(source_id)
-        tasks, total_tasks = _state_tasks_payload(source_id, limit=limit, offset=offset)
+        tasks, total_tasks, next_cursor = _state_tasks_payload(
+            source_id,
+            limit=limit,
+            offset=offset,
+            since=since,
+            cursor_sort_time=cursorSortTime,
+            cursor_task_id=cursorTaskId,
+        )
         status_counts = _task_status_counts_payload(source_id)
         payload = _serialize(result)
         payload["tasks"] = tasks
         payload["tasks_total"] = total_tasks
         payload["tasks_limit"] = limit
         payload["tasks_offset"] = offset
+        payload["tasks_since"] = since or ""
+        payload["tasks_cursor"] = next_cursor
         payload["queued_count"] = status_counts.get("queued", 0)
         payload["completed_count"] = status_counts.get("completed", 0)
         payload["failed_count"] = status_counts.get("failed", 0)
@@ -430,11 +478,12 @@ def alerts_state(
         payload["source_id"] = source_id
         payload["alert_sources"] = _alert_sources_payload()
     logger.info(
-        "alerts_state duration_ms=%s source_id=%s limit=%s offset=%s tasks=%s",
+        "alerts_state duration_ms=%s source_id=%s limit=%s offset=%s since=%s tasks=%s",
         round((time.monotonic() - started) * 1000, 2),
         source_id,
         limit,
         offset,
+        since or "",
         len(payload.get("tasks") or []),
     )
     return payload
