@@ -415,6 +415,28 @@ class SkillApprovalService:
                 (checkpoint_thread_id,),
             )
 
+    def purge_orphan_alert_task_artifacts(self) -> dict[str, int]:
+        """Drop checkpoints/approvals whose alert_task row no longer exists."""
+        with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+            checkpoints_deleted = conn.execute(
+                """
+                DELETE FROM skill_checkpoints
+                WHERE scope_type = 'alert_task'
+                  AND scope_ref NOT IN (SELECT task_id FROM alert_tasks)
+                """
+            ).rowcount
+            approvals_deleted = conn.execute(
+                """
+                DELETE FROM skill_approvals
+                WHERE scope_type = 'alert_task'
+                  AND scope_ref NOT IN (SELECT task_id FROM alert_tasks)
+                """
+            ).rowcount
+        return {
+            "checkpoints_deleted": max(int(checkpoints_deleted or 0), 0),
+            "approvals_deleted": max(int(approvals_deleted or 0), 0),
+        }
+
     def serialize_approval(self, record: SkillApprovalRecord) -> dict[str, Any]:
         payload = asdict(record)
         payload["arguments_summary"] = self.build_arguments_summary(record.arguments)

@@ -84,6 +84,7 @@ auto_execution_service = AlertAutoExecutionService(
 weekly_alert_cleanup_service = WeeklyAlertCleanupService(
     dispatch_service=dispatch_service,
     audit_service=audit_service,
+    skill_approval_service=skill_approval_service,
 )
 alert_parser_generator = AlertParserGenerator()
 

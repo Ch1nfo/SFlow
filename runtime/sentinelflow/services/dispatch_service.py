@@ -1674,7 +1674,25 @@ class AlertDispatchService:
 
         return len(removed_keys)
 
-    def delete_tasks_before(self, cutoff: datetime) -> int:
+    def purge_orphan_dedup_entries(self) -> int:
+        """Remove dedup keys that no longer match a stored alert task."""
+        with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+            deleted = conn.execute(
+                """
+                DELETE FROM alert_dedup
+                WHERE event_id NOT IN (
+                    SELECT source_id || ':' || event_ids FROM alert_tasks
+                )
+                """
+            ).rowcount
+        return max(int(deleted or 0), 0)
+
+    def run_incremental_vacuum(self) -> None:
+        with self.lock, sqlite_connection(DB_PATH) as conn:
+            conn.execute("PRAGMA incremental_vacuum")
+
+    def run_weekly_alert_storage_cleanup(self, cutoff: datetime) -> dict[str, int]:
+        """Delete all alert tasks before cutoff (any status), clear dedup, vacuum pages."""
         default_tz = cutoff.tzinfo or timezone.utc
         cutoff_utc = cutoff.astimezone(timezone.utc) if cutoff.tzinfo else cutoff.replace(tzinfo=timezone.utc)
         removed_keys: list[str] = []
@@ -1695,25 +1713,35 @@ class AlertDispatchService:
             removed_task_ids.append(row["task_id"])
             removed_keys.append(f"{row['source_id']}:{row['event_ids']}")
 
-        if not removed_task_ids:
-            return 0
+        stats = {
+            "tasks_deleted": 0,
+            "dedup_cleared": 0,
+            "dedup_orphans_cleared": 0,
+        }
+        if removed_task_ids:
+            with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+                for start in range(0, len(removed_task_ids), 500):
+                    chunk = removed_task_ids[start : start + 500]
+                    placeholders = ",".join(["?"] * len(chunk))
+                    conn.execute(f"DELETE FROM alert_tasks WHERE task_id IN ({placeholders})", tuple(chunk))
 
-        with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
-            for start in range(0, len(removed_task_ids), 500):
-                chunk = removed_task_ids[start : start + 500]
-                placeholders = ",".join(["?"] * len(chunk))
-                conn.execute(f"DELETE FROM alert_tasks WHERE task_id IN ({placeholders})", tuple(chunk))
-            conn.execute("PRAGMA incremental_vacuum")
+            for key in removed_keys:
+                self.dedup.forget(key)
 
-        for key in removed_keys:
-            self.dedup.forget(key)
+            stats["tasks_deleted"] = len(removed_task_ids)
+            stats["dedup_cleared"] = len(removed_keys)
+            self.audit_service.record(
+                "weekly_alert_cleanup",
+                f"Deleted {len(removed_task_ids)} alert tasks before {cutoff_utc.isoformat()}.",
+                {"count": len(removed_task_ids), "cutoff": cutoff_utc.isoformat()},
+            )
 
-        self.audit_service.record(
-            "weekly_alert_cleanup",
-            f"Deleted {len(removed_task_ids)} alert tasks before {cutoff_utc.isoformat()}.",
-            {"count": len(removed_task_ids), "cutoff": cutoff_utc.isoformat()},
-        )
-        return len(removed_task_ids)
+        stats["dedup_orphans_cleared"] = self.purge_orphan_dedup_entries()
+        return stats
+
+    def delete_tasks_before(self, cutoff: datetime) -> int:
+        """Backward-compatible wrapper; prefer run_weekly_alert_storage_cleanup."""
+        return self.run_weekly_alert_storage_cleanup(cutoff)["tasks_deleted"]
 
     def get_task(self, task_id: str) -> AlertHandlingTask | None:
         with self.lock, sqlite_connection(DB_PATH) as conn:
