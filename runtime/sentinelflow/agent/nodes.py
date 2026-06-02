@@ -28,6 +28,7 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
 
     alert_data = state["alert_data"]
     is_human_command = alert_data.get("alert_source") == "human_command"
+    minimal_worker_context = bool(alert_data.get("_minimal_worker_context"))
     readable_skills = state.get("readable_skills")
     skill_catalog = load_skill_catalog(skill_root, readable_skills)
     custom_prompt = str(state.get("system_prompt_override", "")).strip()
@@ -44,7 +45,9 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
         system_msg = SystemMessage(content=prompt)
         payload = str(alert_data.get("payload", ""))
         delegated_task_prompt = str(alert_data.get("delegated_task_prompt", ""))
-        if delegated_task_prompt.strip():
+        if delegated_task_prompt.strip() and minimal_worker_context:
+            initial_msg = HumanMessage(content=f"请执行以下主 Agent 分派任务：\n\n{delegated_task_prompt}")
+        elif delegated_task_prompt.strip():
             prior_facts = alert_data.get("prior_facts", {}) if isinstance(alert_data.get("prior_facts"), dict) else {}
             manifest = build_context_manifest(
                 current_goal=delegated_task_prompt,
@@ -87,7 +90,9 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
         system_msg = SystemMessage(content=prompt)
         alert_json = json.dumps(alert_data, ensure_ascii=False, indent=2)
         delegated_task_prompt = str(alert_data.get("delegated_task_prompt", ""))
-        if delegated_task_prompt.strip():
+        if delegated_task_prompt.strip() and minimal_worker_context:
+            initial_msg = HumanMessage(content=f"请执行以下主 Agent 分派任务：\n\n{delegated_task_prompt}")
+        elif delegated_task_prompt.strip():
             prior_facts = alert_data.get("prior_facts", {}) if isinstance(alert_data.get("prior_facts"), dict) else {}
             manifest = build_context_manifest(
                 current_goal=delegated_task_prompt,

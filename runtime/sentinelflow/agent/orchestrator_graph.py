@@ -218,26 +218,20 @@ def _build_worker_subgraph_tool(
 
     async def _execute_worker_subgraph(task_prompt: str, state: OrchestratorState, step_idx: int) -> dict[str, Any]:
         child_checkpoint_thread_id = f"{str(state.get('checkpoint_thread_id', '')).strip() or uuid4().hex}:worker:{worker_agent_def.name}:{step_idx}"
-        prior_facts = _extract_prior_facts_from_messages(list(state.get("messages", [])))
         context_manifest = build_context_manifest(
             current_goal=task_prompt,
             entry_type=str(state.get("entry_type", "")).strip(),
             current_step={"step": step_idx, "worker": worker_agent_def.name},
-            original_input=alert_data,
+            original_input={"delegated_task_prompt": task_prompt},
             current_task_prompt=task_prompt,
-            prior_step_results=_tool_payloads_from_messages(list(state.get("messages", []))),
-            model_summary=prior_facts,
         )
         child_state = {
             "alert_data": {
-                **copy.deepcopy(alert_data),
                 "delegated_task_prompt": task_prompt,
-                "prior_facts": prior_facts,
-                "context_manifest": context_manifest,
-                "context_warnings": _context_warnings_from_manifest(context_manifest),
+                "_minimal_worker_context": True,
             },
             "messages": [],
-            "event_id_ref": str(alert_data.get("eventIds", "")).strip(),
+            "event_id_ref": "",
             "input_seeded": False,
             "cancel_event": cancel_event,
             "readable_skills": readable_skills,
