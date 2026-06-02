@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, GitBranch, Plus, Radar, RefreshCw, Save, ShieldCheck, Trash2, Workflow as WorkflowIcon, X } from 'lucide-react'
-import { createWorkflow, deleteWorkflow, fetchRuntimeSettings, fetchWorkflowDetail, fetchWorkflows, saveWorkflow, type AgentSummary, type WorkflowDetail } from '@/api/sentinelflow'
+import { createWorkflow, deleteWorkflow, fetchRuntimeSettings, fetchWorkflowDetail, fetchWorkflows, saveWorkflow, type AgentSummary, type AlertSourceSettings, type WorkflowDetail } from '@/api/sentinelflow'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import PageHeader from '@/components/common/PageHeader'
@@ -16,6 +16,7 @@ type WorkflowCard = {
   description: string
   enabled: boolean
   scenarios: string[]
+  allowed_alert_source_ids: string[]
   steps_count: number
   step_agents: string[]
   location: string
@@ -27,6 +28,7 @@ type WorkflowDraft = {
   description: string
   enabled: boolean
   selectionKeywords: string
+  allowedAlertSourceIds: string[]
   stepAgents: string[]
 }
 
@@ -35,6 +37,7 @@ const EMPTY_DRAFT: WorkflowDraft = {
   description: '',
   enabled: true,
   selectionKeywords: '',
+  allowedAlertSourceIds: [],
   stepAgents: [],
 }
 
@@ -49,6 +52,7 @@ function detailToDraft(detail: WorkflowDetail): WorkflowDraft {
     description: detail.description,
     enabled: detail.enabled,
     selectionKeywords: (detail.selection_keywords ?? []).join(', '),
+    allowedAlertSourceIds: detail.allowed_alert_source_ids ?? [],
     stepAgents: (detail.steps ?? []).map((step) => step.agent),
   }
 }
@@ -70,9 +74,15 @@ function draftToPayload(draft: WorkflowDraft) {
       enabled: draft.enabled,
       scenarios: ['alert', 'task'],
       selection_keywords: draft.selectionKeywords.split(',').map((item) => item.trim()).filter(Boolean),
+      allowed_alert_source_ids: draft.allowedAlertSourceIds,
       steps,
     },
   }
+}
+
+function sourceLabel(source: AlertSourceSettings) {
+  const name = source.name?.trim() || source.id
+  return `${name}（${source.id}）`
 }
 
 export default function SentinelFlowWorkflowsPage() {
@@ -103,6 +113,7 @@ export default function SentinelFlowWorkflowsPage() {
     () => (agentsData?.agents ?? []).filter((agent: AgentSummary) => agent.role === 'worker' && agent.enabled !== false),
     [agentsData],
   )
+  const alertSources = settings?.alert_sources ?? []
 
   useEffect(() => {
     if (selectedWorkflowId || workflows.length === 0) return
@@ -404,6 +415,45 @@ export default function SentinelFlowWorkflowsPage() {
                   </div>
 
                   <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">适用告警源</div>
+                        <div className="mt-1 text-xs leading-5 text-gray-500">未选择时对全部告警源可见；选择后，仅这些告警源的告警会看到并允许调用该 Workflow。</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="sentinelflow-ghost-button"
+                        onClick={() => setDraft((current) => ({ ...current, allowedAlertSourceIds: [] }))}
+                        disabled={draft.allowedAlertSourceIds.length === 0}
+                      >
+                        全部告警源
+                      </button>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {alertSources.length ? alertSources.map((source) => {
+                        const checked = draft.allowedAlertSourceIds.includes(source.id)
+                        return (
+                          <label key={source.id} className="flex min-h-[44px] items-center gap-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => setDraft((current) => ({
+                                ...current,
+                                allowedAlertSourceIds: event.target.checked
+                                  ? Array.from(new Set([...current.allowedAlertSourceIds, source.id]))
+                                  : current.allowedAlertSourceIds.filter((item) => item !== source.id),
+                              }))}
+                            />
+                            <span>{sourceLabel(source)}</span>
+                          </label>
+                        )
+                      }) : (
+                        <div className="text-sm text-gray-500">当前平台还没有可选告警源配置。</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
                         <div className="text-sm font-semibold text-gray-900">子 Agent 调用顺序</div>
@@ -500,6 +550,24 @@ export default function SentinelFlowWorkflowsPage() {
                         </StatusBadge>
                       </div>
                     </div>
+                  </div>
+
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                    <div className="mb-2 text-sm font-semibold text-gray-900">适用告警源</div>
+                    {detail.allowed_alert_source_ids?.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {detail.allowed_alert_source_ids.map((sourceId) => {
+                          const source = alertSources.find((item) => item.id === sourceId)
+                          return (
+                            <span key={sourceId} className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs text-gray-700">
+                              {source ? sourceLabel(source) : sourceId}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-sm text-gray-600">全部告警源</div>
+                    )}
                   </div>
 
                   <div className="rounded-lg border border-gray-200 bg-white p-4">

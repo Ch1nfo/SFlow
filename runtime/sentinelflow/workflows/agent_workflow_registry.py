@@ -20,6 +20,7 @@ class AgentWorkflowDefinition:
     enabled: bool
     scenarios: list[str] = field(default_factory=list)
     selection_keywords: list[str] = field(default_factory=list)
+    allowed_alert_source_ids: list[str] = field(default_factory=list)
     steps: list[AgentWorkflowStepDefinition] = field(default_factory=list)
     location: str = ""
 
@@ -36,6 +37,18 @@ def _coerce_list(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def is_workflow_allowed_for_alert_source(workflow: AgentWorkflowDefinition, alert: dict[str, Any] | None) -> bool:
+    allowed_source_ids = {item.strip() for item in workflow.allowed_alert_source_ids if item.strip()}
+    if not allowed_source_ids:
+        return True
+    if not isinstance(alert, dict) or str(alert.get("alert_source", "")).strip() == "human_command":
+        return True
+    source_id = str(alert.get("alert_source_id") or alert.get("source_id") or "").strip()
+    if not source_id:
+        return True
+    return source_id in allowed_source_ids
 
 
 def _parse_workflow_file(workflow_dir: Path) -> AgentWorkflowDefinition:
@@ -73,6 +86,7 @@ def _parse_workflow_file(workflow_dir: Path) -> AgentWorkflowDefinition:
         enabled=_coerce_bool(raw.get("enabled"), True),
         scenarios=_coerce_list(raw.get("scenarios")),
         selection_keywords=_coerce_list(raw.get("selection_keywords")),
+        allowed_alert_source_ids=_coerce_list(raw.get("allowed_alert_source_ids") or raw.get("allowed_alert_sources")),
         steps=steps,
         location=str(workflow_dir),
     )
@@ -98,6 +112,7 @@ def serialize_agent_workflow_summary(workflow: AgentWorkflowDefinition) -> dict[
         "description": workflow.description,
         "enabled": workflow.enabled,
         "scenarios": workflow.scenarios,
+        "allowed_alert_source_ids": workflow.allowed_alert_source_ids,
         "steps_count": len(workflow.steps),
         "step_agents": [step.agent for step in workflow.steps],
         "location": workflow.location,

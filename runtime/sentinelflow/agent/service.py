@@ -39,7 +39,7 @@ from sentinelflow.config.runtime import build_llm_client_kwargs, load_runtime_co
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 from sentinelflow.services.triage_service import TriageService
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
-from sentinelflow.workflows.agent_workflow_registry import list_agent_workflows
+from sentinelflow.workflows.agent_workflow_registry import is_workflow_allowed_for_alert_source, list_agent_workflows
 
 
 LOGGER = logging.getLogger(__name__)
@@ -307,14 +307,18 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             return primary_agent
         return replace(primary_agent, prompt_alert=source_prompt)
 
-    def _build_primary_prompt(self, primary_agent, appendix_template: str, workers: list) -> str:
+    def _build_primary_prompt(self, primary_agent, appendix_template: str, workers: list, alert_data: dict[str, Any] | None = None) -> str:
         mode_map = {
             PRIMARY_COMMAND_ORCHESTRATION_APPENDIX: "primary_orchestrate_command",
             PRIMARY_ALERT_ORCHESTRATION_APPENDIX: "primary_orchestrate_alert",
         }
         readable_skills, _ = self._resolve_skill_permissions(primary_agent)
         skill_catalog = load_skill_catalog(self.project_root / ".sentinelflow" / "plugins" / "skills", readable_skills)
-        workflows = [workflow for workflow in list_agent_workflows(self.workflow_root) if workflow.enabled]
+        workflows = [
+            workflow
+            for workflow in list_agent_workflows(self.workflow_root)
+            if workflow.enabled and is_workflow_allowed_for_alert_source(workflow, alert_data)
+        ]
         return build_prompt(
             PromptBuildContext(
                 base_prompt=primary_agent.prompt_for_mode(mode_map.get(appendix_template, "primary_orchestrate_alert")).strip() if primary_agent else "",
@@ -338,6 +342,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                         f"  description: {workflow.description or workflow.name}",
                         f"  scenarios: {', '.join(workflow.scenarios) if workflow.scenarios else '未设置'}",
                         f"  selection_keywords: {', '.join(workflow.selection_keywords) if workflow.selection_keywords else '未设置'}",
+                        f"  allowed_alert_sources: {', '.join(workflow.allowed_alert_source_ids) if workflow.allowed_alert_source_ids else '全部告警源'}",
                         f"  step_agents: {', '.join(step.agent for step in workflow.steps) if workflow.steps else '无步骤'}",
                     ]
                 )
@@ -1449,7 +1454,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         alert_data["context_warnings"] = list(context_manifest.get("context_warnings", []) or [])
 
         system_prompt = self._build_primary_prompt(
-            primary_agent, PRIMARY_ALERT_ORCHESTRATION_APPENDIX, workers
+            primary_agent, PRIMARY_ALERT_ORCHESTRATION_APPENDIX, workers, alert_data=alert_data
         )
         orchestrator = build_orchestrator_graph(
             primary_agent,

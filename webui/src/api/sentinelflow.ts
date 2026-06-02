@@ -418,6 +418,7 @@ export type WorkflowSummary = {
   description: string
   enabled: boolean
   scenarios: string[]
+  allowed_alert_source_ids: string[]
   steps_count: number
   step_agents: string[]
   location: string

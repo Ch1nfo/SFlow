@@ -46,7 +46,7 @@ from sentinelflow.agent.tools import build_agent_tools
 from sentinelflow.config.runtime import build_llm_client_kwargs
 from sentinelflow.services.skill_approval_service import SkillApprovalService
 from sentinelflow.skills.adapters import SentinelFlowSkillRuntime
-from sentinelflow.workflows.agent_workflow_registry import load_agent_workflow, list_agent_workflows
+from sentinelflow.workflows.agent_workflow_registry import is_workflow_allowed_for_alert_source, load_agent_workflow, list_agent_workflows
 
 try:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -568,6 +568,16 @@ def build_orchestrator_graph(
                 return json.dumps({"success": False, "workflow_id": workflow_id, "error": f"Workflow 不存在或无法加载：{exc}"}, ensure_ascii=False)
         if not workflow.enabled:
             return json.dumps({"success": False, "workflow_id": workflow_id, "error": "该 Workflow 当前未启用。"}, ensure_ascii=False)
+        if not is_workflow_allowed_for_alert_source(workflow, alert_data):
+            source_id = str(alert_data.get("alert_source_id") or alert_data.get("source_id") or "").strip()
+            return json.dumps(
+                {
+                    "success": False,
+                    "workflow_id": workflow_id,
+                    "error": f"该 Workflow 未对当前告警源开放：{source_id or '未提供告警源'}。",
+                },
+                ensure_ascii=False,
+            )
         steps: list[dict[str, Any]] = []
         for index, step in enumerate(workflow.steps, start=1):
             agent_name = str(step.agent or "").strip()

@@ -5,7 +5,13 @@ from fastapi import APIRouter, HTTPException
 from sentinelflow.api.schemas import SkillCreateRequest, SkillDebugRequest, WorkflowCreateRequest, WorkflowRunRequest, AgentCreateRequest
 from sentinelflow.api.deps import PROJECT_ROOT, PLATFORM_ROOT, SKILL_ROOT, AGENT_ROOT, WORKFLOW_ROOT, skill_runtime, agent_workflow_runner
 from sentinelflow.agent.registry import SYSTEM_PRIMARY_AGENT_NAME, list_agent_definitions, load_agent_definition
-from sentinelflow.workflows.agent_workflow_registry import load_agent_workflow, list_agent_workflows, serialize_agent_workflow_detail, serialize_agent_workflow_summary
+from sentinelflow.workflows.agent_workflow_registry import (
+    is_workflow_allowed_for_alert_source,
+    load_agent_workflow,
+    list_agent_workflows,
+    serialize_agent_workflow_detail,
+    serialize_agent_workflow_summary,
+)
 from sentinelflow.api.utils import (
     _slugify, _normalize_workflow_id, _mirror_project_file, _remove_project_path,
     _build_skill_markdown, _build_skill_main, _assert_unique_plugin_name,
@@ -199,6 +205,9 @@ async def run_sentinelflow_workflow(workflow_id: str, payload: WorkflowRunReques
         return {"success": False, "workflow_id": workflow.id, "error": "Agent Workflow 校验未通过。"}
     context = payload.context or {}
     alert = context.get("alert") if isinstance(context.get("alert"), dict) else context
+    if isinstance(alert, dict) and not is_workflow_allowed_for_alert_source(workflow, alert):
+        source_id = str(alert.get("alert_source_id") or alert.get("source_id") or "").strip()
+        return {"success": False, "workflow_id": workflow.id, "error": f"该 Workflow 未对当前告警源开放：{source_id or '未提供告警源'}。"}
     return await agent_workflow_runner.execute_workflow(workflow, alert if isinstance(alert, dict) else {})
 
 @router.get("/agents")
