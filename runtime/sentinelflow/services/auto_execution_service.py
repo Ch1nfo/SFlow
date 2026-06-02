@@ -25,6 +25,20 @@ def _max_tasks_per_cycle_from_env() -> int:
         return DEFAULT_MAX_TASKS_PER_CYCLE
 
 
+def _run_task_in_isolated_loop(task_runner_service: "AlertTaskRunnerService", task: Any, execution_entry: str) -> dict[str, Any]:
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(task_runner_service.run_task(task, execution_entry=execution_entry))
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
 class AlertAutoExecutionService:
     def __init__(
         self,
@@ -195,6 +209,14 @@ class AlertAutoExecutionService:
                 return max(int(getattr(source, "failed_retry_interval_seconds", 0) or 0), 0)
         return max(int(getattr(config, "failed_retry_interval_seconds", 0) or 0), 0)
 
+    async def _run_task_isolated(self, task, *, execution_entry: str) -> dict[str, Any]:
+        return await asyncio.to_thread(
+            _run_task_in_isolated_loop,
+            self.task_runner_service,
+            task,
+            execution_entry,
+        )
+
     async def _run_pending_once(self, *, source_id: str = "default", allow_disabled: bool = False) -> list[dict[str, Any]]:
         queued_tasks = self._queued_tasks_for_source(source_id, self.max_tasks_per_cycle + 1)
         retry_interval_seconds = self._retry_interval_for_source(source_id)
@@ -213,7 +235,7 @@ class AlertAutoExecutionService:
                 if processed_count >= self.max_tasks_per_cycle:
                     limit_reached = True
                     break
-                results.append(await self.task_runner_service.run_task(task, execution_entry="auto_alert"))
+                results.append(await self._run_task_isolated(task, execution_entry="auto_alert"))
                 processed_count += 1
             for failed_task in retry_tasks:
                 if self._stop_event.is_set() or (not self._enabled_by_source.get(source_id, False) and not allow_disabled):
@@ -235,7 +257,7 @@ class AlertAutoExecutionService:
                         "retryIntervalSeconds": retry_interval_seconds,
                     },
                 )
-                results.append(await self.task_runner_service.run_task(prepared, execution_entry="auto_alert"))
+                results.append(await self._run_task_isolated(prepared, execution_entry="auto_alert"))
                 processed_count += 1
         finally:
             self._running_by_source[source_id] = False

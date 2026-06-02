@@ -63,6 +63,7 @@ dispatch_service = AlertDispatchService(
     triage_service=triage_service,
     audit_service=audit_service,
 )
+agent_run_log_service.heartbeat_callback = dispatch_service.record_task_heartbeat
 polling_service = AlertPollingService(
     client=SOCAlertApiClient(),
     dedup=dispatch_service.dedup,

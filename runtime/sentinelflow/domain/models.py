@@ -136,6 +136,12 @@ class AlertHandlingTask:
     last_result_error: str | None = None
     last_result_data: dict[str, Any] = field(default_factory=dict)
     payload: dict[str, Any] = field(default_factory=dict)
+    running_heartbeat_at: str = ""
+    running_step_key: str = ""
+    running_step_title: str = ""
+    running_step_started_at: str = ""
+    running_step_updated_at: str = ""
+    running_step_repeat_count: int = 0
 
 
 @dataclass(slots=True)

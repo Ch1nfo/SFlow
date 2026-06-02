@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sentinelflow.config.runtime import CONFIG_DIR, load_runtime_config, save_runtime_config
 
@@ -21,12 +21,14 @@ class RunLogRef:
     date: str
     log_id: str
     path: Path
+    task_id: str = ""
 
     def to_dict(self) -> dict[str, str]:
         return {
             "date": self.date,
             "log_id": self.log_id,
             "path": str(self.path),
+            "task_id": self.task_id,
         }
 
 
@@ -62,8 +64,13 @@ def _event_title(alert_data: dict[str, Any], task_title: str = "") -> str:
 
 
 class AgentRunLogService:
-    def __init__(self, root: Path = RUN_LOG_ROOT) -> None:
+    def __init__(
+        self,
+        root: Path = RUN_LOG_ROOT,
+        heartbeat_callback: Callable[[str, str, str], Any] | None = None,
+    ) -> None:
         self.root = root
+        self.heartbeat_callback = heartbeat_callback
         self._lock = threading.Lock()
         self._seq_counters: dict[str, int] = {}
 
@@ -114,7 +121,7 @@ class AgentRunLogService:
         safe_event = _safe_name(event_ids or alert_data.get("eventIds") or task_id, "event")
         safe_task = _safe_name(task_id, "task")
         log_id = f"{safe_event}_{safe_task}"
-        return RunLogRef(date=log_date, log_id=log_id, path=self.root / log_date / f"{log_id}.jsonl")
+        return RunLogRef(date=log_date, log_id=log_id, path=self.root / log_date / f"{log_id}.jsonl", task_id=task_id)
 
     def retention_days(self) -> int:
         return max(int(getattr(load_runtime_config(), "run_log_retention_days", 1) or 1), 1)
@@ -162,7 +169,7 @@ class AgentRunLogService:
         safe_event = _safe_name(event_ids or alert_data.get("eventIds") or task_id, "event")
         safe_task = _safe_name(task_id, "task")
         log_id = f"{safe_event}_{safe_task}"
-        ref = RunLogRef(date=log_date, log_id=log_id, path=date_dir / f"{log_id}.jsonl")
+        ref = RunLogRef(date=log_date, log_id=log_id, path=date_dir / f"{log_id}.jsonl", task_id=task_id)
         metadata = {
             "task_id": task_id,
             "event_ids": event_ids or str(alert_data.get("eventIds") or ""),
@@ -210,6 +217,7 @@ class AgentRunLogService:
             with resolved.path.open("a", encoding="utf-8") as handle:
                 handle.write(line + "\n")
             self._update_meta_after_append(resolved, event)
+        self._record_heartbeat(resolved, event)
 
     def record_agent_result(self, ref: RunLogRef | dict[str, Any] | None, agent_result: dict[str, Any]) -> None:
         if not isinstance(agent_result, dict):
@@ -322,7 +330,36 @@ class AgentRunLogService:
         log_id = str(ref.get("log_id") or "").strip()
         if not log_date or not log_id:
             return None
-        return RunLogRef(date=log_date, log_id=log_id, path=self.root / _safe_name(log_date) / f"{_safe_name(log_id)}.jsonl")
+        return RunLogRef(
+            date=log_date,
+            log_id=log_id,
+            path=self.root / _safe_name(log_date) / f"{_safe_name(log_id)}.jsonl",
+            task_id=str(ref.get("task_id") or "").strip(),
+        )
+
+    def _record_heartbeat(self, ref: RunLogRef, event: dict[str, Any]) -> None:
+        callback = self.heartbeat_callback
+        task_id = str(getattr(ref, "task_id", "") or "").strip()
+        if callback is None or not task_id:
+            return
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        event_type = str(data.get("event_type") or event.get("phase") or "").strip()
+        step_parts = [
+            str(event.get("phase") or "").strip(),
+            event_type,
+            str(data.get("scope") or "").strip(),
+            str(data.get("graph") or "").strip(),
+            str(data.get("agent_name") or "").strip(),
+            str(data.get("node") or "").strip(),
+            str(data.get("turn") or "").strip(),
+            str(data.get("tool_index") or "").strip(),
+            str(data.get("worker_step") or "").strip(),
+        ]
+        step_key = "|".join(part for part in step_parts if part) or str(event.get("title") or "").strip()
+        try:
+            callback(task_id, step_key[:1000], str(event.get("title") or step_key).strip()[:500])
+        except Exception:
+            return
 
     def _read_events(self, path: Path, limit: int | None = None) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []

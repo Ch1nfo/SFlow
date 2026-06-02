@@ -16,7 +16,8 @@ from sentinelflow.services.triage_service import TriageService
 from sentinelflow.config.runtime import CONFIG_DIR
 
 DB_PATH = CONFIG_DIR / "sys_queue.db"
-DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
+DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS = 60 * 60
+DEFAULT_STUCK_RUNNING_STEP_TIMEOUT_SECONDS = 10 * 60
 BAN_IP_FIELDS = {"ban_ip", "banned_ip", "blocked_ip", "ip", "source_ip", "sip", "target", "target_ip", "name"}
 DEFAULT_LIST_TASK_LIMIT = 120
 SCHEMA_META_BANNED_IPS_BACKFILL_KEY = "alert_tasks_banned_ips_backfill_v1"
@@ -162,6 +163,16 @@ def _stale_running_timeout_seconds() -> int:
         return max(60, int(raw))
     except ValueError:
         return DEFAULT_STALE_RUNNING_TIMEOUT_SECONDS
+
+
+def _stuck_running_step_timeout_seconds() -> int:
+    raw = str(os.getenv("SENTINELFLOW_STUCK_RUNNING_STEP_TIMEOUT_SECONDS", "")).strip()
+    if not raw:
+        return DEFAULT_STUCK_RUNNING_STEP_TIMEOUT_SECONDS
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return DEFAULT_STUCK_RUNNING_STEP_TIMEOUT_SECONDS
 
 
 def _build_external_poll_final_facts(
@@ -450,7 +461,13 @@ class AlertDispatchService:
                     last_result_success INTEGER,
                     last_result_error TEXT,
                     last_result_data TEXT,
-                    payload TEXT
+                    payload TEXT,
+                    running_heartbeat_at TEXT DEFAULT '',
+                    running_step_key TEXT DEFAULT '',
+                    running_step_title TEXT DEFAULT '',
+                    running_step_started_at TEXT DEFAULT '',
+                    running_step_updated_at TEXT DEFAULT '',
+                    running_step_repeat_count INTEGER DEFAULT 0
                 )
             ''')
             self._ensure_schema(conn)
@@ -480,6 +497,18 @@ class AlertDispatchService:
             conn.execute("ALTER TABLE alert_tasks ADD COLUMN banned_ips TEXT")
         if "result_summary" not in columns:
             conn.execute("ALTER TABLE alert_tasks ADD COLUMN result_summary TEXT DEFAULT ''")
+        if "running_heartbeat_at" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_heartbeat_at TEXT DEFAULT ''")
+        if "running_step_key" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_key TEXT DEFAULT ''")
+        if "running_step_title" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_title TEXT DEFAULT ''")
+        if "running_step_started_at" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_started_at TEXT DEFAULT ''")
+        if "running_step_updated_at" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_updated_at TEXT DEFAULT ''")
+        if "running_step_repeat_count" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_repeat_count INTEGER DEFAULT 0")
         conn.execute("UPDATE alert_tasks SET sort_time = COALESCE(NULLIF(alert_time, ''), updated_at) WHERE sort_time IS NULL OR sort_time = ''")
         conn.execute(
             f"""
@@ -503,6 +532,7 @@ class AlertDispatchService:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_status ON alert_tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_event_status ON alert_tasks(event_ids, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_updated_at ON alert_tasks(updated_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_running_step ON alert_tasks(status, running_step_started_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_sort_time ON alert_tasks(sort_time DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_source_sort ON alert_tasks(source_id, sort_time DESC)")
 
@@ -622,6 +652,12 @@ class AlertDispatchService:
             last_result_error=row["last_result_error"],
             last_result_data=self._decode_json_object(result_raw, context="last_result_data", task_id=row["task_id"]),
             payload=self._decode_json_object(payload_raw, context="payload", task_id=row["task_id"]),
+            running_heartbeat_at=row["running_heartbeat_at"] if "running_heartbeat_at" in row.keys() else "",
+            running_step_key=row["running_step_key"] if "running_step_key" in row.keys() else "",
+            running_step_title=row["running_step_title"] if "running_step_title" in row.keys() else "",
+            running_step_started_at=row["running_step_started_at"] if "running_step_started_at" in row.keys() else "",
+            running_step_updated_at=row["running_step_updated_at"] if "running_step_updated_at" in row.keys() else "",
+            running_step_repeat_count=int(row["running_step_repeat_count"] or 0) if "running_step_repeat_count" in row.keys() else 0,
         )
 
     def _decode_json_object(self, raw: str | None, *, context: str, task_id: str | None = None) -> dict[str, Any]:
@@ -743,6 +779,47 @@ class AlertDispatchService:
             row = conn.execute("SELECT * FROM alert_tasks WHERE task_id = ?", (task_id,)).fetchone()
             return self._row_to_task(row) if row else None
 
+    def record_task_heartbeat(
+        self,
+        task_id: str,
+        *,
+        step_key: str,
+        step_title: str = "",
+    ) -> AlertHandlingTask | None:
+        task_id = str(task_id or "").strip()
+        normalized_step_key = str(step_key or "").strip()
+        if not task_id or not normalized_step_key:
+            return None
+        now = _now_iso()
+        with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+            row = conn.execute("SELECT * FROM alert_tasks WHERE task_id = ?", (task_id,)).fetchone()
+            current = self._row_to_task(row) if row else None
+            if current is None or current.status != "running":
+                return None
+            same_step = str(current.running_step_key or "").strip() == normalized_step_key
+            running_step_started_at = current.running_step_started_at if same_step and current.running_step_started_at else now
+            repeat_count = (current.running_step_repeat_count + 1) if same_step else 1
+            updates = {
+                "updated_at": now,
+                "running_heartbeat_at": now,
+                "running_step_key": normalized_step_key,
+                "running_step_title": str(step_title or normalized_step_key).strip()[:500],
+                "running_step_started_at": running_step_started_at,
+                "running_step_updated_at": now,
+                "running_step_repeat_count": repeat_count,
+            }
+            updates = _enrich_updates_with_derived_fields(updates, current)
+            assignments = ", ".join(f"{column} = ?" for column in updates)
+            params = list(updates.values()) + [task_id]
+            cursor = conn.execute(
+                f"UPDATE alert_tasks SET {assignments} WHERE task_id = ? AND status = 'running'",
+                tuple(params),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            updated_row = conn.execute("SELECT * FROM alert_tasks WHERE task_id = ?", (task_id,)).fetchone()
+            return self._row_to_task(updated_row) if updated_row else None
+
     def _refresh_existing_task(
         self,
         existing: AlertHandlingTask,
@@ -809,9 +886,11 @@ class AlertDispatchService:
         *,
         source_id: str | None = None,
         timeout_seconds: int | None = None,
+        stuck_step_timeout_seconds: int | None = None,
     ) -> list[AlertHandlingTask]:
         timeout = timeout_seconds if timeout_seconds is not None else _stale_running_timeout_seconds()
-        if timeout <= 0:
+        stuck_timeout = stuck_step_timeout_seconds if stuck_step_timeout_seconds is not None else _stuck_running_step_timeout_seconds()
+        if timeout <= 0 and stuck_timeout <= 0:
             return []
         now = datetime.now(timezone.utc)
         with self.lock, sqlite_connection(DB_PATH) as conn:
@@ -826,6 +905,62 @@ class AlertDispatchService:
 
         recovered: list[AlertHandlingTask] = []
         for task in candidates:
+            step_started_at = _parse_task_datetime(task.running_step_started_at, timezone.utc)
+            step_key = str(task.running_step_key or "").strip()
+            if stuck_timeout > 0 and step_key and step_started_at is not None and (now - step_started_at).total_seconds() >= stuck_timeout:
+                step_title = str(task.running_step_title or step_key).strip()
+                error = f"任务运行卡在同一步超过 {stuck_timeout} 秒，已由系统回收为失败状态，可重新执行。当前步骤：{step_title}"
+                existing_result = dict(task.last_result_data) if isinstance(task.last_result_data, dict) else {}
+                result_data = {
+                    **existing_result,
+                    "success": False,
+                    "error": error,
+                    "reason": str(existing_result.get("reason") or error).strip(),
+                    "recovered_stuck_running_step": True,
+                    "stuck_step": {
+                        "key": step_key,
+                        "title": step_title,
+                        "started_at": task.running_step_started_at,
+                        "updated_at": task.running_step_updated_at,
+                        "heartbeat_at": task.running_heartbeat_at,
+                        "repeat_count": task.running_step_repeat_count,
+                        "timeout_seconds": stuck_timeout,
+                    },
+                }
+                updated_task = self._update_task_columns(
+                    task.task_id,
+                    {
+                        "status": "failed",
+                        "last_action": task.last_action or "stuck_running_step_recovery",
+                        "last_result_success": 0,
+                        "last_result_error": error,
+                        "last_result_data": json.dumps(result_data),
+                        "running_heartbeat_at": "",
+                        "running_step_key": "",
+                        "running_step_title": "",
+                        "running_step_started_at": "",
+                        "running_step_updated_at": "",
+                        "running_step_repeat_count": 0,
+                    },
+                    expected_statuses=["running"],
+                )
+                if not updated_task:
+                    continue
+                self.dedup.mark_failed(f"{updated_task.source_id}:{updated_task.event_ids}")
+                self.audit_service.record(
+                    "alert_task_stuck_running_step_recovered",
+                    f"Recovered stuck running task {updated_task.event_ids} as failed.",
+                    {
+                        "eventIds": updated_task.event_ids,
+                        "taskId": updated_task.task_id,
+                        "sourceId": updated_task.source_id,
+                        "stepKey": step_key,
+                        "stepTitle": step_title,
+                        "timeoutSeconds": stuck_timeout,
+                    },
+                )
+                recovered.append(updated_task)
+                continue
             updated_at = _parse_task_datetime(task.updated_at, timezone.utc)
             if updated_at is None or (now - updated_at).total_seconds() < timeout:
                 continue
@@ -846,6 +981,12 @@ class AlertDispatchService:
                     "last_result_success": 0,
                     "last_result_error": error,
                     "last_result_data": json.dumps(result_data),
+                    "running_heartbeat_at": "",
+                    "running_step_key": "",
+                    "running_step_title": "",
+                    "running_step_started_at": "",
+                    "running_step_updated_at": "",
+                    "running_step_repeat_count": 0,
                 },
                 expected_statuses=["running"],
             )
@@ -1764,6 +1905,7 @@ class AlertDispatchService:
         return None
 
     def mark_task_running(self, task_id: str, action: str) -> AlertHandlingTask | None:
+        now = _now_iso()
         task = self._update_task_columns(
             task_id,
             {
@@ -1771,6 +1913,12 @@ class AlertDispatchService:
                 "last_action": action,
                 "last_result_error": None,
                 "last_result_data": json.dumps({}),
+                "running_heartbeat_at": now,
+                "running_step_key": "task_running",
+                "running_step_title": "任务进入运行态",
+                "running_step_started_at": now,
+                "running_step_updated_at": now,
+                "running_step_repeat_count": 1,
             },
             expected_statuses=["queued"],
         )
@@ -1798,6 +1946,12 @@ class AlertDispatchService:
                 "last_result_success": None,
                 "last_result_error": error,
                 "last_result_data": json.dumps(result_data or {}),
+                "running_heartbeat_at": "",
+                "running_step_key": "",
+                "running_step_title": "",
+                "running_step_started_at": "",
+                "running_step_updated_at": "",
+                "running_step_repeat_count": 0,
             },
             expected_statuses=["running"],
         )
@@ -1819,6 +1973,7 @@ class AlertDispatchService:
                 for key, value in task.last_result_data.items()
                 if key not in {"approval_pending", "approval_request"}
             }
+        now = _now_iso()
         task = self._update_task_columns(
             task_id,
             {
@@ -1826,6 +1981,12 @@ class AlertDispatchService:
                 "last_action": action,
                 "last_result_error": None,
                 "last_result_data": json.dumps(cleared_result_data),
+                "running_heartbeat_at": now,
+                "running_step_key": "task_resumed_from_approval",
+                "running_step_title": "审批后恢复运行",
+                "running_step_started_at": now,
+                "running_step_updated_at": now,
+                "running_step_repeat_count": 1,
             },
             expected_statuses=["awaiting_approval"],
         )
@@ -1850,6 +2011,12 @@ class AlertDispatchService:
                 "last_result_error": None,
                 "last_result_success": None,
                 "last_result_data": json.dumps({}),
+                "running_heartbeat_at": "",
+                "running_step_key": "",
+                "running_step_title": "",
+                "running_step_started_at": "",
+                "running_step_updated_at": "",
+                "running_step_repeat_count": 0,
             },
             expected_statuses=["failed"],
         )
@@ -1882,6 +2049,12 @@ class AlertDispatchService:
                 "last_result_success": 1 if success else 0,
                 "last_result_error": error,
                 "last_result_data": json.dumps(result_data or {}),
+                "running_heartbeat_at": "",
+                "running_step_key": "",
+                "running_step_title": "",
+                "running_step_started_at": "",
+                "running_step_updated_at": "",
+                "running_step_repeat_count": 0,
             },
             expected_statuses=["running"],
         )
