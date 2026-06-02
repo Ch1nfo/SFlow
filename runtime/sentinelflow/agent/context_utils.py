@@ -1035,6 +1035,12 @@ def _summarize_older_messages(messages: list[Any]) -> tuple[list[dict[str, Any]]
     return summaries[-30:], trimmed_tool_messages
 
 
+def _reduce_older_summaries(summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(summaries) <= 1:
+        return []
+    return summaries[len(summaries) // 2 :]
+
+
 def _compact_recent_tool_messages(messages: list[Any]) -> tuple[list[Any], int]:
     compacted: list[Any] = []
     count = 0
@@ -1159,8 +1165,10 @@ def prepare_messages_for_llm(
     strategy = "case_context+older_summary+recent_raw"
     if compacted_recent_tool_messages:
         strategy = "case_context+older_summary+compacted_recent_tools"
+    summary_reduction_attempts = 0
     while after_size.get("estimated_tokens", 0) > budget and older_summaries:
-        older_summaries = older_summaries[len(older_summaries) // 2 :]
+        summary_reduction_attempts += 1
+        older_summaries = _reduce_older_summaries(older_summaries)
         control_payload["older_history_compact"] = older_summaries
         control_message = HumanMessage(
             content=(
@@ -1171,6 +1179,18 @@ def prepare_messages_for_llm(
         prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
         after_size = estimate_context_size([_message_content(item) for item in prompt_view])
         strategy = "case_context+reduced_older_summary+recent_raw"
+        if summary_reduction_attempts > 32:
+            older_summaries = []
+            control_payload["older_history_compact"] = older_summaries
+            control_message = HumanMessage(
+                content=(
+                    "LLM 推理窗口控制器（本消息为自动生成的上下文视图）：\n"
+                    f"```json\n{json.dumps(_json_safe(control_payload, max_depth=10), ensure_ascii=False, indent=2)}\n```"
+                )
+            )
+            prompt_view = [system_msg] + anchor_messages + [control_message] + recent_messages
+            after_size = estimate_context_size([_message_content(item) for item in prompt_view])
+            break
 
     while after_size.get("estimated_tokens", 0) > budget and len(recent_messages) > 2:
         recent_messages = recent_messages[2:]
