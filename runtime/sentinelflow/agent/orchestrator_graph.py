@@ -377,7 +377,7 @@ def _build_worker_subgraph_tool(
             "final_response": final_text,
             "skills_used": skills_used,
             "tool_calls_summary": tool_calls_summary,
-            "key_facts": extract_key_facts(prior_facts, alert_data, task_prompt, final_text, tool_calls_summary, tool_result_facts),
+            "key_facts": extract_key_facts(task_prompt, final_text, tool_calls_summary, tool_result_facts),
             "context_manifest": context_manifest,
             "context_warnings": _context_warnings_from_manifest(context_manifest),
             "success": bool(final_text) and not terminal_execution_missing,
