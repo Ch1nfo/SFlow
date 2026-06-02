@@ -611,6 +611,22 @@ async def handle_alert(payload: AlertActionRequest) -> dict[str, Any]:
             }
         return _serialize(await task_runner_service.run_task(prepared, execution_entry="manual_alert"))
 
+    if payload.action == "force_restart_task":
+        if not task:
+            return {
+                "action": payload.action,
+                "success": False,
+                "error": "未找到待重新处置任务。",
+            }
+        prepared = dispatch_service.force_restart_task(task.task_id)
+        if not prepared:
+            return {
+                "action": payload.action,
+                "success": False,
+                "error": "任务重新处置准备失败。",
+            }
+        return _serialize(await task_runner_service.run_task(prepared, execution_entry="manual_alert"))
+
     if not alert:
         return {"action": payload.action, "success": False, "error": "未提供可处理的告警上下文。"}
 

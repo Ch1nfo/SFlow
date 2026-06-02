@@ -91,7 +91,14 @@ class AlertTaskRunnerService:
             workflow_selection = task.payload.get("workflow_selection")
             if isinstance(workflow_selection, dict) and "workflow_selection" not in result_payload:
                 result_payload["workflow_selection"] = workflow_selection
-        task = self.dispatch_service.finalize_task(task.task_id, selected_action, True, result_payload, None)
+        task = self.dispatch_service.finalize_task(
+            task.task_id,
+            selected_action,
+            True,
+            result_payload,
+            None,
+            expected_running_run_id=str(getattr(task, "running_run_id", "") or "") or None,
+        )
         if task is None:
             current_task = self.dispatch_service.get_task(original_task_id)
             return {
@@ -200,7 +207,14 @@ class AlertTaskRunnerService:
             }
         )
         failure_payload["success"] = False
-        task = self.dispatch_service.finalize_task(task.task_id, selected_action, False, failure_payload, error)
+        task = self.dispatch_service.finalize_task(
+            task.task_id,
+            selected_action,
+            False,
+            failure_payload,
+            error,
+            expected_running_run_id=str(getattr(task, "running_run_id", "") or "") or None,
+        )
         if task is None:
             current_task = self.dispatch_service.get_task(original_task_id)
             return {
@@ -226,7 +240,13 @@ class AlertTaskRunnerService:
         self._record_agent_result(run_log_ref, agent_result)
         if agent_result.get("approval_pending"):
             pending_payload = dict(agent_result)
-            task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
+            task = self.dispatch_service.mark_task_awaiting_approval(
+                task.task_id,
+                selected_action,
+                pending_payload,
+                "任务等待技能审批。",
+                expected_running_run_id=str(getattr(task, "running_run_id", "") or "") or None,
+            )
             if task is None:
                 result = {
                     "action": selected_action,
@@ -491,7 +511,13 @@ class AlertTaskRunnerService:
             )
         if agent_result.get("approval_pending"):
             pending_payload = dict(agent_result)
-            task = self.dispatch_service.mark_task_awaiting_approval(task.task_id, selected_action, pending_payload, "任务等待技能审批。")
+            task = self.dispatch_service.mark_task_awaiting_approval(
+                task.task_id,
+                selected_action,
+                pending_payload,
+                "任务等待技能审批。",
+                expected_running_run_id=str(getattr(task, "running_run_id", "") or "") or None,
+            )
             if task is None:
                 result = {
                     "action": selected_action,

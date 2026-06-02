@@ -142,6 +142,7 @@ class AlertHandlingTask:
     running_step_started_at: str = ""
     running_step_updated_at: str = ""
     running_step_repeat_count: int = 0
+    running_run_id: str = ""
 
 
 @dataclass(slots=True)

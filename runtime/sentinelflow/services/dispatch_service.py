@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Iterable
+from uuid import uuid4
 
 from sentinelflow.alerts.dedup import AlertDedupStore
 from sentinelflow.domain.models import AlertHandlingTask
@@ -467,7 +468,8 @@ class AlertDispatchService:
                     running_step_title TEXT DEFAULT '',
                     running_step_started_at TEXT DEFAULT '',
                     running_step_updated_at TEXT DEFAULT '',
-                    running_step_repeat_count INTEGER DEFAULT 0
+                    running_step_repeat_count INTEGER DEFAULT 0,
+                    running_run_id TEXT DEFAULT ''
                 )
             ''')
             self._ensure_schema(conn)
@@ -509,6 +511,8 @@ class AlertDispatchService:
             conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_updated_at TEXT DEFAULT ''")
         if "running_step_repeat_count" not in columns:
             conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_step_repeat_count INTEGER DEFAULT 0")
+        if "running_run_id" not in columns:
+            conn.execute("ALTER TABLE alert_tasks ADD COLUMN running_run_id TEXT DEFAULT ''")
         conn.execute("UPDATE alert_tasks SET sort_time = COALESCE(NULLIF(alert_time, ''), updated_at) WHERE sort_time IS NULL OR sort_time = ''")
         conn.execute(
             f"""
@@ -658,6 +662,7 @@ class AlertDispatchService:
             running_step_started_at=row["running_step_started_at"] if "running_step_started_at" in row.keys() else "",
             running_step_updated_at=row["running_step_updated_at"] if "running_step_updated_at" in row.keys() else "",
             running_step_repeat_count=int(row["running_step_repeat_count"] or 0) if "running_step_repeat_count" in row.keys() else 0,
+            running_run_id=row["running_run_id"] if "running_run_id" in row.keys() else "",
         )
 
     def _decode_json_object(self, raw: str | None, *, context: str, task_id: str | None = None) -> dict[str, Any]:
@@ -750,6 +755,7 @@ class AlertDispatchService:
         updates: dict[str, Any],
         *,
         expected_statuses: Iterable[str] | None = None,
+        expected_running_run_id: str | None = None,
     ) -> AlertHandlingTask | None:
         if not updates:
             return self.get_task(task_id)
@@ -772,6 +778,9 @@ class AlertDispatchService:
                 placeholders = ", ".join("?" for _ in status_list)
                 query += f" AND status IN ({placeholders})"
                 params.extend(status_list)
+            if expected_running_run_id is not None:
+                query += " AND running_run_id = ?"
+                params.append(str(expected_running_run_id or ""))
 
             cursor = conn.execute(query, tuple(params))
             if cursor.rowcount <= 0:
@@ -941,6 +950,7 @@ class AlertDispatchService:
                         "running_step_started_at": "",
                         "running_step_updated_at": "",
                         "running_step_repeat_count": 0,
+                        "running_run_id": "",
                     },
                     expected_statuses=["running"],
                 )
@@ -987,6 +997,7 @@ class AlertDispatchService:
                     "running_step_started_at": "",
                     "running_step_updated_at": "",
                     "running_step_repeat_count": 0,
+                    "running_run_id": "",
                 },
                 expected_statuses=["running"],
             )
@@ -1906,6 +1917,7 @@ class AlertDispatchService:
 
     def mark_task_running(self, task_id: str, action: str) -> AlertHandlingTask | None:
         now = _now_iso()
+        run_id = uuid4().hex
         task = self._update_task_columns(
             task_id,
             {
@@ -1919,6 +1931,7 @@ class AlertDispatchService:
                 "running_step_started_at": now,
                 "running_step_updated_at": now,
                 "running_step_repeat_count": 1,
+                "running_run_id": run_id,
             },
             expected_statuses=["queued"],
         )
@@ -1937,6 +1950,7 @@ class AlertDispatchService:
         action: str,
         result_data: dict[str, Any] | None = None,
         error: str | None = None,
+        expected_running_run_id: str | None = None,
     ) -> AlertHandlingTask | None:
         task = self._update_task_columns(
             task_id,
@@ -1952,8 +1966,10 @@ class AlertDispatchService:
                 "running_step_started_at": "",
                 "running_step_updated_at": "",
                 "running_step_repeat_count": 0,
+                "running_run_id": "",
             },
             expected_statuses=["running"],
+            expected_running_run_id=expected_running_run_id,
         )
         if not task:
             return None
@@ -1974,6 +1990,7 @@ class AlertDispatchService:
                 if key not in {"approval_pending", "approval_request"}
             }
         now = _now_iso()
+        run_id = uuid4().hex
         task = self._update_task_columns(
             task_id,
             {
@@ -1987,6 +2004,7 @@ class AlertDispatchService:
                 "running_step_started_at": now,
                 "running_step_updated_at": now,
                 "running_step_repeat_count": 1,
+                "running_run_id": run_id,
             },
             expected_statuses=["awaiting_approval"],
         )
@@ -2017,6 +2035,7 @@ class AlertDispatchService:
                 "running_step_started_at": "",
                 "running_step_updated_at": "",
                 "running_step_repeat_count": 0,
+                "running_run_id": "",
             },
             expected_statuses=["failed"],
         )
@@ -2030,6 +2049,43 @@ class AlertDispatchService:
         )
         return updated_task
 
+    def force_restart_task(self, task_id: str) -> AlertHandlingTask | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        updated_task = self._update_task_columns(
+            task_id,
+            {
+                "status": "queued",
+                "retry_count": task.retry_count + 1,
+                "last_action": "force_restart",
+                "last_result_error": None,
+                "last_result_success": None,
+                "last_result_data": json.dumps({}),
+                "running_heartbeat_at": "",
+                "running_step_key": "",
+                "running_step_title": "",
+                "running_step_started_at": "",
+                "running_step_updated_at": "",
+                "running_step_repeat_count": 0,
+                "running_run_id": "",
+            },
+        )
+        if not updated_task:
+            return None
+        self.dedup.mark_processing(f"{updated_task.source_id}:{updated_task.event_ids}")
+        self.audit_service.record(
+            "task_force_restart_prepared",
+            f"Task {task_id} force restarted from current status.",
+            {
+                "taskId": task_id,
+                "eventIds": updated_task.event_ids,
+                "previousStatus": task.status,
+                "retryCount": updated_task.retry_count,
+            },
+        )
+        return updated_task
+
     def finalize_task(
         self,
         task_id: str,
@@ -2037,6 +2093,7 @@ class AlertDispatchService:
         success: bool,
         result_data: dict[str, Any] | None = None,
         error: str | None = None,
+        expected_running_run_id: str | None = None,
     ) -> AlertHandlingTask | None:
         task = self.get_task(task_id)
         if not task:
@@ -2055,8 +2112,10 @@ class AlertDispatchService:
                 "running_step_started_at": "",
                 "running_step_updated_at": "",
                 "running_step_repeat_count": 0,
+                "running_run_id": "",
             },
             expected_statuses=["running"],
+            expected_running_run_id=expected_running_run_id,
         )
         if not updated_task:
             current_task = self.get_task(task_id)
