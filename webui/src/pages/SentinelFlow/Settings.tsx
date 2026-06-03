@@ -227,7 +227,7 @@ function createBlankSource(index: number): AlertSourceDraft {
   }
 }
 
-const RUN_LOG_IP_PREVIEW_LIMIT = 5
+const RUN_LOG_IP_PREVIEW_LIMIT = 2
 
 function splitRunLogIpValues(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -248,23 +248,17 @@ function formatRunLogIpPreview(value: unknown): unknown {
   return `${items.slice(0, RUN_LOG_IP_PREVIEW_LIMIT).join('、')} 等 ${items.length} 个`
 }
 
-function limitRunLogSipDipDisplay(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => limitRunLogSipDipDisplay(item))
+function limitRunLogSipDipTitle(value: unknown): string {
+  let text = String(value ?? '').trim()
+  if (!text) return ''
+  for (const field of ['sip', 'dip']) {
+    const pattern = new RegExp(`(${field}=)(.*?)(?=\\s(?:sip|dip)=|$)`, 'gi')
+    text = text.replace(pattern, (_match, prefix: string, rawValue: string) => {
+      const preview = formatRunLogIpPreview(rawValue)
+      return `${prefix}${String(preview)}`
+    })
   }
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>
-    return Object.fromEntries(
-      Object.entries(record).map(([key, entry]) => {
-        const normalizedKey = key.toLowerCase()
-        if (normalizedKey === 'sip' || normalizedKey === 'dip') {
-          return [key, formatRunLogIpPreview(entry)]
-        }
-        return [key, limitRunLogSipDipDisplay(entry)]
-      }),
-    )
-  }
-  return value
+  return text
 }
 
 function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
@@ -303,10 +297,6 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
 }
 
 function shortEventData(value: unknown): string {
-  return shortEventDataInner(limitRunLogSipDipDisplay(value))
-}
-
-function shortEventDataInner(value: unknown): string {
   if (typeof value === 'string') return value.length > 160 ? `${value.slice(0, 160)}...` : value
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>
@@ -388,7 +378,10 @@ function shortEventDataInner(value: unknown): string {
     const hit = [record.summary, record.content, record.final_response, record.error, record.title].find(
       (item) => typeof item === 'string' && item.trim(),
     )
-    if (typeof hit === 'string') return hit.length > 160 ? `${hit.slice(0, 160)}...` : hit
+    if (typeof hit === 'string') {
+      const line = limitRunLogSipDipTitle(hit)
+      return line.length > 160 ? `${line.slice(0, 160)}...` : line
+    }
   }
   return ''
 }
@@ -1453,7 +1446,7 @@ export default function SentinelFlowSettingsPage() {
                         onClick={() => void selectDebugLog(selectedDebugDate, alert.log_id)}
                       >
                         <div className="text-sm font-medium">{alert.event_ids || alert.task_id || alert.log_id}</div>
-                        <div className="mt-1 line-clamp-2 text-xs text-slate-400">{alert.title}</div>
+                        <div className="mt-1 line-clamp-2 text-xs text-slate-400">{limitRunLogSipDipTitle(alert.title)}</div>
                         <div className="mt-1 text-xs text-slate-500">{alert.event_count} 个事件 · {alert.updated_at}</div>
                       </button>
                     ))}
@@ -1464,7 +1457,7 @@ export default function SentinelFlowSettingsPage() {
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">模型数据流转记录</div>
-                      <div className="mt-1 text-sm text-slate-300">{debugLogDetail?.metadata?.title as string || selectedDebugLogId || '未选择告警'}</div>
+                      <div className="mt-1 text-sm text-slate-300">{limitRunLogSipDipTitle(debugLogDetail?.metadata?.title || selectedDebugLogId || '未选择告警')}</div>
                     </div>
                     <div className="text-xs text-slate-500">
                       {debugLogDetail?.truncated
@@ -1501,7 +1494,7 @@ export default function SentinelFlowSettingsPage() {
                             ) : null}
                             <span className={event.level === 'error' ? 'text-red-300' : event.level === 'warn' ? 'text-amber-300' : 'text-slate-400'}>{event.level}</span>
                           </div>
-                          <div className="mt-1 text-sm font-medium text-slate-100">{event.title}</div>
+                          <div className="mt-1 text-sm font-medium text-slate-100">{limitRunLogSipDipTitle(event.title)}</div>
                           <RunLogEventSummary
                             event={event}
                             events={debugLogDetail?.events ?? []}
@@ -1509,7 +1502,7 @@ export default function SentinelFlowSettingsPage() {
                           />
                         </summary>
                         <div className="mt-3 min-w-0 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-slate-100">
-                          <JsonPreview value={limitRunLogSipDipDisplay(event)} />
+                          <JsonPreview value={event} />
                         </div>
                       </details>
                         )
