@@ -1044,14 +1044,16 @@ export default function SentinelFlowTasksPage() {
         const detail = await fetchAlertTaskDetail(task.task_id)
         setSelectedTaskDetail(detail.task)
       }
-      setFullReportExpanded(true)
-      setFinalJudgmentExpanded(false)
+      if (result.markdown) {
+        setFullReportExpanded(true)
+        setFinalJudgmentExpanded(false)
+      }
       const next: RuntimeActivity = {
         type: 'alert_action',
         title: `${task.title} / 完整研判报告`,
-        detail: result.cached ? '已读取已生成的完整研判报告。' : '完整研判报告已生成并保存。',
+        detail: result.cached ? '已读取已生成的完整研判报告。' : result.pending ? '完整研判报告已在后台生成。' : '完整研判报告已生成并保存。',
         success: result.success,
-        status: result.success ? 'success' : 'failed',
+        status: result.pending ? 'running' : result.success ? 'success' : 'failed',
         timestamp: new Date().toISOString(),
       }
       setActivity(next)
@@ -1083,6 +1085,9 @@ export default function SentinelFlowTasksPage() {
   ) ?? {}
   const selectedFinalJudgmentMarkdown = String(selectedResult.final_judgment_markdown ?? '').trim()
   const selectedFullReportMarkdown = String(selectedResult.full_report_markdown ?? '').trim()
+  const selectedFullReportGeneration = (selectedResult.full_report_generation as Record<string, unknown> | undefined) ?? {}
+  const selectedFullReportStatus = String(selectedFullReportGeneration.status ?? '').trim()
+  const isFullReportGenerating = selectedFullReportStatus === 'running' || runningAction === `full-report:${selectedTask?.task_id ?? ''}`
   const selectedReason = String(selectedResult.reason ?? '').trim()
   const selectedDisposition = String(selectedFinalJudgment.disposition ?? selectedResult.disposition ?? '').trim()
   const selectedSummary = String(selectedResult.summary ?? '').trim()
@@ -1293,9 +1298,9 @@ export default function SentinelFlowTasksPage() {
                                 void handleGenerateFullReport(selectedTask)
                               }
                             }}
-                            disabled={runningAction !== ''}
+                            disabled={runningAction !== '' || isFullReportGenerating}
                           >
-                            {runningAction === `full-report:${selectedTask.task_id}` ? '生成中...' : selectedFullReportMarkdown ? (fullReportExpanded ? '收起完整研判报告' : '展开完整研判报告') : '获取完整研判报告'}
+                            {isFullReportGenerating ? '生成中...' : selectedFullReportMarkdown ? (fullReportExpanded ? '收起完整研判报告' : '展开完整研判报告') : '获取完整研判报告'}
                           </button>
                           <button
                             type="button"

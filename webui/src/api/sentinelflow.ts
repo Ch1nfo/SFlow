@@ -73,6 +73,7 @@ export type AlertTaskResultData = Record<string, unknown> & {
   evidence?: string[]
   final_judgment_markdown?: string
   full_report_markdown?: string
+  full_report_generation?: Record<string, unknown>
   workflow_selection?: Record<string, unknown>
   workflow_runs?: Array<Record<string, unknown>>
   analysis_step?: Record<string, unknown>
@@ -591,7 +592,7 @@ export async function fetchAlertTaskDetail(taskId: string): Promise<{ task: Aler
   return getJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}`)
 }
 
-export async function generateAlertTaskFullReport(taskId: string): Promise<{ success: boolean; task: AlertTask; markdown: string; cached: boolean; format_skill: string }> {
+export async function generateAlertTaskFullReport(taskId: string): Promise<{ success: boolean; task: AlertTask; markdown: string; cached: boolean; pending?: boolean; format_skill: string }> {
   return postJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}/full-report`, {})
 }
 

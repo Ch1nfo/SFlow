@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 active_command_cancellations: dict[str, threading.Event] = {}
 active_command_lock = threading.Lock()
+active_full_report_tasks: dict[str, asyncio.Task] = {}
+active_full_report_lock = threading.Lock()
 
 
 def _alert_sources_payload() -> list[dict[str, Any]]:
@@ -194,6 +196,79 @@ async def _generate_full_report_markdown(task) -> dict[str, Any]:
         "format_skill": skill_name,
         "run_log_used": bool(run_log_context),
     }
+
+
+def _full_report_generation_payload(
+    *,
+    status: str,
+    source: str = "manual_button",
+    format_skill: str = "",
+    run_log_used: bool | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": status,
+        "source": source,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    if format_skill:
+        payload["format_skill"] = format_skill
+    if run_log_used is not None:
+        payload["run_log_used"] = run_log_used
+    if error:
+        payload["error"] = error[:1000]
+    return payload
+
+
+async def _run_full_report_generation(task_id: str) -> None:
+    try:
+        task = dispatch_service.get_task(task_id)
+        if task is None:
+            return
+        result_data = dict(task.last_result_data) if isinstance(task.last_result_data, dict) else {}
+        if str(result_data.get("full_report_markdown") or "").strip():
+            return
+
+        generated = await _generate_full_report_markdown(task)
+        latest_task = dispatch_service.get_task(task_id)
+        if latest_task is None:
+            return
+        latest_result_data = dict(latest_task.last_result_data) if isinstance(latest_task.last_result_data, dict) else {}
+        if str(latest_result_data.get("full_report_markdown") or "").strip():
+            return
+        latest_result_data["full_report_markdown"] = generated["markdown"]
+        latest_result_data["full_report_generation"] = _full_report_generation_payload(
+            status="success",
+            format_skill=generated["format_skill"],
+            run_log_used=generated["run_log_used"],
+        )
+        dispatch_service.update_task_result_data(task_id, latest_result_data)
+    except Exception as exc:
+        logger.warning("full report background generation failed for task %s", task_id, exc_info=True)
+        latest_task = dispatch_service.get_task(task_id)
+        if latest_task is not None:
+            latest_result_data = dict(latest_task.last_result_data) if isinstance(latest_task.last_result_data, dict) else {}
+            existing_generation = latest_result_data.get("full_report_generation")
+            format_skill = ""
+            if isinstance(existing_generation, dict):
+                format_skill = str(existing_generation.get("format_skill") or "").strip()
+            latest_result_data["full_report_generation"] = _full_report_generation_payload(
+                status="failed",
+                format_skill=format_skill,
+                error=str(exc),
+            )
+            dispatch_service.update_task_result_data(task_id, latest_result_data)
+    finally:
+        with active_full_report_lock:
+            active_full_report_tasks.pop(task_id, None)
+
+
+def _start_full_report_generation(task_id: str) -> None:
+    with active_full_report_lock:
+        existing = active_full_report_tasks.get(task_id)
+        if existing is not None and not existing.done():
+            return
+        active_full_report_tasks[task_id] = asyncio.create_task(_run_full_report_generation(task_id))
 
 
 def _save_source_auto_execute(source_id: str, enabled: bool) -> None:
@@ -668,23 +743,33 @@ async def generate_alert_task_full_report(task_id: str) -> dict[str, Any]:
             "format_skill": str((result_data.get("full_report_generation") or {}).get("format_skill", "")).strip(),
         }
 
-    generated = await _generate_full_report_markdown(task)
-    result_data["full_report_markdown"] = generated["markdown"]
-    result_data["full_report_generation"] = {
-        "format_skill": generated["format_skill"],
-        "run_log_used": generated["run_log_used"],
-        "source": "manual_button",
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
+    generation = result_data.get("full_report_generation")
+    if isinstance(generation, dict) and str(generation.get("status") or "").strip() == "running":
+        _start_full_report_generation(task_id)
+        return {
+            "success": True,
+            "task": _serialize(task),
+            "markdown": "",
+            "cached": False,
+            "pending": True,
+            "format_skill": str(generation.get("format_skill") or "").strip(),
+        }
+
+    result_data["full_report_generation"] = _full_report_generation_payload(
+        status="running",
+        format_skill=str(getattr(load_runtime_config(), "full_report_format_skill", "") or "output-report").strip() or "output-report",
+    )
     updated_task = dispatch_service.update_task_result_data(task_id, result_data)
     if updated_task is None:
-        raise HTTPException(status_code=409, detail="完整报告保存失败：任务状态已变化。")
+        raise HTTPException(status_code=409, detail="完整报告生成启动失败：任务状态已变化。")
+    _start_full_report_generation(task_id)
     return {
         "success": True,
         "task": _serialize(updated_task),
-        "markdown": generated["markdown"],
+        "markdown": "",
         "cached": False,
-        "format_skill": generated["format_skill"],
+        "pending": True,
+        "format_skill": str(result_data["full_report_generation"].get("format_skill") or "").strip(),
     }
 
 

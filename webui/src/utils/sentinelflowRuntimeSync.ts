@@ -1,4 +1,4 @@
-export type RuntimeActivityStatus = 'success' | 'failed' | 'pending_approval'
+export type RuntimeActivityStatus = 'success' | 'failed' | 'pending_approval' | 'running'
 
 export type RuntimeActivity = {
   type: 'alert_action' | 'command_dispatch'
@@ -51,6 +51,7 @@ export function getRuntimeActivityStatus(activity: RuntimeActivity): RuntimeActi
 
 export function getRuntimeActivityBadgeLabel(activity: RuntimeActivity): string {
   const status = getRuntimeActivityStatus(activity)
+  if (status === 'running') return '正在执行'
   if (status === 'pending_approval') return '等待技能审批'
   return status === 'success' ? '最新动作成功' : '最新动作失败'
 }
