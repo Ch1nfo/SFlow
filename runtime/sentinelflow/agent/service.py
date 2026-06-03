@@ -1661,6 +1661,70 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             execution_trace=execution_trace,
         )
 
+    def _build_report_context_snapshot(
+        self,
+        *,
+        alert: dict[str, Any],
+        action_hint: str | None,
+        graph_result: dict[str, Any],
+        disposition: str,
+        summary: str,
+        reason: str,
+        evidence: list[str],
+        skill_runs: list[dict[str, Any]],
+        action_steps: list[dict[str, Any]],
+        closure_step: dict[str, Any],
+        closure_result: dict[str, Any],
+        actions: dict[str, Any],
+        workflow_runs: list[dict[str, Any]],
+        final_facts: dict[str, Any],
+        execution_trace: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        snapshot = self._build_final_summary_context(
+            alert=alert,
+            action_hint=action_hint,
+            graph_result=graph_result,
+            disposition=disposition,
+            summary=summary,
+            reason=reason,
+            evidence=evidence,
+            skill_runs=skill_runs,
+            action_steps=action_steps,
+            closure_step=closure_step,
+            closure_result=closure_result,
+            actions=actions,
+            workflow_runs=workflow_runs,
+            final_facts=final_facts,
+            execution_trace=execution_trace,
+        )
+        compact_skill_runs: list[dict[str, Any]] = []
+        for run in skill_runs or []:
+            if not isinstance(run, dict):
+                continue
+            compact_skill_runs.append(
+                {
+                    "skill_name": str(run.get("skill_name", "")).strip(),
+                    "tool_name": str(run.get("tool_name", "")).strip(),
+                    "success": run.get("success"),
+                    "arguments": run.get("arguments", {}),
+                    "payload": run.get("payload", {}),
+                    "tool_error": run.get("tool_error"),
+                }
+            )
+            if len(compact_skill_runs) >= 30:
+                break
+        return {
+            **snapshot,
+            "skill_execution": {
+                **(snapshot.get("skill_execution", {}) if isinstance(snapshot.get("skill_execution"), dict) else {}),
+                "skill_runs": compact_skill_runs,
+            },
+            "snapshot_meta": {
+                "source": "alert_task_result",
+                "purpose": "full_report_generation",
+            },
+        }
+
     async def _run_prompt_synthesize_final_summary(
         self,
         *,
@@ -2038,6 +2102,23 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             agent_definition=agent_definition,
             effective_config=effective_config,
         )
+        report_context_snapshot = self._build_report_context_snapshot(
+            alert=alert,
+            action_hint=action_hint,
+            graph_result=graph_result,
+            disposition=final_disposition,
+            summary=summary,
+            reason=reason,
+            evidence=evidence,
+            skill_runs=skill_runs,
+            action_steps=action_steps,
+            closure_step=closure_step,
+            closure_result=closure_result,
+            actions=actions,
+            workflow_runs=workflow_runs,
+            final_facts=final_facts,
+            execution_trace=execution_trace,
+        )
         if final_judgment_synthesis and not final_judgment_markdown:
             execution_trace = self._trace_with_inserted_step(execution_trace, final_judgment_synthesis)
 
@@ -2080,6 +2161,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             "execution_mode": "agent",
             "execution_trace": execution_trace,
             "final_facts": final_facts,
+            "report_context_snapshot": report_context_snapshot,
             "used_agent": True,
             "has_close_action": bool(closure_step.get("attempted")),
             "has_disposal_action": bool(actions),

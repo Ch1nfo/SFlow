@@ -8,14 +8,14 @@ import time
 from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sentinelflow.agent.registry import list_agent_definitions
 from sentinelflow.agent.run_log_tracer import activate_run_log_tracer, deactivate_run_log_tracer
 from sentinelflow.api.schemas import CommandDispatchRequest, AlertActionRequest, ApprovalDecisionRequest
 from sentinelflow.api.deps import agent_service, dispatch_service, audit_service, polling_service, skill_runtime, _serialize, agent_run_log_service, auto_execution_service, task_runner_service, skill_approval_service, WORKFLOW_ROOT, AGENT_ROOT
 from sentinelflow.api.utils import _extract_alert_payload, _resolve_task
-from sentinelflow.config.runtime import load_runtime_config, save_runtime_config
+from sentinelflow.config.runtime import build_llm_client_kwargs, load_runtime_config, save_runtime_config
 
 router = APIRouter(prefix="/api/sentinelflow")
 logger = logging.getLogger(__name__)
@@ -60,6 +60,140 @@ def _resolve_source_id(value: str | None = None) -> str:
 
 def _all_source_ids() -> list[str]:
     return [source.id for source in load_runtime_config().alert_sources] or ["default"]
+
+
+def _compact_report_run_log(task) -> dict[str, Any]:
+    if task is None or agent_run_log_service is None:
+        return {}
+    alert_data = task.payload.get("alert_data", {}) if isinstance(task.payload, dict) and isinstance(task.payload.get("alert_data"), dict) else {}
+    ref = agent_run_log_service.derive_ref(
+        task_id=task.task_id,
+        event_ids=task.event_ids,
+        alert_data=alert_data,
+    )
+    detail = agent_run_log_service.read_log(ref.date, ref.log_id, limit=200, tail=True)
+    events = detail.get("events", []) if isinstance(detail, dict) else []
+    if not isinstance(events, list) or not events:
+        return {}
+    selected: list[dict[str, Any]] = []
+    useful_phases = {"workflow", "execution_trace", "final_facts", "final_response", "run_summary", "task_finished"}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        phase = str(event.get("phase", "")).strip()
+        if phase not in useful_phases:
+            continue
+        data = event.get("data", {})
+        summary = ""
+        if isinstance(data, dict):
+            summary = str(data.get("summary") or data.get("final_response") or data.get("error") or "").strip()
+        elif isinstance(data, str):
+            summary = data.strip()
+        selected.append(
+            {
+                "seq": event.get("seq"),
+                "phase": phase,
+                "title": str(event.get("title", "")).strip(),
+                "summary": summary[:500],
+            }
+        )
+        if len(selected) >= 30:
+            break
+    return {
+        "available": True,
+        "date": detail.get("date", ""),
+        "log_id": detail.get("log_id", ""),
+        "total_events": detail.get("total_events", 0),
+        "selected_events": selected,
+    }
+
+
+def _fallback_report_context(task) -> dict[str, Any]:
+    result = task.last_result_data if task is not None and isinstance(task.last_result_data, dict) else {}
+    payload = task.payload if task is not None and isinstance(task.payload, dict) else {}
+    return {
+        "original_alert": payload.get("alert_data", {}),
+        "current_structured_judgment": {
+            "disposition": result.get("disposition", ""),
+            "summary": result.get("summary", ""),
+            "reason": result.get("reason", ""),
+            "evidence": result.get("evidence", []),
+        },
+        "agent_result": {
+            "workflow_runs": result.get("workflow_runs", []),
+            "final_judgment_markdown": result.get("final_judgment_markdown", ""),
+        },
+        "skill_execution": {
+            "action_steps": result.get("action_steps", []),
+            "closure": result.get("effective_closure_step") or result.get("closure_step") or {},
+        },
+        "final_facts": result.get("final_facts", {}),
+        "execution_trace": result.get("execution_trace", []),
+    }
+
+
+async def _generate_full_report_markdown(task) -> dict[str, Any]:
+    config = load_runtime_config()
+    skill_name = str(getattr(config, "full_report_format_skill", "") or "output-report").strip() or "output-report"
+    try:
+        skill_doc = skill_runtime.read_skill(skill_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"读取完整报告格式 Skill 失败：{exc}") from exc
+    format_markdown = str(getattr(skill_doc, "markdown", "") or "").strip()
+    if not format_markdown:
+        raise HTTPException(status_code=400, detail=f"完整报告格式 Skill「{skill_name}」内容为空。")
+
+    result = task.last_result_data if isinstance(task.last_result_data, dict) else {}
+    context = result.get("report_context_snapshot")
+    if not isinstance(context, dict) or not context:
+        context = _fallback_report_context(task)
+    run_log_context = _compact_report_run_log(task)
+    report_input = {
+        "format_skill": skill_name,
+        "format_markdown": format_markdown[:8000],
+        "report_context_snapshot": context,
+        "run_log_supplement": run_log_context,
+    }
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+        from langchain_openai import ChatOpenAI
+    except ModuleNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=f"缺少完整报告生成依赖：{exc}") from exc
+
+    llm = ChatOpenAI(
+        **build_llm_client_kwargs(
+            config,
+            temperature=config.llm_temperature if config.llm_temperature is not None else 0,
+        )
+    )
+    response = await llm.ainvoke(
+        [
+            SystemMessage(
+                content=(
+                    "你是安全告警完整研判报告生成器。只基于用户提供的已保存任务事实生成报告；"
+                    "不得编造未出现的证据，不得声称重新执行了任何处置动作。"
+                )
+            ),
+            HumanMessage(
+                content=(
+                    "请按 format_markdown 中的格式要求，基于 report_context_snapshot 生成完整中文研判报告。"
+                    "run_log_supplement 仅作细节补充；若与任务结果冲突，以 report_context_snapshot 和 final_facts 为准。\n\n"
+                    f"```json\n{json.dumps(report_input, ensure_ascii=False, indent=2, default=str)}\n```"
+                )
+            ),
+        ]
+    )
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        content = "\n".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
+    markdown = str(content or "").strip()
+    if not markdown:
+        raise HTTPException(status_code=500, detail="完整研判报告生成失败：模型未返回有效内容。")
+    return {
+        "markdown": markdown,
+        "format_skill": skill_name,
+        "run_log_used": bool(run_log_context),
+    }
 
 
 def _save_source_auto_execute(source_id: str, enabled: bool) -> None:
@@ -516,6 +650,42 @@ def alert_task_detail(task_id: str) -> dict[str, Any]:
     if task is None:
         return {"task": None}
     return {"task": _serialize(task)}
+
+
+@router.post("/alerts/tasks/{task_id}/full-report")
+async def generate_alert_task_full_report(task_id: str) -> dict[str, Any]:
+    task = dispatch_service.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在。")
+    result_data = dict(task.last_result_data) if isinstance(task.last_result_data, dict) else {}
+    existing = str(result_data.get("full_report_markdown") or "").strip()
+    if existing:
+        return {
+            "success": True,
+            "task": _serialize(task),
+            "markdown": existing,
+            "cached": True,
+            "format_skill": str((result_data.get("full_report_generation") or {}).get("format_skill", "")).strip(),
+        }
+
+    generated = await _generate_full_report_markdown(task)
+    result_data["full_report_markdown"] = generated["markdown"]
+    result_data["full_report_generation"] = {
+        "format_skill": generated["format_skill"],
+        "run_log_used": generated["run_log_used"],
+        "source": "manual_button",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    updated_task = dispatch_service.update_task_result_data(task_id, result_data)
+    if updated_task is None:
+        raise HTTPException(status_code=409, detail="完整报告保存失败：任务状态已变化。")
+    return {
+        "success": True,
+        "task": _serialize(updated_task),
+        "markdown": generated["markdown"],
+        "cached": False,
+        "format_skill": generated["format_skill"],
+    }
 
 
 

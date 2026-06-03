@@ -1917,6 +1917,16 @@ class AlertDispatchService:
                 return self._row_to_task(row)
         return None
 
+    def update_task_result_data(self, task_id: str, result_data: dict[str, Any]) -> AlertHandlingTask | None:
+        if not task_id or not isinstance(result_data, dict):
+            return None
+        return self._update_task_columns(
+            task_id,
+            {
+                "last_result_data": json.dumps(result_data, ensure_ascii=False),
+            },
+        )
+
     def mark_task_running(self, task_id: str, action: str) -> AlertHandlingTask | None:
         now = _now_iso()
         run_id = uuid4().hex

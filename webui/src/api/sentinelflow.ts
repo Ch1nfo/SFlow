@@ -72,6 +72,7 @@ export type AlertTaskResultData = Record<string, unknown> & {
   reason?: string
   evidence?: string[]
   final_judgment_markdown?: string
+  full_report_markdown?: string
   workflow_selection?: Record<string, unknown>
   workflow_runs?: Array<Record<string, unknown>>
   analysis_step?: Record<string, unknown>
@@ -252,6 +253,7 @@ export type RuntimeSettingsResponse = {
     auto_execute_enabled: boolean
     weekly_alert_cleanup_enabled: boolean
     run_log_retention_days: number
+    full_report_format_skill: string
   }
   llm: {
     api_base_url: string
@@ -589,6 +591,10 @@ export async function fetchAlertTaskDetail(taskId: string): Promise<{ task: Aler
   return getJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}`)
 }
 
+export async function generateAlertTaskFullReport(taskId: string): Promise<{ success: boolean; task: AlertTask; markdown: string; cached: boolean; format_skill: string }> {
+  return postJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}/full-report`, {})
+}
+
 export async function fetchSkills(): Promise<{ skills: SkillSummary[] }> {
   return getJson('/api/sentinelflow/skills')
 }
@@ -920,6 +926,7 @@ export async function saveRuntimeSettings(payload: {
   llmThinkingAdapterEnabled: boolean
   weeklyAlertCleanupEnabled: boolean
   runLogRetentionDays?: string
+  fullReportFormatSkill?: string
   alertSourceEnabled?: boolean
   alertSourceType?: string
   alertSourceUrl?: string

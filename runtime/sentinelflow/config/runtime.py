@@ -92,6 +92,7 @@ class SentinelFlowRuntimeConfig:
     llm_thinking: str
     weekly_alert_cleanup_enabled: bool
     run_log_retention_days: int
+    full_report_format_skill: str
     alert_source_enabled: bool
     alert_source_type: str
     alert_source_url: str
@@ -126,6 +127,7 @@ def _default_values() -> dict[str, Any]:
         "llm_thinking": os.getenv("SENTINELFLOW_LLM_THINKING", "disabled").strip().lower() or "disabled",
         "weekly_alert_cleanup_enabled": _read_env_bool("SENTINELFLOW_WEEKLY_ALERT_CLEANUP_ENABLED", False),
         "run_log_retention_days": int(os.getenv("SENTINELFLOW_RUN_LOG_RETENTION_DAYS", "1")),
+        "full_report_format_skill": os.getenv("SENTINELFLOW_FULL_REPORT_FORMAT_SKILL", "output-report").strip() or "output-report",
         "alert_source_enabled": _read_env_bool("SENTINELFLOW_ALERT_SOURCE_ENABLED", False),
         "alert_source_type": os.getenv("SENTINELFLOW_ALERT_SOURCE_TYPE", "api").strip().lower() or "api",
         "alert_source_url": os.getenv("SENTINELFLOW_ALERT_SOURCE_URL", "").strip(),
@@ -252,6 +254,7 @@ def _normalize_config(values: dict[str, Any]) -> SentinelFlowRuntimeConfig:
         llm_thinking=_normalize_llm_thinking(values.get("llm_thinking", "disabled")),
         weekly_alert_cleanup_enabled=_read_bool_value(values.get("weekly_alert_cleanup_enabled"), False),
         run_log_retention_days=max(int(values.get("run_log_retention_days", 1) or 1), 1),
+        full_report_format_skill=str(values.get("full_report_format_skill", "output-report") or "output-report").strip() or "output-report",
         alert_source_enabled=primary_source.alert_source_enabled,
         alert_source_type=primary_source.alert_source_type,
         alert_source_url=primary_source.alert_source_url,

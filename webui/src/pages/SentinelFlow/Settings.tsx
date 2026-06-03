@@ -115,6 +115,7 @@ type SettingsDraft = {
   llmThinkingAdapterEnabled: boolean
   weeklyAlertCleanupEnabled: boolean
   runLogRetentionDays: string
+  fullReportFormatSkill: string
   alertSourceEnabled: boolean
   alertSourceType: string
   alertSourceUrl: string
@@ -239,6 +240,7 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
     llmThinkingAdapterEnabled: settings.llm.thinking_adapter_enabled,
     weeklyAlertCleanupEnabled: settings.runtime.weekly_alert_cleanup_enabled,
     runLogRetentionDays: String(settings.runtime.run_log_retention_days ?? 1),
+    fullReportFormatSkill: settings.runtime.full_report_format_skill || 'output-report',
     alertSourceEnabled: selectedSource.enabled,
     alertSourceType: selectedSource.type,
     alertSourceUrl: selectedSource.url,
@@ -483,6 +485,7 @@ export default function SentinelFlowSettingsPage() {
       llmThinkingAdapterEnabled: false,
       weeklyAlertCleanupEnabled: false,
       runLogRetentionDays: '1',
+      fullReportFormatSkill: 'output-report',
       alertSourceEnabled: false,
       alertSourceType: 'api',
       alertSourceUrl: '',
@@ -1148,6 +1151,7 @@ export default function SentinelFlowSettingsPage() {
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.agentEnabled} onChange={(event) => updateDraft('agentEnabled', event.target.checked)} /><span>启用 Agent Runtime</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.alertSourceEnabled} onChange={(event) => updateDraft('alertSourceEnabled', event.target.checked)} /><span>启用告警接入</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.weeklyAlertCleanupEnabled} onChange={(event) => updateDraft('weeklyAlertCleanupEnabled', event.target.checked)} /><span>每周刷新告警</span></label>
+          <label className="sentinelflow-settings-field"><span>完整报告格式 Skill</span><input className="sentinelflow-settings-input" value={draft.fullReportFormatSkill} onChange={(event) => updateDraft('fullReportFormatSkill', event.target.value)} placeholder="output-report" /></label>
         </div>
         <div className="mt-3 sentinelflow-message-block">
           开启后，系统会在每周一 01:00 删除本周一 00:00 之前的全部告警任务（含未完成/失败），并清理关联的去重锁、审批与 checkpoint；周一 00:00 到 01:00 的新告警会保留。运行日志仍按「运行日志保留天数」单独清理。

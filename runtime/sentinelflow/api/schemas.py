@@ -31,6 +31,7 @@ class RuntimeConfigRequest(BaseModel):
     llm_thinking_adapter_enabled: bool | None = Field(default=None, alias="llmThinkingAdapterEnabled")
     weekly_alert_cleanup_enabled: bool | None = Field(default=None, alias="weeklyAlertCleanupEnabled")
     run_log_retention_days: int | None = Field(default=None, alias="runLogRetentionDays")
+    full_report_format_skill: str | None = Field(default=None, alias="fullReportFormatSkill")
     alert_source_enabled: bool | None = Field(default=None, alias="alertSourceEnabled")
     alert_source_type: str | None = Field(default=None, alias="alertSourceType")
     alert_source_url: str | None = Field(default=None, alias="alertSourceUrl")
@@ -62,6 +63,7 @@ class RuntimeConfigRequest(BaseModel):
             "llm_thinking_adapter_enabled": self.llm_thinking_adapter_enabled,
             "weekly_alert_cleanup_enabled": self.weekly_alert_cleanup_enabled,
             "run_log_retention_days": self.run_log_retention_days,
+            "full_report_format_skill": self.full_report_format_skill,
             "alert_source_enabled": self.alert_source_enabled,
             "alert_source_type": self.alert_source_type,
             "alert_source_url": self.alert_source_url,

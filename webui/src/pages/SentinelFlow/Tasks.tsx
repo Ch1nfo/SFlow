@@ -4,6 +4,7 @@ import {
   decideApproval,
   fetchAlertTaskDetail,
   fetchRuntimeSettings,
+  generateAlertTaskFullReport,
   handleAlertAction,
   type ApprovalDecisionResponse,
   type AlertActionResponse,
@@ -1031,6 +1032,33 @@ export default function SentinelFlowTasksPage() {
     }
   }
 
+  async function handleGenerateFullReport(task: AlertTask) {
+    setRunningAction(`full-report:${task.task_id}`)
+    try {
+      const result = await generateAlertTaskFullReport(task.task_id)
+      if (result.task) {
+        setSelectedTaskDetail(result.task)
+      } else {
+        const detail = await fetchAlertTaskDetail(task.task_id)
+        setSelectedTaskDetail(detail.task)
+      }
+      setFinalJudgmentExpanded(true)
+      const next: RuntimeActivity = {
+        type: 'alert_action',
+        title: `${task.title} / 完整研判报告`,
+        detail: result.cached ? '已读取已生成的完整研判报告。' : '完整研判报告已生成并保存。',
+        success: result.success,
+        status: result.success ? 'success' : 'failed',
+        timestamp: new Date().toISOString(),
+      }
+      setActivity(next)
+      publishRuntimeActivity(next)
+      void reloadPoll({ force: true, silent: true })
+    } finally {
+      setRunningAction('')
+    }
+  }
+
   const selectedPayload = (selectedTask?.payload?.alert_data as Record<string, unknown> | undefined) ?? {}
   const selectedResult = selectedTask?.last_result_data ?? {}
   const selectedFinalFacts = (selectedResult.final_facts as Record<string, unknown> | undefined) ?? {}
@@ -1051,6 +1079,7 @@ export default function SentinelFlowTasksPage() {
     ?? (selectedResult.closure_step as Record<string, unknown> | undefined)
   ) ?? {}
   const selectedFinalJudgmentMarkdown = String(selectedResult.final_judgment_markdown ?? '').trim()
+  const selectedFullReportMarkdown = String(selectedResult.full_report_markdown ?? '').trim()
   const selectedReason = String(selectedResult.reason ?? '').trim()
   const selectedDisposition = String(selectedFinalJudgment.disposition ?? selectedResult.disposition ?? '').trim()
   const selectedSummary = String(selectedResult.summary ?? '').trim()
@@ -1058,7 +1087,7 @@ export default function SentinelFlowTasksPage() {
     ? selectedResult.evidence.map((item) => String(item).trim()).filter(Boolean)
     : []
   const hasFinalJudgment = Boolean(
-    selectedFinalJudgmentMarkdown || selectedDisposition || selectedReason || selectedSummary,
+    selectedFullReportMarkdown || selectedFinalJudgmentMarkdown || selectedDisposition || selectedReason || selectedSummary,
   )
   const hideTaskError = Boolean(selectedClosureStep.attempted) && Boolean(selectedClosureStep.success)
   const selectedTrace = Array.isArray(selectedResult.execution_trace) && selectedResult.execution_trace.length
@@ -1246,13 +1275,22 @@ export default function SentinelFlowTasksPage() {
                             {finalJudgmentExpanded ? '已展开完整研判内容。' : '点击展开查看完整研判思路与内容。'}
                           </p>
                         </div>
-                        <button type="button" className="sentinelflow-ghost-button" onClick={() => setFinalJudgmentExpanded((current) => !current)}>
-                          {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          {finalJudgmentExpanded ? '收起最终研判' : '展开最终研判'}
-                        </button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button type="button" className="sentinelflow-ghost-button" onClick={() => void handleGenerateFullReport(selectedTask)} disabled={runningAction !== ''}>
+                            {runningAction === `full-report:${selectedTask.task_id}` ? '生成中...' : selectedFullReportMarkdown ? '查看完整研判报告' : '获取完整研判报告'}
+                          </button>
+                          <button type="button" className="sentinelflow-ghost-button" onClick={() => setFinalJudgmentExpanded((current) => !current)}>
+                            {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            {finalJudgmentExpanded ? '收起最终研判' : '展开最终研判'}
+                          </button>
+                        </div>
                       </div>
                       {finalJudgmentExpanded ? (
-                        selectedFinalJudgmentMarkdown ? (
+                        selectedFullReportMarkdown ? (
+                          <div className="mt-4 text-sm text-blue-900">
+                            <MarkdownContent content={selectedFullReportMarkdown} />
+                          </div>
+                        ) : selectedFinalJudgmentMarkdown ? (
                           <div className="mt-4 text-sm text-blue-900">
                             <MarkdownContent content={selectedFinalJudgmentMarkdown} />
                           </div>

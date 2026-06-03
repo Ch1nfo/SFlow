@@ -80,6 +80,7 @@ def runtime_settings() -> dict[str, Any]:
             "auto_execute_enabled": runtime_config.auto_execute_enabled,
             "weekly_alert_cleanup_enabled": runtime_config.weekly_alert_cleanup_enabled,
             "run_log_retention_days": runtime_config.run_log_retention_days,
+            "full_report_format_skill": runtime_config.full_report_format_skill,
         },
         "llm": {
             "api_base_url": runtime_config.llm_api_base_url,
