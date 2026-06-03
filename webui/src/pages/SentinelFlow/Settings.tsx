@@ -227,6 +227,46 @@ function createBlankSource(index: number): AlertSourceDraft {
   }
 }
 
+const RUN_LOG_IP_PREVIEW_LIMIT = 5
+
+function splitRunLogIpValues(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => splitRunLogIpValues(item))
+  }
+  const text = String(value ?? '').trim()
+  if (!text) return []
+  return text
+    .replace(/^[\s[\]("']+|[\s\])"']+$/g, '')
+    .split(/[,\n，;；\s]+/)
+    .map((item) => item.replace(/^[\s[\]("']+|[\s\])"']+$/g, '').trim())
+    .filter(Boolean)
+}
+
+function formatRunLogIpPreview(value: unknown): unknown {
+  const items = splitRunLogIpValues(value)
+  if (items.length <= RUN_LOG_IP_PREVIEW_LIMIT) return value
+  return `${items.slice(0, RUN_LOG_IP_PREVIEW_LIMIT).join('、')} 等 ${items.length} 个`
+}
+
+function limitRunLogSipDipDisplay(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => limitRunLogSipDipDisplay(item))
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return Object.fromEntries(
+      Object.entries(record).map(([key, entry]) => {
+        const normalizedKey = key.toLowerCase()
+        if (normalizedKey === 'sip' || normalizedKey === 'dip') {
+          return [key, formatRunLogIpPreview(entry)]
+        }
+        return [key, limitRunLogSipDipDisplay(entry)]
+      }),
+    )
+  }
+  return value
+}
+
 function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
   const sources = (settings.alert_sources?.length ? settings.alert_sources : [settings.alert_source]).map(sourceFromSettings)
   const selectedSource = sources.find((source) => source.id === settings.default_alert_source_id) ?? sources[0] ?? createBlankSource(0)
@@ -263,6 +303,10 @@ function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
 }
 
 function shortEventData(value: unknown): string {
+  return shortEventDataInner(limitRunLogSipDipDisplay(value))
+}
+
+function shortEventDataInner(value: unknown): string {
   if (typeof value === 'string') return value.length > 160 ? `${value.slice(0, 160)}...` : value
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>
@@ -1465,7 +1509,7 @@ export default function SentinelFlowSettingsPage() {
                           />
                         </summary>
                         <div className="mt-3 min-w-0 overflow-x-auto rounded-lg border border-slate-800 bg-slate-900 p-3 text-slate-100">
-                          <JsonPreview value={event} />
+                          <JsonPreview value={limitRunLogSipDipDisplay(event)} />
                         </div>
                       </details>
                         )

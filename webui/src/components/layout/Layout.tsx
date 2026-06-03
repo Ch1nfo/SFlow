@@ -44,7 +44,7 @@ type NewAlertNotice = {
 }
 
 const ALERT_NOTICE_ROUTES = new Set(['/', '/alerts', '/tasks'])
-const ALERT_NOTICE_INTERVAL_MS = 20000
+const ALERT_NOTICE_INTERVAL_MS = 10000
 
 export default function Layout() {
   const location = useLocation()
