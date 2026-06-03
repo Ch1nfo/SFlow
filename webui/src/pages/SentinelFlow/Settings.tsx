@@ -6,6 +6,7 @@ import {
   fetchRunLogDates,
   fetchRunLogDetail,
   fetchRuntimeSettings,
+  fetchSkills,
   generateAlertParser,
   resetRuntimeSettings,
   saveRunLogSettings,
@@ -17,6 +18,7 @@ import {
   type RunLogDetail,
   type RunLogEvent,
   type RuntimeSettingsResponse,
+  type SkillSummary,
 } from '@/api/sentinelflow'
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
 import Surface, { SurfacePreviewGrid } from '@/components/sentinelflow/Surface'
@@ -466,6 +468,7 @@ function RunLogEventSummary({
 export default function SentinelFlowSettingsPage() {
   const { data: settings, loading, error, reload: reloadSettings, setData: setSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const { data: health } = useSentinelFlowAsyncData(fetchHealth, [])
+  const { data: skillsData } = useSentinelFlowAsyncData(fetchSkills, [])
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [saveMessageTone, setSaveMessageTone] = useState<'success' | 'error'>('success')
@@ -527,6 +530,11 @@ export default function SentinelFlowSettingsPage() {
   const [visibleRunLogEventCount, setVisibleRunLogEventCount] = useState(RUN_LOG_INITIAL_RENDER_COUNT)
   const [highlightedRunLogEventId, setHighlightedRunLogEventId] = useState<string | null>(null)
   const [activeRunLogRetentionDays, setActiveRunLogRetentionDays] = useState<number>(1)
+  const docSkillOptions = useMemo(() => {
+    return ((skillsData?.skills ?? []) as SkillSummary[])
+      .filter((skill) => skill.type === 'doc')
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [skillsData?.skills])
   const [savingRunLogRetention, setSavingRunLogRetention] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const runLogEventRefs = useRef<Record<string, HTMLDetailsElement | null>>({})
@@ -1151,7 +1159,18 @@ export default function SentinelFlowSettingsPage() {
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.agentEnabled} onChange={(event) => updateDraft('agentEnabled', event.target.checked)} /><span>启用 Agent Runtime</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.alertSourceEnabled} onChange={(event) => updateDraft('alertSourceEnabled', event.target.checked)} /><span>启用告警接入</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.weeklyAlertCleanupEnabled} onChange={(event) => updateDraft('weeklyAlertCleanupEnabled', event.target.checked)} /><span>每周刷新告警</span></label>
-          <label className="sentinelflow-settings-field"><span>完整报告格式 Skill</span><input className="sentinelflow-settings-input" value={draft.fullReportFormatSkill} onChange={(event) => updateDraft('fullReportFormatSkill', event.target.value)} placeholder="output-report" /></label>
+          <label className="sentinelflow-settings-field">
+            <span>完整报告格式 Skill</span>
+            <select className="sentinelflow-settings-input" value={draft.fullReportFormatSkill} onChange={(event) => updateDraft('fullReportFormatSkill', event.target.value)}>
+              {draft.fullReportFormatSkill && !docSkillOptions.some((skill) => skill.name === draft.fullReportFormatSkill) ? (
+                <option value={draft.fullReportFormatSkill}>{draft.fullReportFormatSkill}</option>
+              ) : null}
+              {docSkillOptions.length ? null : <option value={draft.fullReportFormatSkill || 'output-report'}>{draft.fullReportFormatSkill || 'output-report'}</option>}
+              {docSkillOptions.map((skill) => (
+                <option key={skill.name} value={skill.name}>{skill.name}</option>
+              ))}
+            </select>
+          </label>
         </div>
         <div className="mt-3 sentinelflow-message-block">
           开启后，系统会在每周一 01:00 删除本周一 00:00 之前的全部告警任务（含未完成/失败），并清理关联的去重锁、审批与 checkpoint；周一 00:00 到 01:00 的新告警会保留。运行日志仍按「运行日志保留天数」单独清理。

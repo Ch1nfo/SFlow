@@ -838,6 +838,7 @@ export default function SentinelFlowTasksPage() {
   const [filter, setFilter] = useState<TaskFilter>(() => readSessionValue<TaskFilter>(TASK_FILTER_KEY, 'all'))
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
+  const [fullReportExpanded, setFullReportExpanded] = useState(false)
   const [toolResultsExpanded, setToolResultsExpanded] = useState(false)
   const [processExpanded, setProcessExpanded] = useState(false)
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<AlertTask | null>(null)
@@ -887,6 +888,7 @@ export default function SentinelFlowTasksPage() {
 
   useEffect(() => {
     setFinalJudgmentExpanded(false)
+    setFullReportExpanded(false)
     setToolResultsExpanded(false)
     setProcessExpanded(false)
   }, [selectedTaskId])
@@ -960,7 +962,7 @@ export default function SentinelFlowTasksPage() {
       setTaskListMaxHeight(null)
       return
     }
-  }, [selectedTaskId, finalJudgmentExpanded, toolResultsExpanded, processExpanded, filteredTasks.length, selectedTask?.task_id, selectedTask?.status])
+  }, [selectedTaskId, finalJudgmentExpanded, fullReportExpanded, toolResultsExpanded, processExpanded, filteredTasks.length, selectedTask?.task_id, selectedTask?.status])
 
   const refreshTasks = useCallback(() => {
     void reloadPoll({ silent: true })
@@ -1042,7 +1044,8 @@ export default function SentinelFlowTasksPage() {
         const detail = await fetchAlertTaskDetail(task.task_id)
         setSelectedTaskDetail(detail.task)
       }
-      setFinalJudgmentExpanded(true)
+      setFullReportExpanded(true)
+      setFinalJudgmentExpanded(false)
       const next: RuntimeActivity = {
         type: 'alert_action',
         title: `${task.title} / 完整研判报告`,
@@ -1087,7 +1090,7 @@ export default function SentinelFlowTasksPage() {
     ? selectedResult.evidence.map((item) => String(item).trim()).filter(Boolean)
     : []
   const hasFinalJudgment = Boolean(
-    selectedFullReportMarkdown || selectedFinalJudgmentMarkdown || selectedDisposition || selectedReason || selectedSummary,
+    selectedFinalJudgmentMarkdown || selectedDisposition || selectedReason || selectedSummary,
   )
   const hideTaskError = Boolean(selectedClosureStep.attempted) && Boolean(selectedClosureStep.success)
   const selectedTrace = Array.isArray(selectedResult.execution_trace) && selectedResult.execution_trace.length
@@ -1276,21 +1279,40 @@ export default function SentinelFlowTasksPage() {
                           </p>
                         </div>
                         <div className="flex flex-wrap justify-end gap-2">
-                          <button type="button" className="sentinelflow-ghost-button" onClick={() => void handleGenerateFullReport(selectedTask)} disabled={runningAction !== ''}>
-                            {runningAction === `full-report:${selectedTask.task_id}` ? '生成中...' : selectedFullReportMarkdown ? '查看完整研判报告' : '获取完整研判报告'}
+                          <button
+                            type="button"
+                            className="sentinelflow-ghost-button"
+                            onClick={() => {
+                              if (selectedFullReportMarkdown) {
+                                setFullReportExpanded((current) => {
+                                  const next = !current
+                                  if (next) setFinalJudgmentExpanded(false)
+                                  return next
+                                })
+                              } else {
+                                void handleGenerateFullReport(selectedTask)
+                              }
+                            }}
+                            disabled={runningAction !== ''}
+                          >
+                            {runningAction === `full-report:${selectedTask.task_id}` ? '生成中...' : selectedFullReportMarkdown ? (fullReportExpanded ? '收起完整研判报告' : '展开完整研判报告') : '获取完整研判报告'}
                           </button>
-                          <button type="button" className="sentinelflow-ghost-button" onClick={() => setFinalJudgmentExpanded((current) => !current)}>
+                          <button
+                            type="button"
+                            className="sentinelflow-ghost-button"
+                            onClick={() => setFinalJudgmentExpanded((current) => {
+                              const next = !current
+                              if (next) setFullReportExpanded(false)
+                              return next
+                            })}
+                          >
                             {finalJudgmentExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                             {finalJudgmentExpanded ? '收起最终研判' : '展开最终研判'}
                           </button>
                         </div>
                       </div>
                       {finalJudgmentExpanded ? (
-                        selectedFullReportMarkdown ? (
-                          <div className="mt-4 text-sm text-blue-900">
-                            <MarkdownContent content={selectedFullReportMarkdown} />
-                          </div>
-                        ) : selectedFinalJudgmentMarkdown ? (
+                        selectedFinalJudgmentMarkdown ? (
                           <div className="mt-4 text-sm text-blue-900">
                             <MarkdownContent content={selectedFinalJudgmentMarkdown} />
                           </div>
@@ -1311,6 +1333,12 @@ export default function SentinelFlowTasksPage() {
                             ) : null}
                           </div>
                         )
+                      ) : null}
+                      {fullReportExpanded && selectedFullReportMarkdown ? (
+                        <div className="mt-4 border-t border-blue-200 pt-4 text-sm text-blue-900">
+                          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-blue-700">完整研判报告</div>
+                          <MarkdownContent content={selectedFullReportMarkdown} />
+                        </div>
                       ) : null}
                     </div>
                   ) : null}
