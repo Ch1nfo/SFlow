@@ -854,6 +854,13 @@ def build_orchestrator_graph(
                 original_input=ad,
                 current_task_prompt=str(ad.get("payload", "") or state.get("action_hint", "")),
                 conversation_history=state.get("conversation_history") or [],
+                current_goal_meta={
+                    "conversation_context_policy": (
+                        ad.get("conversation_context_policy", {})
+                        if isinstance(ad.get("conversation_context_policy", {}), dict)
+                        else {}
+                    )
+                },
             )
             context_messages.append(HumanMessage(content=format_context_manifest_header(context_manifest)))
 

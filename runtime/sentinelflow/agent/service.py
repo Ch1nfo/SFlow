@@ -5,12 +5,12 @@ from dataclasses import replace
 import json
 import logging
 from pathlib import Path
-import re
 from typing import Any, Callable
 from uuid import uuid4
 
 from sentinelflow.agent.checkpoint_state import deserialize_graph_state, serialize_graph_state
 from sentinelflow.agent.catalog import load_skill_catalog
+from sentinelflow.agent.conversation_context import build_conversation_context_plan
 from sentinelflow.agent.context_utils import (
     build_compact_final_summary_context,
     build_context_manifest,
@@ -145,6 +145,13 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 original_input=alert_data,
                 current_task_prompt=current_goal,
                 conversation_history=list(history or []),
+                current_goal_meta={
+                    "conversation_context_policy": (
+                        alert_data.get("conversation_context_policy", {})
+                        if isinstance(alert_data.get("conversation_context_policy", {}), dict)
+                        else {}
+                    )
+                },
             )
             alert_data["context_manifest"] = context_manifest
             alert_data["context_warnings"] = list(context_manifest.get("context_warnings", []) or [])
@@ -1317,6 +1324,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             "worker_agent": worker_results[-1]["worker"] if worker_results else "",
             "context_manifest": alert_data.get("context_manifest", {}) if isinstance(alert_data.get("context_manifest", {}), dict) else {},
             "context_warnings": list(alert_data.get("context_warnings", []) or []),
+            "conversation_context_policy": alert_data.get("conversation_context_policy", {}) if isinstance(alert_data.get("conversation_context_policy", {}), dict) else {},
             "success": bool(final_text),
         }
 
@@ -1326,6 +1334,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         workers: list,
         command_text: str,
         history: list[dict[str, str]] | None,
+        context_policy: dict[str, Any] | None = None,
         cancel_event=None,
         status_callback: Callable[[str], None] | None = None,
         execution_context: dict[str, Any] | None = None,
@@ -1347,6 +1356,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             "_primary_readable_skills": readable_skills,
             "_primary_executable_skills": executable_skills,
             "_primary_worker_parallel_limit": parallel_limit,
+            "conversation_context_policy": dict(context_policy or {}),
         }
         context_manifest = build_context_manifest(
             current_goal=command_text,
@@ -1355,6 +1365,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             original_input=alert_data,
             current_task_prompt=command_text,
             conversation_history=list(history or []),
+            current_goal_meta={"conversation_context_policy": dict(context_policy or {})},
         )
         alert_data["context_manifest"] = context_manifest
         alert_data["context_warnings"] = list(context_manifest.get("context_warnings", []) or [])
@@ -1873,9 +1884,23 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
     ) -> dict[str, Any]:
         config = load_runtime_config()
         agent_definition = resolve_default_agent(self.agent_root, agent_name)
+        context_plan = build_conversation_context_plan(command_text, history or [])
+        effective_history = list(context_plan.history_messages)
+        context_policy = dict(context_plan.context_policy)
         workers = self._resolve_worker_candidates(agent_definition, entry_type="conversation")
         if self._should_use_orchestrator(agent_definition, workers):
-            return await self._orchestrate_command(agent_definition, workers, command_text, history, cancel_event, status_callback=status_callback, execution_context=execution_context)
+            result = await self._orchestrate_command(
+                agent_definition,
+                workers,
+                command_text,
+                effective_history,
+                context_policy,
+                cancel_event,
+                status_callback=status_callback,
+                execution_context=execution_context,
+            )
+            result["conversation_context_policy"] = context_policy
+            return result
         command_ref = f"CMD-{uuid4().hex[:12].upper()}"
         alert = {
             "eventIds": extract_explicit_event_id_from_text(command_text),
@@ -1883,8 +1908,11 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             "alert_name": "人工指令",
             "payload": command_text,
             "alert_source": "human_command",
+            "conversation_context_policy": context_policy,
         }
-        return await self._run_agent_graph(agent_definition, alert, history=history, cancel_event=cancel_event, execution_context=execution_context)
+        result = await self._run_agent_graph(agent_definition, alert, history=effective_history, cancel_event=cancel_event, execution_context=execution_context)
+        result["conversation_context_policy"] = context_policy
+        return result
 
     async def run_alert(
         self,
@@ -1951,6 +1979,11 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 list((state.get("alert_data", {}) or {}).get("context_warnings", []) or [])
                 if isinstance(state.get("alert_data", {}), dict)
                 else []
+            ),
+            "conversation_context_policy": (
+                (state.get("alert_data", {}) or {}).get("conversation_context_policy", {})
+                if isinstance(state.get("alert_data", {}), dict)
+                else {}
             ),
         }
 
