@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -20,7 +21,7 @@ AllowedHistoryUse = Literal[
     "task_snapshot",
 ]
 
-IPV4_PATTERN = re.compile(r"\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b")
+IPV4_PATTERN = re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])")
 EVENT_ID_PATTERN = re.compile(r"\b(?:EVT|ALERT|WARN|事件|告警)?[-_:]?[A-Za-z0-9]{8,}\b", re.IGNORECASE)
 USER_PATTERN = re.compile(r"\b[a-zA-Z][a-zA-Z0-9_.-]{2,31}\b")
 
@@ -41,69 +42,89 @@ class ConversationContextPlan:
     context_policy: dict[str, Any] = field(default_factory=dict)
 
 
-def build_conversation_context_plan(command_text: str, history: list[dict[str, str]] | None = None) -> ConversationContextPlan:
-    text = str(command_text or "").strip()
+async def build_conversation_context_plan_with_llm(
+    command_text: str,
+    history: list[dict[str, str]] | None = None,
+    *,
+    llm_kwargs: dict[str, Any] | None = None,
+) -> ConversationContextPlan:
     raw_history = _normalize_history(history or [])
+    extracted = _conversation_extraction(command_text, raw_history)
+    fallback = _build_plan_from_decision(extracted, raw_history, classifier_decision={}, classifier_source="deterministic_fallback")
+    if not llm_kwargs:
+        return fallback
+    try:
+        decision = await _classify_context_with_llm(command_text, raw_history, extracted, llm_kwargs)
+    except Exception as exc:
+        fallback.context_policy["classifier_source"] = "llm_failed_fallback"
+        fallback.context_policy["classifier_error"] = str(exc)[:500]
+        return fallback
+    return _build_plan_from_decision(extracted, raw_history, classifier_decision=decision, classifier_source="llm")
+
+
+def build_conversation_context_plan(command_text: str, history: list[dict[str, str]] | None = None) -> ConversationContextPlan:
+    raw_history = _normalize_history(history or [])
+    extracted = _conversation_extraction(command_text, raw_history)
+    return _build_plan_from_decision(extracted, raw_history, classifier_decision={}, classifier_source="deterministic")
+
+
+def _conversation_extraction(command_text: str, raw_history: list[dict[str, str]]) -> dict[str, Any]:
+    text = str(command_text or "").strip()
     current_objects = _extract_objects(text)
     history_objects = _extract_history_objects(raw_history[:6])
-    has_followup = _contains_any(text, FOLLOWUP_MARKERS)
-    has_report = _contains_any(text, REPORT_MARKERS)
-    has_action = _contains_any(text, ACTION_MARKERS)
-    has_alert = _contains_any(text, ALERT_MARKERS)
-    has_query = _contains_any(text, QUERY_MARKERS)
-    has_current_object = _has_any_object(current_objects)
-    has_history_object = _has_any_object(history_objects)
+    return {
+        "text": text,
+        "current_objects": current_objects,
+        "history_objects": history_objects,
+        "has_followup": _contains_any(text, FOLLOWUP_MARKERS),
+        "has_report": _contains_any(text, REPORT_MARKERS),
+        "has_action": _contains_any(text, ACTION_MARKERS),
+        "has_alert": _contains_any(text, ALERT_MARKERS),
+        "has_query": _contains_any(text, QUERY_MARKERS),
+        "has_current_object": _has_any_object(current_objects),
+        "has_history_object": _has_any_object(history_objects),
+    }
+
+
+def _build_plan_from_decision(
+    extracted: dict[str, Any],
+    raw_history: list[dict[str, str]],
+    *,
+    classifier_decision: dict[str, Any],
+    classifier_source: str,
+) -> ConversationContextPlan:
+    text = str(extracted.get("text") or "")
+    current_objects = dict(extracted.get("current_objects") or {})
+    history_objects = dict(extracted.get("history_objects") or {})
+    has_followup = bool(extracted.get("has_followup"))
+    has_report = bool(extracted.get("has_report"))
+    has_action = bool(extracted.get("has_action"))
+    has_alert = bool(extracted.get("has_alert"))
+    has_query = bool(extracted.get("has_query"))
+    has_current_object = bool(extracted.get("has_current_object"))
+    has_history_object = bool(extracted.get("has_history_object"))
+
+    llm_goal_type = _normalize_goal_type(classifier_decision.get("goal_type"))
 
     if has_alert and not has_current_object and _contains_any(text, AMBIGUOUS_OBJECT_MARKERS):
-        return _plan(
+        return _with_classifier_metadata(_plan(
             goal_type="ambiguous",
             allowed_history_use="none",
             authoritative_inputs=current_objects,
             history_messages=[],
             raw_history=raw_history,
             reason="ambiguous_alert_object_requires_clarification",
-        )
-
-    if has_report:
-        selected = _last_turns(raw_history, 6)
-        return _plan(
-            goal_type="report_task",
-            allowed_history_use="recent_relevant_turns",
-            authoritative_inputs=current_objects,
-            history_messages=selected,
-            raw_history=raw_history,
-            reason="report_or_summary_request_uses_recent_history",
-        )
-
-    if has_followup and not has_current_object:
-        if has_history_object:
-            selected = _last_turns(raw_history, 3)
-            inputs = dict(current_objects)
-            inputs["resolved_from_history"] = history_objects
-            return _plan(
-                goal_type="followup",
-                allowed_history_use="object_resolution_only",
-                authoritative_inputs=inputs,
-                history_messages=selected,
-                raw_history=raw_history,
-                reason="followup_resolved_from_recent_history",
-            )
-        return _plan(
-            goal_type="ambiguous",
-            allowed_history_use="none",
-            authoritative_inputs=current_objects,
-            history_messages=[],
-            raw_history=raw_history,
-            reason="followup_without_resolvable_history_object",
-        )
+        ), classifier_decision, classifier_source)
 
     if has_current_object:
         conflict = _objects_conflict(current_objects, history_objects)
         if has_alert or has_action:
             goal_type: GoalType = "alert_task" if has_alert else "standalone_action"
+        elif llm_goal_type in {"alert_task", "standalone_action"}:
+            goal_type = llm_goal_type
         else:
             goal_type = "standalone_query" if has_query else "standalone_action"
-        return _plan(
+        return _with_classifier_metadata(_plan(
             goal_type=goal_type,
             allowed_history_use="none",
             authoritative_inputs=current_objects,
@@ -111,36 +132,175 @@ def build_conversation_context_plan(command_text: str, history: list[dict[str, s
             raw_history=raw_history,
             reason="history_conflict_current_object_wins" if conflict else "current_command_has_authoritative_object",
             conflict=conflict,
-        )
+        ), classifier_decision, classifier_source)
 
-    if has_action:
-        return _plan(
+    if llm_goal_type == "report_task" or has_report:
+        selected = _last_turns(raw_history, 6)
+        return _with_classifier_metadata(_plan(
+            goal_type="report_task",
+            allowed_history_use="recent_relevant_turns",
+            authoritative_inputs=current_objects,
+            history_messages=selected,
+            raw_history=raw_history,
+            reason="report_or_summary_request_uses_recent_history",
+        ), classifier_decision, classifier_source)
+
+    if llm_goal_type == "followup" or has_followup:
+        if has_history_object:
+            selected = _last_turns(raw_history, 3)
+            inputs = dict(current_objects)
+            inputs["resolved_from_history"] = history_objects
+            return _with_classifier_metadata(_plan(
+                goal_type="followup",
+                allowed_history_use="object_resolution_only",
+                authoritative_inputs=inputs,
+                history_messages=selected,
+                raw_history=raw_history,
+                reason="followup_resolved_from_recent_history",
+            ), classifier_decision, classifier_source)
+        return _with_classifier_metadata(_plan(
+            goal_type="ambiguous",
+            allowed_history_use="none",
+            authoritative_inputs=current_objects,
+            history_messages=[],
+            raw_history=raw_history,
+            reason="followup_without_resolvable_history_object",
+        ), classifier_decision, classifier_source)
+
+    if llm_goal_type == "ambiguous":
+        return _with_classifier_metadata(_plan(
+            goal_type="ambiguous",
+            allowed_history_use="none",
+            authoritative_inputs=current_objects,
+            history_messages=[],
+            raw_history=raw_history,
+            reason="llm_classifier_marked_ambiguous",
+        ), classifier_decision, classifier_source)
+
+    if llm_goal_type == "standalone_action" or has_action:
+        return _with_classifier_metadata(_plan(
             goal_type="standalone_action",
             allowed_history_use="none",
             authoritative_inputs=current_objects,
             history_messages=[],
             raw_history=raw_history,
             reason="action_without_explicit_followup_does_not_use_history",
-        )
+        ), classifier_decision, classifier_source)
 
-    if has_query:
-        return _plan(
+    if llm_goal_type == "standalone_query" or has_query:
+        return _with_classifier_metadata(_plan(
             goal_type="standalone_query",
             allowed_history_use="none",
             authoritative_inputs=current_objects,
             history_messages=[],
             raw_history=raw_history,
             reason="query_without_explicit_followup_does_not_use_history",
-        )
+        ), classifier_decision, classifier_source)
 
-    return _plan(
+    return _with_classifier_metadata(_plan(
         goal_type="standalone_query",
         allowed_history_use="none",
         authoritative_inputs=current_objects,
         history_messages=[],
         raw_history=raw_history,
         reason="default_isolated_conversation_turn",
+    ), classifier_decision, classifier_source)
+
+
+async def _classify_context_with_llm(
+    command_text: str,
+    history: list[dict[str, str]],
+    extracted: dict[str, Any],
+    llm_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+
+    history_preview = _last_turns(history, 6)
+    payload = {
+        "current_command": command_text,
+        "deterministic_extraction": {
+            "current_objects": extracted.get("current_objects", {}),
+            "history_objects": extracted.get("history_objects", {}),
+            "has_action_marker": extracted.get("has_action", False),
+            "has_alert_marker": extracted.get("has_alert", False),
+            "has_query_marker": extracted.get("has_query", False),
+            "has_report_marker": extracted.get("has_report", False),
+            "has_followup_marker": extracted.get("has_followup", False),
+        },
+        "recent_history": history_preview,
+    }
+    llm = ChatOpenAI(**llm_kwargs)
+    response = await llm.ainvoke(
+        [
+            SystemMessage(
+                content=(
+                    "你是 SentinelFlow 对话上下文分类器。只判断当前用户指令是否需要使用历史上下文，"
+                    "不要执行安全处置或业务查询。必须只输出 JSON。"
+                )
+            ),
+            HumanMessage(
+                content=(
+                    "请分类 current_command 的上下文使用策略。\n"
+                    "goal_type 只能是 standalone_query、standalone_action、followup、alert_task、report_task、ambiguous。\n"
+                    "判断原则：当前命令明确给出 IP/告警号/对象时通常是 standalone；"
+                    "只有“它、这个、继续、上一个”等对象缺失追问才是 followup；"
+                    "总结整个刚才过程/本会话才是 report_task；对象不明确且涉及告警/处置为 ambiguous。\n"
+                    "输出 JSON 字段：goal_type, needs_history(boolean), history_use, reason。\n\n"
+                    f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```"
+                )
+            ),
+        ]
     )
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        content = "\n".join(str(item.get("text", item)) if isinstance(item, dict) else str(item) for item in content)
+    return _parse_classifier_json(str(content or ""))
+
+
+def _parse_classifier_json(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            payload = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _with_classifier_metadata(
+    plan: ConversationContextPlan,
+    classifier_decision: dict[str, Any],
+    classifier_source: str,
+) -> ConversationContextPlan:
+    plan.context_policy["classifier_source"] = classifier_source
+    goal_type = _normalize_goal_type(classifier_decision.get("goal_type"))
+    if goal_type:
+        plan.context_policy["classifier_goal_type"] = goal_type
+    if "needs_history" in classifier_decision:
+        plan.context_policy["classifier_needs_history"] = bool(classifier_decision.get("needs_history"))
+    history_use = str(classifier_decision.get("history_use", "") or "").strip()
+    if history_use:
+        plan.context_policy["classifier_history_use"] = history_use[:120]
+    reason = str(classifier_decision.get("reason", "") or "").strip()
+    if reason:
+        plan.context_policy["classifier_reason"] = reason[:300]
+    return plan
+
+
+def _normalize_goal_type(value: Any) -> GoalType | None:
+    candidate = str(value or "").strip()
+    allowed = {"standalone_query", "standalone_action", "followup", "alert_task", "report_task", "ambiguous"}
+    return candidate if candidate in allowed else None  # type: ignore[return-value]
 
 
 def _plan(

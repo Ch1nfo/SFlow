@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from sentinelflow.agent.checkpoint_state import deserialize_graph_state, serialize_graph_state
 from sentinelflow.agent.catalog import load_skill_catalog
-from sentinelflow.agent.conversation_context import build_conversation_context_plan
+from sentinelflow.agent.conversation_context import build_conversation_context_plan_with_llm
 from sentinelflow.agent.context_utils import (
     build_compact_final_summary_context,
     build_context_manifest,
@@ -1884,7 +1884,11 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
     ) -> dict[str, Any]:
         config = load_runtime_config()
         agent_definition = resolve_default_agent(self.agent_root, agent_name)
-        context_plan = build_conversation_context_plan(command_text, history or [])
+        context_plan = await build_conversation_context_plan_with_llm(
+            command_text,
+            history or [],
+            llm_kwargs=build_llm_client_kwargs(config, temperature=0),
+        )
         effective_history = list(context_plan.history_messages)
         context_policy = dict(context_plan.context_policy)
         workers = self._resolve_worker_candidates(agent_definition, entry_type="conversation")
