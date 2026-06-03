@@ -324,6 +324,8 @@ def _plan(
     if conflict:
         policy["conflict"] = "history_object_differs_from_current_object"
         policy["conflict_rule"] = "use_current_command_object"
+    if history_messages:
+        policy["history_context"] = _compact_history_context(history_messages)
     return ConversationContextPlan(
         goal_type=goal_type,
         allowed_history_use=allowed_history_use,
@@ -331,6 +333,17 @@ def _plan(
         history_messages=history_messages,
         context_policy=policy,
     )
+
+
+def _compact_history_context(history_messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    compacted: list[dict[str, str]] = []
+    for item in history_messages[-6:]:
+        role = str(item.get("role", "")).strip().lower()
+        content = re.sub(r"\s+", " ", str(item.get("content", "")).strip())
+        if not role or not content:
+            continue
+        compacted.append({"role": role, "content": content[:300]})
+    return compacted
 
 
 def _normalize_history(history: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -377,7 +390,9 @@ def _extract_event_ids(text: str) -> list[str]:
             continue
         if item.lower() in {"cmdb", "sentinelflow"}:
             continue
-        if any(ch.isdigit() for ch in item) and len(item) >= 8:
+        has_event_hint = bool(re.search(r"(?:告警|事件|工单|event|alert|warn)", item, flags=re.IGNORECASE))
+        digit_count = sum(1 for ch in item if ch.isdigit())
+        if has_event_hint or digit_count >= 6:
             candidates.append(item)
     return _dedupe(candidates)
 

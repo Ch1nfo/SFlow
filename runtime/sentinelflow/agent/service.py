@@ -1914,7 +1914,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             "alert_source": "human_command",
             "conversation_context_policy": context_policy,
         }
-        result = await self._run_agent_graph(agent_definition, alert, history=effective_history, cancel_event=cancel_event, execution_context=execution_context)
+        result = await self._run_agent_graph(agent_definition, alert, history=[], cancel_event=cancel_event, execution_context=execution_context)
         result["conversation_context_policy"] = context_policy
         return result
 

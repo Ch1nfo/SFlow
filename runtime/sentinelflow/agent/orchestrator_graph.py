@@ -808,18 +808,12 @@ def build_orchestrator_graph(
         current_messages = list(state.get("messages", []))
 
         if not current_messages:
-            # ── First invocation: seed with conversation history + initial task ──
+            # ── First invocation: seed with structured context + initial task.
+            # Conversation history is intentionally kept out of normal Human/AI
+            # message flow; otherwise old assistant answers become part of the
+            # active ReAct transcript and can be continued or copied as output.
             seed_messages: list = []
             context_messages: list = []
-            for item in (state.get("conversation_history") or []):
-                role = str(item.get("role", "")).strip().lower()
-                content = str(item.get("content", ""))
-                if not content.strip():
-                    continue
-                if role == "user":
-                    seed_messages.append(HumanMessage(content=content))
-                elif role == "assistant":
-                    seed_messages.append(AIMessage(content=content))
 
             # Build human message from alert_data / command payload
             ad = state.get("alert_data", {})
