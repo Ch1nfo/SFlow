@@ -193,6 +193,24 @@ def _has_terminal_skill_result(tool_calls_summary: list[dict[str, Any]], require
     return False
 
 
+def _has_executable_skill_result(tool_calls_summary: list[dict[str, Any]], executable_skills: set[str]) -> bool:
+    """Require workers with executable permissions to perform a real skill call."""
+    for item in tool_calls_summary:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name", "")).strip() not in {"execute_skill", "execute_skill_no_args"}:
+            continue
+        args = item.get("args", {})
+        if not isinstance(args, dict):
+            continue
+        skill_name = str(args.get("skill_name", "")).strip()
+        if not skill_name or skill_name not in executable_skills:
+            continue
+        if isinstance(item.get("result_summary"), dict):
+            return True
+    return False
+
+
 # ── Worker SubGraph Tool Builder ──────────────────────────────────────────────
 
 def _build_worker_subgraph_tool(
@@ -214,6 +232,7 @@ def _build_worker_subgraph_tool(
     of the worker's final response and skills used.
     """
     readable_skills, executable_skills = _resolve_worker_permissions(worker_agent_def, skill_runtime)
+    executable_skill_set = {str(item).strip() for item in executable_skills if str(item).strip()}
     required_terminal_skills = _required_terminal_skill_names(alert_data, executable_skills, skill_runtime)
     worker_max_steps = max(1, int(getattr(worker_agent_def, "worker_max_steps", 3) or 3))
     worker_recursion_limit = max(80, worker_max_steps * 8 + 20)
@@ -315,24 +334,42 @@ def _build_worker_subgraph_tool(
             tool_calls_summary,
             required_terminal_skills,
         )
-        if terminal_execution_missing and not worker_state.get("approval_pending"):
-            correction = HumanMessage(
-                content=(
+        executable_execution_missing = bool(executable_skill_set) and not _has_executable_skill_result(
+            tool_calls_summary,
+            executable_skill_set,
+        )
+        if (terminal_execution_missing or executable_execution_missing) and not worker_state.get("approval_pending"):
+            if terminal_execution_missing:
+                correction_text = (
                     "执行校验失败：当前任务要求真实完成结单，但你尚未调用结单 Skill。"
                     f"现在必须直接调用 `execute_skill` 执行 `{sorted(required_terminal_skills)[0]}`，"
                     "使用 task_prompt 中已经给出的参数；不得以文字描述、模拟 JSON 或声称成功替代工具调用。"
                 )
+            else:
+                allowed = "、".join(sorted(executable_skill_set))
+                correction_text = (
+                    "执行校验失败：当前子 Agent 有可执行 Skill 权限，但你没有实际调用任何 Skill。"
+                    f"现在必须从已授权 Skill（{allowed}）中选择合适的一个并调用 `execute_skill`；"
+                    "不得只输出消息正文、模拟结果或声称成功。"
+                )
+            correction = HumanMessage(
+                content=correction_text
             )
             retry_state = {
                 **worker_state,
                 "messages": list(worker_state.get("messages", [])) + [correction],
                 "input_seeded": True,
+                "max_react_steps": max(worker_max_steps, count_react_turns(list(worker_state.get("messages", []))) + 2),
             }
             worker_state = await subgraph.ainvoke(retry_state, {"recursion_limit": worker_recursion_limit})
             tool_calls, tool_calls_summary = summarize_worker_tools(worker_state)
             terminal_execution_missing = not _has_terminal_skill_result(
                 tool_calls_summary,
                 required_terminal_skills,
+            ) if required_terminal_skills else False
+            executable_execution_missing = bool(executable_skill_set) and not _has_executable_skill_result(
+                tool_calls_summary,
+                executable_skill_set,
             )
 
         final_text = ""
@@ -357,6 +394,8 @@ def _build_worker_subgraph_tool(
         execution_error = (
             f"子 Agent 未实际调用要求的结单技能：{', '.join(sorted(required_terminal_skills))}。"
             if terminal_execution_missing
+            else f"子 Agent 未实际调用授权执行技能：{', '.join(sorted(executable_skill_set))}。"
+            if executable_execution_missing
             else None
         )
         if tracer is not None:
