@@ -21,6 +21,16 @@ except ModuleNotFoundError:  # pragma: no cover
     AIMessage = HumanMessage = SystemMessage = object  # type: ignore[assignment]
 
 
+STEP_LIMIT_MESSAGE = "已达到步数上限，请直接输出结论。"
+
+
+def _coerce_max_react_steps(value) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
     cancel_event = state.get("cancel_event")
     if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
@@ -151,9 +161,12 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
 
     turn = count_react_turns(current_messages) + 1
     prompt_goal = str(alert_data.get("delegated_task_prompt") or alert_data.get("payload") or "执行当前 Agent 任务")
+    max_react_steps = _coerce_max_react_steps(state.get("max_react_steps"))
+    step_limit_reached = bool(max_react_steps and turn > max_react_steps)
+    limit_messages = [HumanMessage(content=STEP_LIMIT_MESSAGE)] if step_limit_reached else []
     prompt_messages, prompt_window_info, case_context = prepare_messages_for_llm(
         system_msg=system_msg,
-        messages=messages_to_send[1:],
+        messages=messages_to_send[1:] + limit_messages,
         alert_data=alert_data if isinstance(alert_data, dict) else {},
         current_goal=prompt_goal,
         case_context=state.get("case_context", {}) if isinstance(state.get("case_context", {}), dict) else {},
@@ -171,6 +184,14 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
             window_info=prompt_window_info,
         )
     response = await llm.ainvoke(prompt_messages)
+    if step_limit_reached and getattr(response, "tool_calls", None):
+        return {
+            "messages": seeded_messages + [HumanMessage(content=STEP_LIMIT_MESSAGE)],
+            "input_seeded": seeded_flag,
+            "case_context": case_context,
+            "step_limit_reached": True,
+            "step_limit_retry": True,
+        }
     if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
         raise RuntimeError("用户已停止当前任务。")
     if tracer is not None:
@@ -184,10 +205,18 @@ async def agent_node(state: SentinelFlowAgentState, llm, skill_root) -> dict:
             request_messages=prompt_messages,
             alert_data=alert_data if isinstance(alert_data, dict) else {},
         )
-    return {"messages": seeded_messages + [response], "input_seeded": seeded_flag, "case_context": case_context}
+    return {
+        "messages": seeded_messages + [response],
+        "input_seeded": seeded_flag,
+        "case_context": case_context,
+        "step_limit_reached": step_limit_reached,
+        "step_limit_retry": False,
+    }
 
 
-def should_continue(state: SentinelFlowAgentState) -> Literal["tools", "__end__"]:
+def should_continue(state: SentinelFlowAgentState) -> Literal["tools", "agent_node", "__end__"]:
+    if state.get("step_limit_retry"):
+        return "agent_node"
     last_msg = state["messages"][-1]
     if isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None):
         return "tools"

@@ -215,6 +215,8 @@ def _build_worker_subgraph_tool(
     """
     readable_skills, executable_skills = _resolve_worker_permissions(worker_agent_def, skill_runtime)
     required_terminal_skills = _required_terminal_skill_names(alert_data, executable_skills, skill_runtime)
+    worker_max_steps = max(1, int(getattr(worker_agent_def, "worker_max_steps", 3) or 3))
+    worker_recursion_limit = max(80, worker_max_steps * 8 + 20)
 
     async def _execute_worker_subgraph(task_prompt: str, state: OrchestratorState, step_idx: int) -> dict[str, Any]:
         child_checkpoint_thread_id = f"{str(state.get('checkpoint_thread_id', '')).strip() or uuid4().hex}:worker:{worker_agent_def.name}:{step_idx}"
@@ -251,6 +253,7 @@ def _build_worker_subgraph_tool(
             "rejected_fingerprints": list(state.get("rejected_fingerprints") or []),
             "executed_skill_cache": dict(state.get("executed_skill_cache", {}) or {}),
             "case_context": copy.deepcopy(state.get("case_context", {}) or {}),
+            "max_react_steps": worker_max_steps,
         }
         tracer = get_active_tracer()
         if tracer is not None:
@@ -274,7 +277,7 @@ def _build_worker_subgraph_tool(
             enable_synthesis_node=False,
         )
         try:
-            worker_state = await subgraph.ainvoke(child_state)
+            worker_state = await subgraph.ainvoke(child_state, {"recursion_limit": worker_recursion_limit})
         except Exception as exc:
             if tracer is not None:
                 tracer.log_worker_boundary(
@@ -325,7 +328,7 @@ def _build_worker_subgraph_tool(
                 "messages": list(worker_state.get("messages", [])) + [correction],
                 "input_seeded": True,
             }
-            worker_state = await subgraph.ainvoke(retry_state)
+            worker_state = await subgraph.ainvoke(retry_state, {"recursion_limit": worker_recursion_limit})
             tool_calls, tool_calls_summary = summarize_worker_tools(worker_state)
             terminal_execution_missing = not _has_terminal_skill_result(
                 tool_calls_summary,

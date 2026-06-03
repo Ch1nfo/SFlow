@@ -323,15 +323,25 @@ function AgentForm({
         </div>
       ) : null}
 
+      <div className="mt-4">
+        <div className="mb-2 text-sm font-semibold text-gray-900">
+          {draft.role === 'primary' ? '主 Agent 编排深度' : '子 Agent ReAct 步数上限'}
+        </div>
+        <input
+          className="sentinelflow-settings-input"
+          placeholder={draft.role === 'primary' ? '主 Agent 编排深度，默认 3' : '子 Agent ReAct 步数上限，默认 3'}
+          value={draft.workerMaxSteps}
+          onChange={(event) => onChange((current) => ({ ...current, workerMaxSteps: event.target.value }))}
+        />
+        <div className="mt-2 text-sm leading-6 text-gray-500">
+          {draft.role === 'primary'
+            ? '用于限制主 Agent 一次任务中可进行的整体编排深度，并影响主 Agent 图的递归上限。'
+            : '用于限制该子 Agent 自己的 ReAct 工具调用步数；达到上限后系统会要求它直接输出结论，不再继续执行工具。'}
+        </div>
+      </div>
+
       {draft.role === 'primary' ? (
         <div className="mt-4">
-          <div className="mb-2 text-sm font-semibold text-gray-900">子 Agent 调用深度</div>
-          <input
-            className="sentinelflow-settings-input"
-            placeholder="子 Agent 调用深度，默认 3"
-            value={draft.workerMaxSteps}
-            onChange={(event) => onChange((current) => ({ ...current, workerMaxSteps: event.target.value }))}
-          />
           <div className="mt-3 mb-2 text-sm font-semibold text-gray-900">单次并行调度上限</div>
           <input
             className="sentinelflow-settings-input"
@@ -636,10 +646,12 @@ export default function SentinelFlowAgentsPage() {
                       <>
                         <div className="sentinelflow-stack-item"><strong>对话模式子 Agent</strong><span>{detail.worker_allowlist_command.length || 0}</span></div>
                         <div className="sentinelflow-stack-item"><strong>告警分析子 Agent</strong><span>{detail.worker_allowlist_alert.length || 0}</span></div>
-                        <div className="sentinelflow-stack-item"><strong>子 Agent 调用深度</strong><span>{detail.worker_max_steps}</span></div>
+                        <div className="sentinelflow-stack-item"><strong>主 Agent 编排深度</strong><span>{detail.worker_max_steps}</span></div>
                         <div className="sentinelflow-stack-item"><strong>单次并行调度上限</strong><span>{detail.worker_parallel_limit}</span></div>
                       </>
-                    ) : null}
+                    ) : (
+                      <div className="sentinelflow-stack-item"><strong>ReAct 步数上限</strong><span>{detail.worker_max_steps}</span></div>
+                    )}
                   </div>
                   <div className="grid gap-3">
                     <SkillSummaryChips title="纯文本白名单" items={detail.doc_skill_allowlist} />

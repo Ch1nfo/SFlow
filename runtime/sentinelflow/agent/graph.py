@@ -104,10 +104,10 @@ def build_agent_graph(
     if enable_synthesis_node:
         builder.add_node("synthesis_node", _build_synthesis_node(runtime_config))
         # When the agent decides to stop (no more tool calls), run synthesis before END
-        builder.add_conditional_edges("agent_node", should_continue, {"tools": "tools_node", "__end__": "synthesis_node"})
+        builder.add_conditional_edges("agent_node", should_continue, {"tools": "tools_node", "agent_node": "agent_node", "__end__": "synthesis_node"})
         builder.add_edge("synthesis_node", END)
     else:
-        builder.add_conditional_edges("agent_node", should_continue, {"tools": "tools_node", "__end__": END})
+        builder.add_conditional_edges("agent_node", should_continue, {"tools": "tools_node", "agent_node": "agent_node", "__end__": END})
     builder.add_edge("tools_node", "approval_gate")
     builder.add_conditional_edges("approval_gate", _route_after_tools, {"agent_node": "agent_node", "__end__": END})
     return builder.compile()

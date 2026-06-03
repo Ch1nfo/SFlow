@@ -37,3 +37,6 @@ class SentinelFlowAgentState(TypedDict):
     executed_skill_cache: NotRequired[dict[str, Any]]
     structured_judgment: NotRequired[dict[str, Any] | None]  # AlertJudgment.model_dump() or None
     case_context: NotRequired[dict[str, Any]]
+    max_react_steps: NotRequired[int]
+    step_limit_reached: NotRequired[bool]
+    step_limit_retry: NotRequired[bool]
