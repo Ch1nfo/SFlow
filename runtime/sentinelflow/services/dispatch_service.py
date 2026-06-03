@@ -914,11 +914,13 @@ class AlertDispatchService:
 
         recovered: list[AlertHandlingTask] = []
         for task in candidates:
+            step_updated_at = _parse_task_datetime(task.running_step_updated_at, timezone.utc)
             step_started_at = _parse_task_datetime(task.running_step_started_at, timezone.utc)
             step_key = str(task.running_step_key or "").strip()
-            if stuck_timeout > 0 and step_key and step_started_at is not None and (now - step_started_at).total_seconds() >= stuck_timeout:
+            step_last_active_at = step_updated_at or step_started_at
+            if stuck_timeout > 0 and step_key and step_last_active_at is not None and (now - step_last_active_at).total_seconds() >= stuck_timeout:
                 step_title = str(task.running_step_title or step_key).strip()
-                error = f"任务运行卡在同一步超过 {stuck_timeout} 秒，已由系统回收为失败状态，可重新执行。当前步骤：{step_title}"
+                error = f"任务运行卡在同一步超过 {stuck_timeout} 秒未更新，已由系统回收为失败状态，可重新执行。当前步骤：{step_title}"
                 existing_result = dict(task.last_result_data) if isinstance(task.last_result_data, dict) else {}
                 result_data = {
                     **existing_result,
