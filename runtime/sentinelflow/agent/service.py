@@ -1077,6 +1077,19 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         if checkpoint is None:
             return {"success": False, "route": "approval_checkpoint_missing", "error": "审批断点不存在或已丢失。", "data": {}}
 
+        decision_status = "approved" if decision == "approve" else "rejected" if decision == "reject" else ""
+        if not decision_status:
+            return {"success": False, "route": "approval_invalid_decision", "error": f"不支持的审批动作：{decision}", "data": {}}
+        approval_record = self.approval_service.consume_pending_decision(approval_id, decision_status)
+        if approval_record is None:
+            latest = self.approval_service.get_by_id(approval_id)
+            return {
+                "success": False,
+                "route": "approval_not_pending",
+                "error": "该审批已处理。",
+                "data": {"approval": self.approval_service.serialize_approval(latest or approval)},
+            }
+
         state = deserialize_graph_state(checkpoint.get("state", {}))
         if decision == "approve":
             if status_callback:
@@ -1115,16 +1128,6 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             action_hint=checkpoint.get("action_hint", ""),
             state_payload=serialize_graph_state(state),
         )
-        updated = self.approval_service.set_decision(approval_id, "approved" if decision == "approve" else "rejected")
-        if updated is None:
-            latest = self.approval_service.get_by_id(approval_id)
-            return {
-                "success": False,
-                "route": "approval_not_pending",
-                "error": "该审批已处理。",
-                "data": {"approval": self.approval_service.serialize_approval(latest or approval)},
-            }
-        approval_record = updated or approval
         current_checkpoint, resume_error = self._reload_checkpoint_for_resume(
             approval.checkpoint_thread_id,
             approval=approval_record,

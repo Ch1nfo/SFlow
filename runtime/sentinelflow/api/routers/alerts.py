@@ -1273,8 +1273,6 @@ def _stream_approval_resolution(approval_id: str, decision: str):
     )
     status_index = 0
     last_status_at = time.monotonic()
-    started_at = last_status_at
-    timeout_seconds = _stream_timeout_seconds()
 
     while True:
         try:
@@ -1297,16 +1295,6 @@ def _stream_approval_resolution(approval_id: str, decision: str):
             break
         except queue.Empty:
             now = time.monotonic()
-            if now - started_at >= timeout_seconds:
-                response = {
-                    "route": "approval_resolution_timeout",
-                    "success": False,
-                    "data": {},
-                    "approval": skill_approval_service.serialize_approval(skill_approval_service.get_by_id(approval_id)) if skill_approval_service.get_by_id(approval_id) else None,
-                    "task": None,
-                    "error": f"审批恢复执行超过 {timeout_seconds} 秒，已停止等待。",
-                }
-                break
             if now - last_status_at >= 1.0:
                 yield f"data: {json.dumps({'type': 'status', 'payload': {'text': status_messages[status_index]}}, ensure_ascii=False)}\n\n"
                 last_status_at = now

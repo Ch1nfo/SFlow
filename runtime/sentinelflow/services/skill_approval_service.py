@@ -306,6 +306,24 @@ class SkillApprovalService:
                 return None
         return self.get_by_id(approval_id)
 
+    def consume_pending_decision(self, approval_id: str, decision: str) -> SkillApprovalRecord | None:
+        """Atomically consume a pending approval before running any side effect."""
+        if decision not in {"approved", "rejected"}:
+            raise ValueError(f"Unsupported approval decision: {decision}")
+        decided_at = _now_iso()
+        with self.lock, sqlite_transaction(DB_PATH, begin_mode="IMMEDIATE") as conn:
+            cursor = conn.execute(
+                "UPDATE skill_approvals SET status = ?, decided_at = ? WHERE approval_id = ? AND status = 'pending'",
+                (decision, decided_at, approval_id),
+            )
+            if cursor.rowcount <= 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM skill_approvals WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+        return self._row_to_approval(row) if row else self.get_by_id(approval_id)
+
     def update_parent_context(
         self,
         approval_id: str,
