@@ -1210,7 +1210,7 @@ export default function SentinelFlowSettingsPage() {
           </label>
         </div>
         <div className="mt-3 sentinelflow-message-block">
-          开启后，系统会在每周一 01:00 删除本周一 00:00 之前的全部告警任务（含未完成/失败），并清理关联的去重锁、审批与 checkpoint；周一 00:00 到 01:00 的新告警会保留。运行日志仍按「运行日志保留天数」单独清理。
+          开启后，系统会在每周一 01:00 删除上周及以前的全部告警任务数据。
         </div>
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50 p-5">
           <div className="mb-4">

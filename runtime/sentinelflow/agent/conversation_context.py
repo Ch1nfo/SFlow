@@ -71,7 +71,7 @@ def build_conversation_context_plan(command_text: str, history: list[dict[str, s
 def _conversation_extraction(command_text: str, raw_history: list[dict[str, str]]) -> dict[str, Any]:
     text = str(command_text or "").strip()
     current_objects = _extract_objects(text)
-    history_objects = _extract_history_objects(raw_history[:6])
+    history_objects = _extract_history_objects(_last_turns(raw_history, 6))
     return {
         "text": text,
         "current_objects": current_objects,
