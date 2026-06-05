@@ -220,6 +220,14 @@ def _full_report_generation_payload(
     return payload
 
 
+def _full_report_error_message(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = getattr(exc, "detail", "")
+        if detail:
+            return str(detail)
+    return str(exc) or exc.__class__.__name__
+
+
 async def _run_full_report_generation(task_id: str) -> None:
     try:
         task = dispatch_service.get_task(task_id)
@@ -245,6 +253,7 @@ async def _run_full_report_generation(task_id: str) -> None:
         dispatch_service.update_task_result_data(task_id, latest_result_data)
     except Exception as exc:
         logger.warning("full report background generation failed for task %s", task_id, exc_info=True)
+        error_message = _full_report_error_message(exc)
         latest_task = dispatch_service.get_task(task_id)
         if latest_task is not None:
             latest_result_data = dict(latest_task.last_result_data) if isinstance(latest_task.last_result_data, dict) else {}
@@ -255,7 +264,7 @@ async def _run_full_report_generation(task_id: str) -> None:
             latest_result_data["full_report_generation"] = _full_report_generation_payload(
                 status="failed",
                 format_skill=format_skill,
-                error=str(exc),
+                error=error_message,
             )
             dispatch_service.update_task_result_data(task_id, latest_result_data)
     finally:
@@ -735,12 +744,16 @@ async def generate_alert_task_full_report(task_id: str) -> dict[str, Any]:
     result_data = dict(task.last_result_data) if isinstance(task.last_result_data, dict) else {}
     existing = str(result_data.get("full_report_markdown") or "").strip()
     if existing:
+        generation = result_data.get("full_report_generation") if isinstance(result_data.get("full_report_generation"), dict) else {}
         return {
             "success": True,
             "task": _serialize(task),
             "markdown": existing,
             "cached": True,
-            "format_skill": str((result_data.get("full_report_generation") or {}).get("format_skill", "")).strip(),
+            "pending": False,
+            "format_skill": str(generation.get("format_skill", "")).strip(),
+            "generation": generation,
+            "error": str(generation.get("error", "")).strip(),
         }
 
     generation = result_data.get("full_report_generation")
@@ -753,6 +766,8 @@ async def generate_alert_task_full_report(task_id: str) -> dict[str, Any]:
             "cached": False,
             "pending": True,
             "format_skill": str(generation.get("format_skill") or "").strip(),
+            "generation": generation,
+            "error": str(generation.get("error") or "").strip(),
         }
 
     result_data["full_report_generation"] = _full_report_generation_payload(
@@ -770,6 +785,8 @@ async def generate_alert_task_full_report(task_id: str) -> dict[str, Any]:
         "cached": False,
         "pending": True,
         "format_skill": str(result_data["full_report_generation"].get("format_skill") or "").strip(),
+        "generation": result_data["full_report_generation"],
+        "error": "",
     }
 
 

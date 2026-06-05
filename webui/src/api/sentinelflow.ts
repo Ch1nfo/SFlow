@@ -592,7 +592,7 @@ export async function fetchAlertTaskDetail(taskId: string): Promise<{ task: Aler
   return getJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}`)
 }
 
-export async function generateAlertTaskFullReport(taskId: string): Promise<{ success: boolean; task: AlertTask; markdown: string; cached: boolean; pending?: boolean; format_skill: string }> {
+export async function generateAlertTaskFullReport(taskId: string): Promise<{ success: boolean; task: AlertTask; markdown: string; cached: boolean; pending?: boolean; format_skill: string; generation?: Record<string, unknown>; error?: string | null }> {
   return postJson(`/api/sentinelflow/alerts/tasks/${encodeURIComponent(taskId)}/full-report`, {})
 }
 

@@ -1051,14 +1051,26 @@ export default function SentinelFlowTasksPage() {
       const next: RuntimeActivity = {
         type: 'alert_action',
         title: `${task.title} / 完整研判报告`,
-        detail: result.cached ? '已读取已生成的完整研判报告。' : result.pending ? '完整研判报告已在后台生成。' : '完整研判报告已生成并保存。',
+        detail: result.error ? `完整研判报告生成失败：${result.error}` : result.cached ? '已读取已生成的完整研判报告。' : result.pending ? '完整研判报告已在后台生成。' : '完整研判报告已生成并保存。',
         success: result.success,
-        status: result.pending ? 'running' : result.success ? 'success' : 'failed',
+        status: result.error ? 'failed' : result.pending ? 'running' : result.success ? 'success' : 'failed',
         timestamp: new Date().toISOString(),
       }
       setActivity(next)
       publishRuntimeActivity(next)
       void reloadPoll({ force: true, silent: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '完整研判报告生成失败。'
+      const next: RuntimeActivity = {
+        type: 'alert_action',
+        title: `${task.title} / 完整研判报告`,
+        detail: `完整研判报告生成失败：${message}`,
+        success: false,
+        status: 'failed',
+        timestamp: new Date().toISOString(),
+      }
+      setActivity(next)
+      publishRuntimeActivity(next)
     } finally {
       setRunningAction('')
     }
@@ -1087,6 +1099,7 @@ export default function SentinelFlowTasksPage() {
   const selectedFullReportMarkdown = String(selectedResult.full_report_markdown ?? '').trim()
   const selectedFullReportGeneration = (selectedResult.full_report_generation as Record<string, unknown> | undefined) ?? {}
   const selectedFullReportStatus = String(selectedFullReportGeneration.status ?? '').trim()
+  const selectedFullReportError = String(selectedFullReportGeneration.error ?? '').trim()
   const isFullReportGenerating = selectedFullReportStatus === 'running' || runningAction === `full-report:${selectedTask?.task_id ?? ''}`
   const selectedReason = String(selectedResult.reason ?? '').trim()
   const selectedDisposition = String(selectedFinalJudgment.disposition ?? selectedResult.disposition ?? '').trim()
@@ -1300,7 +1313,7 @@ export default function SentinelFlowTasksPage() {
                             }}
                             disabled={runningAction !== '' || isFullReportGenerating}
                           >
-                            {isFullReportGenerating ? '生成中...' : selectedFullReportMarkdown ? (fullReportExpanded ? '收起完整研判报告' : '展开完整研判报告') : '获取完整研判报告'}
+                            {isFullReportGenerating ? '生成中...' : selectedFullReportMarkdown ? (fullReportExpanded ? '收起完整研判报告' : '展开完整研判报告') : selectedFullReportStatus === 'failed' ? '重新生成完整研判报告' : '获取完整研判报告'}
                           </button>
                           <button
                             type="button"
@@ -1316,6 +1329,11 @@ export default function SentinelFlowTasksPage() {
                           </button>
                         </div>
                       </div>
+                      {selectedFullReportStatus === 'failed' && selectedFullReportError ? (
+                        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                          完整研判报告生成失败：{selectedFullReportError}
+                        </div>
+                      ) : null}
                       {finalJudgmentExpanded ? (
                         selectedFinalJudgmentMarkdown ? (
                           <div className="mt-4 text-sm text-blue-900">
