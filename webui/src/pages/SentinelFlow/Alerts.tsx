@@ -20,8 +20,10 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
 import { resolveSelectedTaskDisplay } from '@/utils/sentinelflowTaskDetail'
+import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalState'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
+const ALERTS_TIME_RANGE_KEY = 'sentinelflow:alerts:timeRange'
 const ALERT_QUEUE_INITIAL_RENDER_COUNT = 60
 
 function WeekSummarySkeleton() {
@@ -257,6 +259,19 @@ function formatAlertTime(value: string | undefined): string {
   return text || '未提供'
 }
 
+function readStoredTimeRange(key: string, fallback: AlertTimeRangeValue): AlertTimeRangeValue {
+  const stored = readSessionValue<Partial<AlertTimeRangeValue> | null>(key, null)
+  if (!stored || typeof stored !== 'object') return fallback
+  const mode = stored.mode === 'today' || stored.mode === 'week' || stored.mode === 'custom' ? stored.mode : fallback.mode
+  return {
+    mode,
+    startDate: String(stored.startDate ?? fallback.startDate),
+    startTime: String(stored.startTime ?? fallback.startTime),
+    endDate: String(stored.endDate ?? fallback.endDate),
+    endTime: String(stored.endTime ?? fallback.endTime),
+  }
+}
+
 function getStartOfWeek(value: Date): Date {
   const startOfDay = new Date(value.getFullYear(), value.getMonth(), value.getDate())
   const day = startOfDay.getDay()
@@ -293,7 +308,7 @@ function getTaskFlowLabel(task: AlertTask): string {
 export default function SentinelFlowAlertsPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(() => readStoredSelectedSourceId())
-  const [timeRange, setTimeRange] = useState<AlertTimeRangeValue>(() => createAlertTimeRangeValue('today'))
+  const [timeRange, setTimeRange] = useState<AlertTimeRangeValue>(() => readStoredTimeRange(ALERTS_TIME_RANGE_KEY, createAlertTimeRangeValue('today')))
   const [payloadExpanded, setPayloadExpanded] = useState(false)
   const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [actionState, setActionState] = useState<{ action: string; running: boolean }>({ action: '', running: false })
@@ -354,6 +369,10 @@ export default function SentinelFlowAlertsPage() {
       await loadWeekSummary({ force: options?.force, silent: options?.silent ?? true })
     }
   }, [reloadPollStore, weekSummaryEnabled, loadWeekSummary])
+
+  useEffect(() => {
+    writeSessionValue(ALERTS_TIME_RANGE_KEY, timeRange)
+  }, [timeRange])
 
   useEffect(() => {
     if (!data) return

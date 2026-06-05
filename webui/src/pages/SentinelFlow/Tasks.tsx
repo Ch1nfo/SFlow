@@ -28,6 +28,7 @@ import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
 type TaskFilter = 'all' | 'queued' | 'running' | 'awaiting_approval' | 'succeeded' | 'completed' | 'pending_closure' | 'failed'
 const TASK_FILTER_KEY = 'sentinelflow:tasks:filter'
+const TASK_TIME_RANGE_KEY = 'sentinelflow:tasks:timeRange'
 const TASK_LIST_PAGE_SIZE = 60
 
 type ToolInvocationResult = {
@@ -65,6 +66,19 @@ function getTaskStatusLabel(status: TaskFilter | AlertTask['status']) {
   if (status === 'completed') return '已被人工处置'
   if (status === 'failed') return '失败'
   return '全部'
+}
+
+function readStoredTimeRange(key: string, fallback: AlertTimeRangeValue): AlertTimeRangeValue {
+  const stored = readSessionValue<Partial<AlertTimeRangeValue> | null>(key, null)
+  if (!stored || typeof stored !== 'object') return fallback
+  const mode = stored.mode === 'today' || stored.mode === 'week' || stored.mode === 'custom' ? stored.mode : fallback.mode
+  return {
+    mode,
+    startDate: String(stored.startDate ?? fallback.startDate),
+    startTime: String(stored.startTime ?? fallback.startTime),
+    endDate: String(stored.endDate ?? fallback.endDate),
+    endTime: String(stored.endTime ?? fallback.endTime),
+  }
 }
 
 function isApprovalPendingAction(result: AlertActionResponse | ApprovalDecisionResponse): boolean {
@@ -821,7 +835,7 @@ function ProcessTrace({ trace, traceOwnerId }: { trace: ExecutionTraceItem[]; tr
 }
 
 export default function SentinelFlowTasksPage() {
-  const [timeRange, setTimeRange] = useState<AlertTimeRangeValue>(() => createAlertTimeRangeValue('week'))
+  const [timeRange, setTimeRange] = useState<AlertTimeRangeValue>(() => readStoredTimeRange(TASK_TIME_RANGE_KEY, createAlertTimeRangeValue('today')))
   const rangeQuery = useMemo(() => alertTimeRangeToQuery(timeRange), [timeRange])
   const {
     data: poll,
@@ -862,6 +876,10 @@ export default function SentinelFlowTasksPage() {
   useEffect(() => {
     writeSessionValue(TASK_FILTER_KEY, filter)
   }, [filter])
+
+  useEffect(() => {
+    writeSessionValue(TASK_TIME_RANGE_KEY, timeRange)
+  }, [timeRange])
 
   useEffect(() => {
     return subscribeRuntimeActivity((next) => {
