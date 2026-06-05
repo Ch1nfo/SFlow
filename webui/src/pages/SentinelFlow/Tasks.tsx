@@ -14,6 +14,7 @@ import {
 import JsonPreview from '@/components/sentinelflow/JsonPreview'
 import MarkdownContent from '@/components/sentinelflow/MarkdownContent'
 import Surface from '@/components/sentinelflow/Surface'
+import AlertTimeRangeFilter, { alertTimeRangeToQuery, createAlertTimeRangeValue, type AlertTimeRangeValue } from '@/components/sentinelflow/AlertTimeRangeFilter'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import PageHeader from '@/components/common/PageHeader'
 import { withProductName } from '@/config/brand'
@@ -820,6 +821,8 @@ function ProcessTrace({ trace, traceOwnerId }: { trace: ExecutionTraceItem[]; tr
 }
 
 export default function SentinelFlowTasksPage() {
+  const [timeRange, setTimeRange] = useState<AlertTimeRangeValue>(() => createAlertTimeRangeValue('week'))
+  const rangeQuery = useMemo(() => alertTimeRangeToQuery(timeRange), [timeRange])
   const {
     data: poll,
     loading,
@@ -828,7 +831,11 @@ export default function SentinelFlowTasksPage() {
     hasMore,
     reload: reloadPoll,
     loadMore,
-  } = useSentinelFlowPollStore('all', { pageSize: TASK_LIST_PAGE_SIZE })
+  } = useSentinelFlowPollStore('all', {
+    since: rangeQuery.since,
+    until: rangeQuery.until,
+    pageSize: TASK_LIST_PAGE_SIZE,
+  })
   const { data: settings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => {
     const current = readRuntimeActivity()
@@ -1205,6 +1212,36 @@ export default function SentinelFlowTasksPage() {
       </Surface>
 
       <Surface title="任务工作面" subtitle="左侧选择任务，右侧查看详情与完整处置全流程。">
+        <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            className={timeRange.mode === 'today' ? 'sentinelflow-primary-button' : 'sentinelflow-ghost-button'}
+            onClick={() => {
+              setTimeRange(createAlertTimeRangeValue('today'))
+              setSelectedTaskId(null)
+            }}
+          >
+            今日告警
+          </button>
+          <button
+            type="button"
+            className={timeRange.mode === 'week' ? 'sentinelflow-primary-button' : 'sentinelflow-ghost-button'}
+            onClick={() => {
+              setTimeRange(createAlertTimeRangeValue('week'))
+              setSelectedTaskId(null)
+            }}
+          >
+            本周告警
+          </button>
+          <AlertTimeRangeFilter
+            value={timeRange}
+            align="right"
+            onChange={(next) => {
+              setTimeRange(next)
+              setSelectedTaskId(null)
+            }}
+          />
+        </div>
         {loading ? <p className="sentinelflow-muted-text">正在读取任务分发结果...</p> : null}
         {error ? <div className="sentinelflow-message-block sentinelflow-message-error">{error}</div> : null}
         {!loading && !error ? (
