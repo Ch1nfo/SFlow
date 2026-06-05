@@ -401,6 +401,27 @@ COALESCE(
 """
 
 DISPOSITION_BUCKETS = ("business_trigger", "false_positive", "true_attack", "unknown")
+SQL_ALERT_TIME_EPOCH_EXPR = """
+CAST(strftime(
+    '%s',
+    CASE
+        WHEN COALESCE(NULLIF(alert_time, ''), '') = '' THEN NULL
+        WHEN substr(replace(alert_time, ' ', 'T'), -1) = 'Z'
+          OR substr(replace(alert_time, ' ', 'T'), -6, 1) IN ('+', '-')
+          THEN replace(replace(alert_time, ' ', 'T'), 'Z', '+00:00')
+        ELSE replace(alert_time, ' ', 'T') || ?
+    END
+) AS INTEGER)
+"""
+SQL_BOUND_TIME_EPOCH_EXPR = "CAST(strftime('%s', replace(replace(?, ' ', 'T'), 'Z', '+00:00')) AS INTEGER)"
+
+
+def _datetime_offset_suffix(value: str) -> str:
+    text = str(value or "").strip()
+    if text.endswith("Z"):
+        return "+00:00"
+    match = re.search(r"([+-]\d{2}:\d{2})$", text)
+    return match.group(1) if match else "+00:00"
 
 
 def _bucket_disposition(value: str) -> str:
@@ -1328,6 +1349,7 @@ class AlertDispatchService:
         normalized_offset = max(0, int(offset or 0))
         since_value = str(since or "").strip()
         until_value = str(until or "").strip()
+        time_offset = _datetime_offset_suffix(since_value or until_value)
         cursor_time = str(cursor_sort_time or "").strip()
         cursor_id = str(cursor_task_id or "").strip()
         use_cursor = bool(cursor_time)
@@ -1340,11 +1362,15 @@ class AlertDispatchService:
         if since_value:
             # Reuse the same alert_time window semantics as period_aggregates so the
             # list and the period summary agree; tasks without alert_time still show.
-            filter_clauses.append("(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time >= ?)")
-            filter_params.append(since_value)
+            filter_clauses.append(
+                f"(COALESCE(NULLIF(alert_time, ''), '') = '' OR {SQL_ALERT_TIME_EPOCH_EXPR} >= {SQL_BOUND_TIME_EPOCH_EXPR})"
+            )
+            filter_params.extend([time_offset, since_value])
         if until_value:
-            filter_clauses.append("(COALESCE(NULLIF(alert_time, ''), '') != '' AND alert_time <= ?)")
-            filter_params.append(until_value)
+            filter_clauses.append(
+                f"(COALESCE(NULLIF(alert_time, ''), '') != '' AND {SQL_ALERT_TIME_EPOCH_EXPR} <= {SQL_BOUND_TIME_EPOCH_EXPR})"
+            )
+            filter_params.extend([time_offset, until_value])
 
         count_sql = "SELECT COUNT(*) FROM alert_tasks"
         if filter_clauses:

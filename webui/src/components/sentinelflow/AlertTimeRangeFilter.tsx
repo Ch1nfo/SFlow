@@ -34,6 +34,19 @@ function toNearestTime(value: Date): string {
   return `${padDatePart(value.getHours())}:${padDatePart(minutes)}`
 }
 
+function getTimezoneOffsetSuffix(value: Date): string {
+  const offsetMinutes = -value.getTimezoneOffset()
+  const sign = offsetMinutes >= 0 ? '+' : '-'
+  const absolute = Math.abs(offsetMinutes)
+  const hours = Math.floor(absolute / 60)
+  const minutes = absolute % 60
+  return `${sign}${padDatePart(hours)}:${padDatePart(minutes)}`
+}
+
+function toLocalIsoWithOffset(value: Date): string {
+  return `${toLocalDate(value)}T${padDatePart(value.getHours())}:${padDatePart(value.getMinutes())}:${padDatePart(value.getSeconds())}${getTimezoneOffsetSuffix(value)}`
+}
+
 function getStartOfDay(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate())
 }
@@ -51,7 +64,7 @@ function toIsoFromLocalParts(date: string, time: string): string {
   const normalizedTime = String(time ?? '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate) || !/^\d{2}:\d{2}$/.test(normalizedTime)) return ''
   const parsed = new Date(`${normalizedDate}T${normalizedTime}:00`)
-  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
+  return Number.isNaN(parsed.getTime()) ? '' : toLocalIsoWithOffset(parsed)
 }
 
 function formatShortDate(value: string): string {
@@ -73,10 +86,10 @@ export function createAlertTimeRangeValue(mode: AlertTimeRangeMode = 'today', no
 
 export function alertTimeRangeToQuery(value: AlertTimeRangeValue, now = new Date()): { since: string; until: string } {
   if (value.mode === 'today') {
-    return { since: getStartOfDay(now).toISOString(), until: '' }
+    return { since: toLocalIsoWithOffset(getStartOfDay(now)), until: '' }
   }
   if (value.mode === 'week') {
-    return { since: getStartOfWeek(now).toISOString(), until: '' }
+    return { since: toLocalIsoWithOffset(getStartOfWeek(now)), until: '' }
   }
   return {
     since: toIsoFromLocalParts(value.startDate, value.startTime),
