@@ -390,6 +390,7 @@ def _state_tasks_payload(
     limit: int,
     offset: int,
     since: str | None = None,
+    until: str | None = None,
     cursor_sort_time: str | None = None,
     cursor_task_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], int, dict[str, str] | None]:
@@ -399,11 +400,12 @@ def _state_tasks_payload(
         limit=limit,
         offset=offset,
         since=since,
+        until=until,
         cursor_sort_time=cursor_sort_time,
         cursor_task_id=cursor_task_id,
     )
     logger.info(
-        "alerts_state_tasks duration_ms=%s row_count=%s total=%s source_id=%s limit=%s offset=%s since=%s cursor=%s",
+        "alerts_state_tasks duration_ms=%s row_count=%s total=%s source_id=%s limit=%s offset=%s since=%s until=%s cursor=%s",
         round((time.monotonic() - started) * 1000, 2),
         len(tasks),
         total,
@@ -411,6 +413,7 @@ def _state_tasks_payload(
         limit,
         offset,
         since or "",
+        until or "",
         cursor_sort_time or "",
     )
     return tasks, total, next_cursor
@@ -425,6 +428,7 @@ def _all_alerts_state(
     limit: int = 120,
     offset: int = 0,
     since: str | None = None,
+    until: str | None = None,
     cursor_sort_time: str | None = None,
     cursor_task_id: str | None = None,
 ) -> dict[str, Any]:
@@ -434,6 +438,7 @@ def _all_alerts_state(
         limit=limit,
         offset=offset,
         since=since,
+        until=until,
         cursor_sort_time=cursor_sort_time,
         cursor_task_id=cursor_task_id,
     )
@@ -457,6 +462,7 @@ def _all_alerts_state(
         "tasks_limit": limit,
         "tasks_offset": offset,
         "tasks_since": since or "",
+        "tasks_until": until or "",
         "tasks_cursor": next_cursor,
         "errors": [error for result in latest_results for error in result.errors],
     }
@@ -748,6 +754,7 @@ def alerts_state(
     limit: int = Query(120, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     since: str | None = None,
+    until: str | None = None,
     cursorSortTime: str | None = None,
     cursorTaskId: str | None = None,
 ) -> dict[str, Any]:
@@ -758,6 +765,7 @@ def alerts_state(
             limit=limit,
             offset=offset,
             since=since,
+            until=until,
             cursor_sort_time=cursorSortTime,
             cursor_task_id=cursorTaskId,
         )
@@ -769,6 +777,7 @@ def alerts_state(
             limit=limit,
             offset=offset,
             since=since,
+            until=until,
             cursor_sort_time=cursorSortTime,
             cursor_task_id=cursorTaskId,
         )
@@ -779,6 +788,7 @@ def alerts_state(
         payload["tasks_limit"] = limit
         payload["tasks_offset"] = offset
         payload["tasks_since"] = since or ""
+        payload["tasks_until"] = until or ""
         payload["tasks_cursor"] = next_cursor
         payload["queued_count"] = status_counts.get("queued", 0)
         payload["completed_count"] = status_counts.get("completed", 0)
@@ -788,12 +798,13 @@ def alerts_state(
         payload["source_id"] = source_id
         payload["alert_sources"] = _alert_sources_payload()
     logger.info(
-        "alerts_state duration_ms=%s source_id=%s limit=%s offset=%s since=%s tasks=%s",
+        "alerts_state duration_ms=%s source_id=%s limit=%s offset=%s since=%s until=%s tasks=%s",
         round((time.monotonic() - started) * 1000, 2),
         source_id,
         limit,
         offset,
         since or "",
+        until or "",
         len(payload.get("tasks") or []),
     )
     return payload

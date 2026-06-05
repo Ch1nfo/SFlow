@@ -28,6 +28,7 @@ type PollStoreSnapshot = {
 type PollStoreEntry = {
   sourceId: string
   since: string
+  until: string
   pageSize: number
   tasks: AlertTask[]
   meta: PollMeta | null
@@ -51,18 +52,19 @@ function normalizeSourceId(sourceId?: string | null): string {
   return sourceId?.trim() || 'default'
 }
 
-function entryKey(sourceId: string, since: string, pageSize: number): string {
-  return `${sourceId}::${since}::${pageSize}`
+function entryKey(sourceId: string, since: string, until: string, pageSize: number): string {
+  return `${sourceId}::${since}::${until}::${pageSize}`
 }
 
-function getEntry(sourceId?: string | null, since = '', pageSize = DEFAULT_PAGE_SIZE): PollStoreEntry {
+function getEntry(sourceId?: string | null, since = '', until = '', pageSize = DEFAULT_PAGE_SIZE): PollStoreEntry {
   const normalizedSource = normalizeSourceId(sourceId)
-  const key = entryKey(normalizedSource, since, pageSize)
+  const key = entryKey(normalizedSource, since, until, pageSize)
   const existing = entries.get(key)
   if (existing) return existing
   const created: PollStoreEntry = {
     sourceId: normalizedSource,
     since,
+    until,
     pageSize,
     tasks: [],
     meta: null,
@@ -161,7 +163,7 @@ function applyAlias(entry: PollStoreEntry, response: PollAlertsResponse) {
   if (entry.sourceId !== 'default') return
   const resolved = response.source_id?.trim()
   if (!resolved || resolved === entry.sourceId) return
-  const alias = getEntry(resolved, entry.since, entry.pageSize)
+  const alias = getEntry(resolved, entry.since, entry.until, entry.pageSize)
   alias.tasks = entry.tasks
   alias.meta = entry.meta
   alias.cursor = entry.cursor
@@ -183,6 +185,7 @@ function performFirstPageFetch(entry: PollStoreEntry, options: ReloadOptions = {
   entry.inFlight = fetchPollAlerts({
     sourceId: entry.sourceId === 'default' ? undefined : entry.sourceId,
     since: entry.since || undefined,
+    until: entry.until || undefined,
     limit: entry.pageSize,
   })
     .then((next) => {
@@ -265,6 +268,7 @@ function performLoadMore(entry: PollStoreEntry): Promise<PollReloadResult> {
   entry.loadMoreInFlight = fetchPollAlerts({
     sourceId: entry.sourceId === 'default' ? undefined : entry.sourceId,
     since: entry.since || undefined,
+    until: entry.until || undefined,
     limit: entry.pageSize,
     cursorSortTime: cursor.sort_time,
     cursorTaskId: cursor.task_id,
@@ -291,17 +295,18 @@ function performLoadMore(entry: PollStoreEntry): Promise<PollReloadResult> {
 
 export function useSentinelFlowPollStore(
   sourceId?: string | null,
-  options?: { autoLoad?: boolean; since?: string | null; pageSize?: number },
+  options?: { autoLoad?: boolean; since?: string | null; until?: string | null; pageSize?: number },
 ) {
   const since = options?.since?.trim() || ''
+  const until = options?.until?.trim() || ''
   const pageSize = options?.pageSize ?? DEFAULT_PAGE_SIZE
   const normalizedSource = normalizeSourceId(sourceId)
-  const key = entryKey(normalizedSource, since, pageSize)
-  const [state, setState] = useState<PollStoreSnapshot>(() => snapshot(getEntry(sourceId, since, pageSize)))
+  const key = entryKey(normalizedSource, since, until, pageSize)
+  const [state, setState] = useState<PollStoreSnapshot>(() => snapshot(getEntry(sourceId, since, until, pageSize)))
   const autoLoad = options?.autoLoad ?? true
 
   useEffect(() => {
-    const entry = getEntry(sourceId, since, pageSize)
+    const entry = getEntry(sourceId, since, until, pageSize)
     const sync = () => setState(snapshot(entry))
     entry.subscribers.add(sync)
     sync()
@@ -315,18 +320,18 @@ export function useSentinelFlowPollStore(
   }, [autoLoad, key])
 
   const reload = useCallback(
-    (reloadOptions?: ReloadOptions) => loadPollState(getEntry(sourceId, since, pageSize), reloadOptions ?? {}),
+    (reloadOptions?: ReloadOptions) => loadPollState(getEntry(sourceId, since, until, pageSize), reloadOptions ?? {}),
     [key], // eslint-disable-line react-hooks/exhaustive-deps
   )
 
   const loadMore = useCallback(
-    () => performLoadMore(getEntry(sourceId, since, pageSize)),
+    () => performLoadMore(getEntry(sourceId, since, until, pageSize)),
     [key], // eslint-disable-line react-hooks/exhaustive-deps
   )
 
   const setData = useCallback(
     (next: PollAlertsResponse | null) => {
-      const entry = getEntry(sourceId, since, pageSize)
+      const entry = getEntry(sourceId, since, until, pageSize)
       if (!next) {
         entry.tasks = []
         entry.meta = null

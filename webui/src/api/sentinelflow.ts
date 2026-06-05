@@ -136,6 +136,7 @@ export type PollAlertsResponse = {
   tasks_limit?: number
   tasks_offset?: number
   tasks_since?: string
+  tasks_until?: string
   tasks_cursor?: TaskCursor | null
   errors: string[]
 }
@@ -555,6 +556,7 @@ export async function fetchAlertPeriodSummary(since: string, sourceId = 'all'): 
 export type PollAlertsParams = {
   sourceId?: string
   since?: string
+  until?: string
   limit?: number
   cursorSortTime?: string
   cursorTaskId?: string
@@ -565,6 +567,7 @@ export async function fetchPollAlerts(params?: string | PollAlertsParams): Promi
   const search = new URLSearchParams()
   if (normalized.sourceId) search.set('sourceId', normalized.sourceId)
   if (normalized.since) search.set('since', normalized.since)
+  if (normalized.until) search.set('until', normalized.until)
   if (typeof normalized.limit === 'number') search.set('limit', String(normalized.limit))
   if (normalized.cursorSortTime) search.set('cursorSortTime', normalized.cursorSortTime)
   if (normalized.cursorTaskId) search.set('cursorTaskId', normalized.cursorTaskId)

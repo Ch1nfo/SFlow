@@ -536,6 +536,7 @@ class AlertDispatchService:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_status ON alert_tasks(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_event_status ON alert_tasks(event_ids, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_updated_at ON alert_tasks(updated_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_alert_time ON alert_tasks(alert_time)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_running_step ON alert_tasks(status, running_step_started_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_sort_time ON alert_tasks(sort_time DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_alert_tasks_source_sort ON alert_tasks(source_id, sort_time DESC)")
@@ -1309,6 +1310,7 @@ class AlertDispatchService:
         limit: int = DEFAULT_LIST_TASK_LIMIT,
         offset: int = 0,
         since: str | None = None,
+        until: str | None = None,
         cursor_sort_time: str | None = None,
         cursor_task_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], int, dict[str, str] | None]:
@@ -1325,6 +1327,7 @@ class AlertDispatchService:
         normalized_limit = max(1, min(int(limit or DEFAULT_LIST_TASK_LIMIT), 1000))
         normalized_offset = max(0, int(offset or 0))
         since_value = str(since or "").strip()
+        until_value = str(until or "").strip()
         cursor_time = str(cursor_sort_time or "").strip()
         cursor_id = str(cursor_task_id or "").strip()
         use_cursor = bool(cursor_time)
@@ -1339,6 +1342,9 @@ class AlertDispatchService:
             # list and the period summary agree; tasks without alert_time still show.
             filter_clauses.append("(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time >= ?)")
             filter_params.append(since_value)
+        if until_value:
+            filter_clauses.append("(COALESCE(NULLIF(alert_time, ''), '') != '' AND alert_time <= ?)")
+            filter_params.append(until_value)
 
         count_sql = "SELECT COUNT(*) FROM alert_tasks"
         if filter_clauses:

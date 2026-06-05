@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, RefreshCw, Siren } from 'lucide-react'
+import { CalendarClock, ChevronDown, ChevronRight, RefreshCw, Siren } from 'lucide-react'
 import {
   decideApproval,
   fetchAlertPeriodSummary,
@@ -22,7 +22,7 @@ import { resolveSelectedTaskDisplay } from '@/utils/sentinelflowTaskDetail'
 
 const ALERTS_SELECTED_SOURCE_STORAGE_KEY = 'sentinelflow.alerts.selectedSourceId'
 const ALERT_QUEUE_INITIAL_RENDER_COUNT = 60
-type AlertTimeRange = 'today' | 'week'
+type AlertTimeRange = 'today' | 'week' | 'custom'
 
 function WeekSummarySkeleton() {
   return (
@@ -261,6 +261,25 @@ function getStartOfDay(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate())
 }
 
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function toDatetimeLocalInput(value: Date): string {
+  return [
+    value.getFullYear(),
+    padDatePart(value.getMonth() + 1),
+    padDatePart(value.getDate()),
+  ].join('-') + `T${padDatePart(value.getHours())}:${padDatePart(value.getMinutes())}`
+}
+
+function datetimeLocalToIso(value: string): string {
+  const text = String(value ?? '').trim()
+  if (!text) return ''
+  const parsed = new Date(text)
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString()
+}
+
 function getStartOfWeek(value: Date): Date {
   const startOfDay = getStartOfDay(value)
   const day = startOfDay.getDay()
@@ -278,6 +297,7 @@ function getStartOfDayIso(value: Date): string {
 }
 
 function getAlertRangeSince(range: AlertTimeRange, value: Date): string {
+  if (range === 'custom') return ''
   return range === 'today' ? getStartOfDayIso(value) : getStartOfWeekIso(value)
 }
 
@@ -306,6 +326,8 @@ export default function SentinelFlowAlertsPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(() => readStoredSelectedSourceId())
   const [timeRange, setTimeRange] = useState<AlertTimeRange>('today')
+  const [customStartInput, setCustomStartInput] = useState(() => toDatetimeLocalInput(getStartOfDay(new Date())))
+  const [customEndInput, setCustomEndInput] = useState(() => toDatetimeLocalInput(new Date()))
   const [payloadExpanded, setPayloadExpanded] = useState(false)
   const [finalJudgmentExpanded, setFinalJudgmentExpanded] = useState(false)
   const [actionState, setActionState] = useState<{ action: string; running: boolean }>({ action: '', running: false })
@@ -321,7 +343,13 @@ export default function SentinelFlowAlertsPage() {
   const detailRequestSeq = useRef(0)
   const [queuePanelHeight, setQueuePanelHeight] = useState<number | null>(null)
   const [queueListMaxHeight, setQueueListMaxHeight] = useState<number | null>(null)
-  const rangeSince = useMemo(() => getAlertRangeSince(timeRange, new Date()), [timeRange])
+  const customSince = useMemo(() => datetimeLocalToIso(customStartInput), [customStartInput])
+  const customUntil = useMemo(() => datetimeLocalToIso(customEndInput), [customEndInput])
+  const rangeSince = useMemo(
+    () => timeRange === 'custom' ? customSince : getAlertRangeSince(timeRange, new Date()),
+    [customSince, timeRange],
+  )
+  const rangeUntil = timeRange === 'custom' ? customUntil : ''
   const {
     data,
     loading: pollLoading,
@@ -333,6 +361,7 @@ export default function SentinelFlowAlertsPage() {
   } = useSentinelFlowPollStore(selectedSourceId, {
     autoLoad: true,
     since: rangeSince,
+    until: rangeUntil,
     pageSize: ALERT_QUEUE_INITIAL_RENDER_COUNT,
   })
   const queueLoading = pollLoading && !data
@@ -418,6 +447,11 @@ export default function SentinelFlowAlertsPage() {
 
   const visibleTasks = tasks
   const totalTaskCount = data?.tasks_total ?? tasks.length
+  const queueEmptyText = timeRange === 'today'
+    ? '今日暂无告警任务。'
+    : timeRange === 'week'
+      ? '本周暂无告警任务。'
+      : '所选时间内暂无告警任务。'
   const alertSources = data?.alert_sources ?? []
   const selectedSource = alertSources.find((source) => source.id === (selectedSourceId ?? data?.source_id)) ?? alertSources[0] ?? null
 
@@ -678,7 +712,7 @@ export default function SentinelFlowAlertsPage() {
           </div>
         </div>
 
-        <div className="mb-4 grid gap-4 xl:grid-cols-2 xl:items-start">
+        <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
@@ -700,6 +734,50 @@ export default function SentinelFlowAlertsPage() {
             >
               本周告警
             </button>
+            <div className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2 ${timeRange === 'custom' ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white'}`}>
+              <CalendarClock className={`h-4 w-4 ${timeRange === 'custom' ? 'text-blue-700' : 'text-slate-500'}`} />
+              <input
+                type="datetime-local"
+                className="sentinelflow-settings-input w-[190px]"
+                value={customStartInput}
+                onFocus={() => {
+                  setTimeRange('custom')
+                  setSelectedTaskId(null)
+                }}
+                onInput={(event) => {
+                  setCustomStartInput(event.currentTarget.value)
+                  setTimeRange('custom')
+                  setSelectedTaskId(null)
+                }}
+                onChange={(event) => {
+                  setCustomStartInput(event.target.value)
+                  setTimeRange('custom')
+                  setSelectedTaskId(null)
+                }}
+                aria-label="筛选开始时间"
+              />
+              <span className="text-xs text-slate-500">至</span>
+              <input
+                type="datetime-local"
+                className="sentinelflow-settings-input w-[190px]"
+                value={customEndInput}
+                onFocus={() => {
+                  setTimeRange('custom')
+                  setSelectedTaskId(null)
+                }}
+                onInput={(event) => {
+                  setCustomEndInput(event.currentTarget.value)
+                  setTimeRange('custom')
+                  setSelectedTaskId(null)
+                }}
+                onChange={(event) => {
+                  setCustomEndInput(event.target.value)
+                  setTimeRange('custom')
+                  setSelectedTaskId(null)
+                }}
+                aria-label="筛选结束时间"
+              />
+            </div>
           </div>
           <div className="sentinelflow-action-bar xl:justify-start">
             <button type="button" className="sentinelflow-ghost-button" onClick={() => void runAction('refresh_poll')} disabled={actionState.running}>重新轮询</button>
@@ -739,7 +817,7 @@ export default function SentinelFlowAlertsPage() {
                 <tbody>
                   {queueLoading ? <tr><td colSpan={4}>正在加载...</td></tr> : null}
                   {error && !data ? <tr><td colSpan={4}>加载失败：{error}</td></tr> : null}
-                  {!queueLoading && !error && tasks.length === 0 ? <tr><td colSpan={4}>{timeRange === 'today' ? '今日暂无告警任务。' : '本周暂无告警任务。'}</td></tr> : null}
+                  {!queueLoading && !error && tasks.length === 0 ? <tr><td colSpan={4}>{queueEmptyText}</td></tr> : null}
                   {!queueLoading && (!error || data) ? visibleTasks.map((task) => (
                     <tr
                       key={task.task_id}
