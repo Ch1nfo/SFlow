@@ -24,6 +24,7 @@ active_command_cancellations: dict[str, threading.Event] = {}
 active_command_lock = threading.Lock()
 active_full_report_tasks: dict[str, asyncio.Task] = {}
 active_full_report_lock = threading.Lock()
+FULL_REPORT_INPUT_CHAR_BUDGET = 80_000
 
 
 def _alert_sources_payload() -> list[dict[str, Any]]:
@@ -134,6 +135,102 @@ def _fallback_report_context(task) -> dict[str, Any]:
     }
 
 
+def _compact_full_report_value(
+    value: Any,
+    *,
+    max_string_chars: int,
+    max_list_items: int,
+    max_depth: int,
+    stats: dict[str, int],
+    depth: int = 0,
+) -> Any:
+    if depth >= max_depth:
+        stats["depth_truncated"] = stats.get("depth_truncated", 0) + 1
+        if isinstance(value, dict):
+            return {"_truncated": "max_depth", "keys": list(value.keys())[:20]}
+        if isinstance(value, list):
+            return {"_truncated": "max_depth", "items": len(value)}
+        text = str(value)
+        return text[:max_string_chars]
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for key, item in value.items():
+            compact[str(key)] = _compact_full_report_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_list_items=max_list_items,
+                max_depth=max_depth,
+                stats=stats,
+                depth=depth + 1,
+            )
+        return compact
+    if isinstance(value, list):
+        compact_items = [
+            _compact_full_report_value(
+                item,
+                max_string_chars=max_string_chars,
+                max_list_items=max_list_items,
+                max_depth=max_depth,
+                stats=stats,
+                depth=depth + 1,
+            )
+            for item in value[:max_list_items]
+        ]
+        if len(value) > max_list_items:
+            stats["list_items_omitted"] = stats.get("list_items_omitted", 0) + len(value) - max_list_items
+            compact_items.append({"_truncated": "list_items", "omitted": len(value) - max_list_items})
+        return compact_items
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) > max_string_chars:
+            stats["strings_truncated"] = stats.get("strings_truncated", 0) + 1
+            stats["string_chars_omitted"] = stats.get("string_chars_omitted", 0) + len(text) - max_string_chars
+            return f"{text[:max_string_chars].rstrip()}...(truncated, total_chars={len(text)})"
+        return text
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    text = str(value)
+    if len(text) > max_string_chars:
+        stats["strings_truncated"] = stats.get("strings_truncated", 0) + 1
+        return f"{text[:max_string_chars].rstrip()}...(truncated, total_chars={len(text)})"
+    return text
+
+
+def _build_full_report_input(skill_name: str, format_markdown: str, context: dict[str, Any], run_log_context: dict[str, Any]) -> dict[str, Any]:
+    profiles = [
+        {"max_string_chars": 4000, "max_list_items": 30, "max_depth": 8},
+        {"max_string_chars": 1200, "max_list_items": 12, "max_depth": 6},
+        {"max_string_chars": 500, "max_list_items": 6, "max_depth": 5},
+    ]
+    last_input: dict[str, Any] | None = None
+    for profile_index, profile in enumerate(profiles, start=1):
+        stats: dict[str, int] = {}
+        compact_context = _compact_full_report_value(context, stats=stats, **profile)
+        compact_run_log = _compact_full_report_value(run_log_context, stats=stats, **profile)
+        report_input = {
+            "format_skill": skill_name,
+            "format_markdown": format_markdown[:8000],
+            "report_context_snapshot": compact_context,
+            "run_log_supplement": compact_run_log,
+            "input_compaction": {
+                "applied": any(value > 0 for value in stats.values()),
+                "profile": profile_index,
+                "char_budget": FULL_REPORT_INPUT_CHAR_BUDGET,
+                **stats,
+            },
+        }
+        last_input = report_input
+        serialized = json.dumps(report_input, ensure_ascii=False, default=str)
+        if len(serialized) <= FULL_REPORT_INPUT_CHAR_BUDGET:
+            return report_input
+    assert last_input is not None
+    last_input["input_compaction"] = {
+        **(last_input.get("input_compaction", {}) if isinstance(last_input.get("input_compaction"), dict) else {}),
+        "forced_final_profile": True,
+    }
+    return last_input
+
+
 async def _generate_full_report_markdown(task) -> dict[str, Any]:
     config = load_runtime_config()
     skill_name = str(getattr(config, "full_report_format_skill", "") or "output-report").strip() or "output-report"
@@ -150,12 +247,7 @@ async def _generate_full_report_markdown(task) -> dict[str, Any]:
     if not isinstance(context, dict) or not context:
         context = _fallback_report_context(task)
     run_log_context = _compact_report_run_log(task)
-    report_input = {
-        "format_skill": skill_name,
-        "format_markdown": format_markdown[:8000],
-        "report_context_snapshot": context,
-        "run_log_supplement": run_log_context,
-    }
+    report_input = _build_full_report_input(skill_name, format_markdown, context, run_log_context)
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
         from langchain_openai import ChatOpenAI
