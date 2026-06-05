@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef, type ChangeEvent } from 'react'
-import { Bug, CalendarDays, RotateCcw, Save, Settings as SettingsIcon, X } from 'lucide-react'
+import { Bug, CalendarDays, ChevronLeft, ChevronRight, RotateCcw, Save, Settings as SettingsIcon, X } from 'lucide-react'
 import {
   fetchHealth,
   fetchRunLogAlerts,
@@ -272,6 +272,118 @@ function isRunLogDateInRange(date: string, startDate: string, endDate: string): 
   if (normalizedStart && normalizedDate < normalizedStart) return false
   if (normalizedEnd && normalizedDate > normalizedEnd) return false
   return true
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function formatRunLogDate(value: Date): string {
+  return `${value.getFullYear()}-${padDatePart(value.getMonth() + 1)}-${padDatePart(value.getDate())}`
+}
+
+function parseRunLogDate(value: string): Date | null {
+  const text = String(value ?? '').trim()
+  if (!isRunLogDateText(text)) return null
+  const [year, month, day] = text.split('-').map((part) => Number.parseInt(part, 10))
+  if (!year || !month || !day) return null
+  const parsed = new Date(year, month - 1, day)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function addRunLogMonths(value: Date, delta: number): Date {
+  return new Date(value.getFullYear(), value.getMonth() + delta, 1)
+}
+
+function runLogCalendarDates(month: Date): Array<string | null> {
+  const firstDay = new Date(month.getFullYear(), month.getMonth(), 1)
+  const daysInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate()
+  const cells: Array<string | null> = Array.from({ length: firstDay.getDay() }, () => null)
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    cells.push(formatRunLogDate(new Date(month.getFullYear(), month.getMonth(), day)))
+  }
+  while (cells.length % 7 !== 0) cells.push(null)
+  return cells
+}
+
+function RunLogDateCalendar({
+  label,
+  value,
+  onChange,
+  availableDates,
+}: {
+  label: string
+  value: string
+  onChange: (next: string) => void
+  availableDates: Set<string>
+}) {
+  const selectedDate = parseRunLogDate(value)
+  const [visibleMonth, setVisibleMonth] = useState(() => selectedDate ?? new Date())
+  const monthStart = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), 1)
+  const cells = runLogCalendarDates(monthStart)
+
+  useEffect(() => {
+    if (selectedDate) {
+      setVisibleMonth(new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1))
+    }
+  }, [selectedDate?.getFullYear(), selectedDate?.getMonth()])
+
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div>
+          <div className="text-xs font-semibold text-slate-400">{label}</div>
+          <div className="mt-0.5 text-sm font-semibold text-slate-100">{value || '未选择'}</div>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            className="rounded-lg border border-slate-700 p-1.5 text-slate-300 hover:bg-slate-800"
+            onClick={() => setVisibleMonth((current) => addRunLogMonths(current, -1))}
+            aria-label={`${label} 上一月`}
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-slate-700 p-1.5 text-slate-300 hover:bg-slate-800"
+            onClick={() => setVisibleMonth((current) => addRunLogMonths(current, 1))}
+            aria-label={`${label} 下一月`}
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+      <div className="mb-2 text-center text-sm font-semibold text-slate-200">
+        {monthStart.getFullYear()} 年 {monthStart.getMonth() + 1} 月
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-semibold text-slate-500">
+        {['日', '一', '二', '三', '四', '五', '六'].map((day) => <div key={day}>{day}</div>)}
+      </div>
+      <div className="mt-1 grid grid-cols-7 gap-1">
+        {cells.map((date, index) => {
+          const selected = Boolean(date && date === value)
+          const hasLog = Boolean(date && availableDates.has(date))
+          return date ? (
+            <button
+              key={date}
+              type="button"
+              className={[
+                'relative rounded-lg px-0 py-2 text-sm transition-colors',
+                selected ? 'bg-slate-100 font-semibold text-slate-950' : 'text-slate-300 hover:bg-slate-800',
+              ].join(' ')}
+              onClick={() => onChange(date)}
+            >
+              {date.slice(-2)}
+              {hasLog ? <span className={`absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full ${selected ? 'bg-slate-700' : 'bg-emerald-400'}`} /> : null}
+            </button>
+          ) : (
+            <div key={`blank-${index}`} />
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 function buildDraft(settings: RuntimeSettingsResponse): SettingsDraft {
@@ -600,6 +712,10 @@ export default function SentinelFlowSettingsPage() {
       ? debugLogDates.filter((item) => isRunLogDateInRange(item.date, runLogDateFilterStart, runLogDateFilterEnd))
       : debugLogDates,
     [debugLogDates, runLogDateFilterEnabled, runLogDateFilterEnd, runLogDateFilterStart],
+  )
+  const availableRunLogDates = useMemo(
+    () => new Set(debugLogDates.map((item) => item.date)),
+    [debugLogDates],
   )
 
   const jumpToRunLogPrompt = useCallback((ref: Record<string, unknown>) => {
@@ -1483,27 +1599,21 @@ export default function SentinelFlowSettingsPage() {
                     {runLogDateFilterEnabled ? <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-300">已启用</span> : null}
                   </button>
                   {runLogDateFilterOpen ? (
-                    <div className="absolute left-0 z-20 mt-2 w-[min(88vw,360px)] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-xl">
+                    <div className="absolute left-0 z-20 mt-2 w-[min(88vw,560px)] rounded-xl border border-slate-700 bg-slate-950 p-4 shadow-xl">
                       <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">按日期筛选</div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        <label className="block text-xs font-semibold text-slate-400">
-                          开始日期
-                          <input
-                            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
-                            placeholder="YYYY-MM-DD"
-                            value={runLogDateFilterStart}
-                            onChange={(event) => setRunLogDateFilterStart(event.target.value)}
-                          />
-                        </label>
-                        <label className="block text-xs font-semibold text-slate-400">
-                          结束日期
-                          <input
-                            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
-                            placeholder="YYYY-MM-DD"
-                            value={runLogDateFilterEnd}
-                            onChange={(event) => setRunLogDateFilterEnd(event.target.value)}
-                          />
-                        </label>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <RunLogDateCalendar
+                          label="开始日期"
+                          value={runLogDateFilterStart}
+                          onChange={setRunLogDateFilterStart}
+                          availableDates={availableRunLogDates}
+                        />
+                        <RunLogDateCalendar
+                          label="结束日期"
+                          value={runLogDateFilterEnd}
+                          onChange={setRunLogDateFilterEnd}
+                          availableDates={availableRunLogDates}
+                        />
                       </div>
                       <div className="mt-3 flex justify-end gap-2">
                         <button type="button" className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" onClick={clearRunLogDateFilter}>
