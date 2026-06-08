@@ -527,6 +527,8 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                 except Exception:
                     has_tool_error = True
                     break
+                if self._is_resolved_approval_pending_tool_payload(parsed):
+                    continue
                 if isinstance(parsed, dict) and (not parsed.get("success", True) or parsed.get("error")):
                     has_tool_error = True
                     break
@@ -537,6 +539,28 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         if has_tool_error:
             return False, "子 Agent 执行过程中存在失败的工具调用。"
         return True, None
+
+    def _is_resolved_approval_pending_tool_payload(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("approval_pending") is not True:
+            return False
+        error = str(payload.get("error", "") or "").strip()
+        return "需要审批" in error or "审批" in error
+
+    def _approval_payload_has_successful_completion(self, payload: dict[str, Any]) -> bool:
+        if bool(payload.get("success")):
+            return True
+        final_facts = payload.get("final_facts", {})
+        if isinstance(final_facts, dict):
+            task_outcome = final_facts.get("task_outcome", {})
+            if isinstance(task_outcome, dict) and task_outcome.get("success") is True:
+                return True
+        for key in ("effective_closure_step", "closure_step"):
+            closure_step = payload.get(key, {})
+            if isinstance(closure_step, dict) and closure_step.get("attempted") is True and closure_step.get("success") is True:
+                return True
+        return False
 
     def _normalize_graph_state_keys(self, state: dict[str, Any]) -> dict[str, Any]:
         if "graph_checkpoint_ns" not in state and "checkpoint_ns" in state:
@@ -942,6 +966,7 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         payload = dict(result) if isinstance(result, dict) else {}
         resolved_approval = self.approval_service.serialize_approval(approval_record)
         approval_pending = bool(payload.get("approval_pending"))
+        successful_completion = self._approval_payload_has_successful_completion(payload)
         route = str(payload.get("route", "")).strip() or ("approval_required" if approval_pending else "approval_resolved")
         data = {
             **payload,
@@ -950,10 +975,10 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         if not approval_pending:
             data["approval"] = resolved_approval
         return {
-            "success": not approval_pending and bool(payload.get("success", True)),
+            "success": not approval_pending and (successful_completion or bool(payload.get("success", True))),
             "route": route,
             "data": data,
-            "error": None if approval_pending else payload.get("error"),
+            "error": None if approval_pending or successful_completion else payload.get("error"),
         }
 
     async def _resume_saved_checkpoint(self, checkpoint: dict[str, Any]) -> dict[str, Any]:
