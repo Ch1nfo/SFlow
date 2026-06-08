@@ -643,6 +643,8 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         return None, ""
 
     def _copy_tool_message_with_content(self, msg: Any, content: str) -> Any:
+        if isinstance(msg, dict):
+            return {**msg, "content": content}
         if hasattr(msg, "model_copy"):
             try:
                 return msg.model_copy(update={"content": content})
@@ -681,13 +683,17 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         replaced = False
         for index in range(len(messages) - 1, -1, -1):
             msg = messages[index]
-            if getattr(msg, "type", "") != "tool":
+            msg_type = str(msg.get("type", "") if isinstance(msg, dict) else getattr(msg, "type", "")).strip()
+            if msg_type != "tool":
                 continue
             if normalized_tool_call_id:
-                if str(getattr(msg, "tool_call_id", "")).strip() != normalized_tool_call_id:
+                current_tool_call_id = str(
+                    msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
+                ).strip()
+                if current_tool_call_id != normalized_tool_call_id:
                     continue
             else:
-                content = getattr(msg, "content", "")
+                content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
                 if isinstance(content, str):
                     try:
                         decoded = json.loads(content)
@@ -703,7 +709,8 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         if not replaced and not normalized_tool_call_id:
             for index in range(len(messages) - 1, -1, -1):
                 msg = messages[index]
-                if getattr(msg, "type", "") != "tool":
+                msg_type = str(msg.get("type", "") if isinstance(msg, dict) else getattr(msg, "type", "")).strip()
+                if msg_type != "tool":
                     continue
                 messages[index] = self._copy_tool_message_with_content(msg, serialized)
                 break
@@ -722,11 +729,15 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         messages = list(state.get("messages", []))
         for index in range(len(messages) - 1, -1, -1):
             msg = messages[index]
-            if getattr(msg, "type", "") != "tool":
+            msg_type = str(msg.get("type", "") if isinstance(msg, dict) else getattr(msg, "type", "")).strip()
+            if msg_type != "tool":
                 continue
-            if tool_call_id and str(getattr(msg, "tool_call_id", "")).strip() != tool_call_id:
+            current_tool_call_id = str(
+                msg.get("tool_call_id", "") if isinstance(msg, dict) else getattr(msg, "tool_call_id", "")
+            ).strip()
+            if tool_call_id and current_tool_call_id != tool_call_id:
                 continue
-            content = getattr(msg, "content", "")
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
             if not isinstance(content, str):
                 break
             try:
