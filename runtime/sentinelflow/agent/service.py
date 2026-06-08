@@ -1348,10 +1348,49 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         # Final supervisor response = last AI message with non-empty content
         from sentinelflow.agent.schemas import stringify_llm_content
 
+        def _msg_data(msg: Any) -> dict[str, Any]:
+            if isinstance(msg, dict):
+                data = msg.get("data", {})
+                return data if isinstance(data, dict) else {}
+            return {}
+
+        def _msg_type(msg: Any) -> str:
+            if isinstance(msg, dict):
+                data = _msg_data(msg)
+                return str(msg.get("type") or data.get("type") or "").strip()
+            return str(getattr(msg, "type", "")).strip()
+
+        def _msg_content(msg: Any) -> Any:
+            if isinstance(msg, dict):
+                data = _msg_data(msg)
+                return msg.get("content", data.get("content", ""))
+            return getattr(msg, "content", "")
+
+        def _msg_tool_calls(msg: Any) -> list[dict[str, Any]]:
+            candidates: Any = []
+            if isinstance(msg, dict):
+                data = _msg_data(msg)
+                candidates = msg.get("tool_calls", data.get("tool_calls", []))
+            else:
+                candidates = getattr(msg, "tool_calls", None) or []
+            return [item for item in candidates if isinstance(item, dict)] if isinstance(candidates, list) else []
+
+        def _msg_name(msg: Any) -> str:
+            if isinstance(msg, dict):
+                data = _msg_data(msg)
+                return str(msg.get("name") or data.get("name") or "").strip()
+            return str(getattr(msg, "name", "") or "").strip()
+
+        def _msg_tool_call_id(msg: Any) -> str:
+            if isinstance(msg, dict):
+                data = _msg_data(msg)
+                return str(msg.get("tool_call_id") or data.get("tool_call_id") or "").strip()
+            return str(getattr(msg, "tool_call_id", "") or "").strip()
+
         final_text = ""
         for msg in reversed(messages):
-            msg_type = getattr(msg, "type", "")
-            content = stringify_llm_content(getattr(msg, "content", ""))
+            msg_type = _msg_type(msg)
+            content = stringify_llm_content(_msg_content(msg))
             if msg_type == "ai" and content.strip():
                 final_text = _clean_model_text(content)
                 break
@@ -1360,13 +1399,9 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         worker_results: list[dict[str, Any]] = []
         workflow_runs: list[dict[str, Any]] = []
         for msg_index, msg in enumerate(messages):
-            try:
-                from langchain_core.messages import ToolMessage
-                if not isinstance(msg, ToolMessage):
-                    continue
-            except ModuleNotFoundError:
-                pass
-            content = getattr(msg, "content", "")
+            if _msg_type(msg) != "tool":
+                continue
+            content = _msg_content(msg)
             if not isinstance(content, str):
                 continue
             try:
@@ -1385,22 +1420,25 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         # Tool calls summary for upstream compatibility
         tool_calls: list[dict[str, Any]] = []
         for msg in messages:
-            for tc in (getattr(msg, "tool_calls", None) or []):
-                if isinstance(tc, dict):
-                    tool_calls.append(tc)
+            tool_calls.extend(_msg_tool_calls(msg))
 
         # Serialized message list
         serialized_messages: list[dict[str, Any]] = []
         for msg in messages:
-            msg_type = getattr(msg, "type", msg.__class__.__name__.lower())
-            content = getattr(msg, "content", "")
+            msg_type = _msg_type(msg) or msg.__class__.__name__.lower()
+            content = _msg_content(msg)
             if isinstance(content, str):
                 content = _clean_model_text(content)
             item: dict[str, Any] = {"type": msg_type, "content": content}
-            if getattr(msg, "tool_calls", None):
-                item["tool_calls"] = msg.tool_calls
-            if getattr(msg, "name", None):
-                item["name"] = msg.name
+            msg_tool_calls = _msg_tool_calls(msg)
+            if msg_tool_calls:
+                item["tool_calls"] = msg_tool_calls
+            msg_name = _msg_name(msg)
+            if msg_name:
+                item["name"] = msg_name
+            msg_tool_call_id = _msg_tool_call_id(msg)
+            if msg_tool_call_id:
+                item["tool_call_id"] = msg_tool_call_id
             serialized_messages.append(item)
 
         return {
