@@ -813,11 +813,12 @@ def alerts_state(
 @router.get("/alerts/summary/period")
 def alerts_period_summary(
     since: str = Query(..., min_length=1),
+    until: str | None = None,
     sourceId: str | None = None,
 ) -> dict[str, Any]:
     source_id = _resolve_source_id(sourceId)
     effective_source_id = None if source_id == "all" else source_id
-    return dispatch_service.period_aggregates(since=since, source_id=effective_source_id)
+    return dispatch_service.period_aggregates(since=since, until=until, source_id=effective_source_id)
 
 
 @router.get("/alerts/state/headlines")

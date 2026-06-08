@@ -441,9 +441,13 @@ def _parse_banned_ips_column(raw: Any) -> list[str]:
     return [str(item).strip() for item in values if str(item).strip()]
 
 
-def _period_filter_sql(*, since: str, source_id: str | None = None) -> tuple[str, list[Any]]:
+def _period_filter_sql(*, since: str, until: str | None = None, source_id: str | None = None) -> tuple[str, list[Any]]:
     clauses = ["(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time >= ?)"]
     params: list[Any] = [since]
+    until_value = str(until or "").strip()
+    if until_value:
+        clauses.append("(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time <= ?)")
+        params.append(until_value)
     if source_id:
         clauses.append("source_id = ?")
         params.append(source_id)
@@ -1531,13 +1535,15 @@ class AlertDispatchService:
         self,
         *,
         since: str,
+        until: str | None = None,
         source_id: str | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         since_value = str(since or "").strip()
         if not since_value:
             raise ValueError("since is required for period aggregates")
-        where_clause, params = _period_filter_sql(since=since_value, source_id=source_id)
+        until_value = str(until or "").strip()
+        where_clause, params = _period_filter_sql(since=since_value, until=until_value, source_id=source_id)
         disposition_buckets = {bucket: 0 for bucket in DISPOSITION_BUCKETS}
         with self.lock, sqlite_connection(DB_PATH) as conn:
             tasks_in_period = int(
@@ -1549,6 +1555,15 @@ class AlertDispatchService:
                 FROM alert_tasks
                 WHERE {where_clause}
                 GROUP BY disposition
+                """,
+                tuple(params),
+            ).fetchall()
+            status_rows = conn.execute(
+                f"""
+                SELECT status, COUNT(*) AS count
+                FROM alert_tasks
+                WHERE {where_clause}
+                GROUP BY status
                 """,
                 tuple(params),
             ).fetchall()
@@ -1588,6 +1603,7 @@ class AlertDispatchService:
 
         for row in disposition_rows:
             disposition_buckets[_bucket_disposition(str(row["disposition"]))] += int(row["count"])
+        status_counts = {str(row["status"]): int(row["count"]) for row in status_rows}
 
         _log_query_duration(
             "period_aggregates",
@@ -1595,11 +1611,14 @@ class AlertDispatchService:
             row_count=tasks_in_period,
             source_id=source_id or "all",
             since=since_value,
+            until=until_value,
         )
         return {
             "since": since_value,
+            "until": until_value,
             "source_id": source_id or "all",
             "tasks_in_period": tasks_in_period,
+            "status_counts": status_counts,
             "judgment": disposition_buckets,
             "operations": {
                 "closed_success": closed_success,

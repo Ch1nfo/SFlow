@@ -399,8 +399,10 @@ export type DashboardSummaryResponse = {
 
 export type AlertPeriodSummaryResponse = {
   since: string
+  until?: string
   source_id: string
   tasks_in_period: number
+  status_counts?: Record<string, number>
   judgment: {
     business_trigger: number
     false_positive: number
@@ -547,9 +549,10 @@ export async function fetchDashboardSummary(): Promise<DashboardSummaryResponse>
   return getJson('/api/sentinelflow/dashboard/summary')
 }
 
-export async function fetchAlertPeriodSummary(since: string, sourceId = 'all'): Promise<AlertPeriodSummaryResponse> {
+export async function fetchAlertPeriodSummary(since: string, sourceId = 'all', until?: string): Promise<AlertPeriodSummaryResponse> {
   const params = new URLSearchParams({ since })
   if (sourceId) params.set('sourceId', sourceId)
+  if (until) params.set('until', until)
   return getJson(`/api/sentinelflow/alerts/summary/period?${params.toString()}`)
 }
 

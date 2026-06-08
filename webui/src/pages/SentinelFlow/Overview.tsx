@@ -1,32 +1,54 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronRight, LayoutDashboard, ListTodo, MessageSquareText, Siren } from 'lucide-react'
-import { fetchDashboardSummary, fetchHealth } from '@/api/sentinelflow'
+import { fetchAlertPeriodSummary, fetchDashboardSummary, fetchHealth } from '@/api/sentinelflow'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
+import AlertTimeRangeFilter, { alertTimeRangeToQuery, createAlertTimeRangeValue, type AlertTimeRangeValue } from '@/components/sentinelflow/AlertTimeRangeFilter'
 import PageHeader from '@/components/common/PageHeader'
 import { brand, withProductName } from '@/config/brand'
 import { useSentinelFlowAsyncData } from '@/hooks/useSentinelFlowAsyncData'
 import { useSentinelFlowResourceStore } from '@/hooks/useSentinelFlowResourceStore'
 import { useSentinelFlowLiveRefresh } from '@/hooks/useSentinelFlowLiveRefresh'
 import { useSentinelFlowPollStore } from '@/hooks/useSentinelFlowPollStore'
+import { readSessionValue, writeSessionValue } from '@/utils/sentinelflowLocalState'
 import { getRuntimeActivityBadgeLabel, getRuntimeActivityStatus, readRuntimeActivity, subscribeRuntimeActivity, type RuntimeActivity } from '@/utils/sentinelflowRuntimeSync'
 import { getEffectiveTaskStatus } from '@/utils/sentinelflowTaskStatus'
 
+const OVERVIEW_TIME_RANGE_KEY = 'sentinelflow:overview:timeRange'
+
+function readStoredTimeRange(key: string, fallback: AlertTimeRangeValue): AlertTimeRangeValue {
+  return readSessionValue<AlertTimeRangeValue>(key, fallback)
+}
+
 export default function SentinelFlowOverviewPage() {
+  const [timeRange, setTimeRange] = useState<AlertTimeRangeValue>(() => (
+    readStoredTimeRange(OVERVIEW_TIME_RANGE_KEY, createAlertTimeRangeValue('week'))
+  ))
+  const rangeQuery = useMemo(() => alertTimeRangeToQuery(timeRange), [timeRange])
+  const rangeSince = rangeQuery.since
+  const rangeUntil = rangeQuery.until
+  const loadPeriodSummary = useCallback(() => (
+    fetchAlertPeriodSummary(rangeSince, 'all', rangeUntil)
+  ), [rangeSince, rangeUntil])
   const { data: health, reload: reloadHealth } = useSentinelFlowAsyncData(fetchHealth, [])
   // Dashboard counts span more than one page, so request a wide single page.
-  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all', { pageSize: 500 })
+  const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all', { pageSize: 500, since: rangeSince, until: rangeUntil })
   const { data: skills, reload: reloadSkills } = useSentinelFlowResourceStore('skills')
   const { data: summary, reload: reloadSummary } = useSentinelFlowAsyncData(fetchDashboardSummary, [])
+  const { data: periodSummary, reload: reloadPeriodSummary } = useSentinelFlowAsyncData(loadPeriodSummary, [loadPeriodSummary])
   const [activity, setActivity] = useState<RuntimeActivity | null>(() => readRuntimeActivity())
+
+  useEffect(() => {
+    writeSessionValue(OVERVIEW_TIME_RANGE_KEY, timeRange)
+  }, [timeRange])
 
   useEffect(() => {
     return subscribeRuntimeActivity((next) => {
       setActivity(next)
-      void Promise.all([reloadHealth(), reloadPoll({ force: true, silent: true }), reloadSkills(), reloadSummary()])
+      void Promise.all([reloadHealth(), reloadPoll({ force: true, silent: true }), reloadSkills(), reloadSummary(), reloadPeriodSummary()])
     })
-  }, [reloadHealth, reloadPoll, reloadSkills, reloadSummary])
+  }, [reloadHealth, reloadPoll, reloadSkills, reloadSummary, reloadPeriodSummary])
 
   useSentinelFlowLiveRefresh(() => {
     void reloadPoll({ silent: true })
@@ -34,6 +56,10 @@ export default function SentinelFlowOverviewPage() {
 
   useSentinelFlowLiveRefresh(() => {
     void reloadSummary()
+  }, { intervalMs: 30000 })
+
+  useSentinelFlowLiveRefresh(() => {
+    void reloadPeriodSummary({ silent: true })
   }, { intervalMs: 30000 })
 
   useSentinelFlowLiveRefresh(() => {
@@ -102,15 +128,32 @@ export default function SentinelFlowOverviewPage() {
       </div>
 
       <Surface title="平台总览" subtitle="优先展示值班最关心的运行态势、任务密度与能力可用性。">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={timeRange.mode === 'today' ? 'sentinelflow-primary-button' : 'sentinelflow-ghost-button'}
+            onClick={() => setTimeRange(createAlertTimeRangeValue('today'))}
+          >
+            今日告警
+          </button>
+          <button
+            type="button"
+            className={timeRange.mode === 'week' ? 'sentinelflow-primary-button' : 'sentinelflow-ghost-button'}
+            onClick={() => setTimeRange(createAlertTimeRangeValue('week'))}
+          >
+            本周告警
+          </button>
+          <AlertTimeRangeFilter value={timeRange} onChange={setTimeRange} />
+        </div>
         <div className="sentinelflow-stat-grid">
-          <div className="sentinelflow-stat-card"><span>当前轮询拉取</span><strong>{poll?.fetched_count ?? 0}</strong><em>最新一次拉取结果</em></div>
-          <div className="sentinelflow-stat-card"><span>待处理任务</span><strong>{poll?.queued_count ?? 0}</strong><em>待值班处理队列</em></div>
+          <div className="sentinelflow-stat-card"><span>筛选范围告警</span><strong>{periodSummary?.tasks_in_period ?? poll?.tasks_total ?? 0}</strong><em>当前时间筛选内任务总数</em></div>
+          <div className="sentinelflow-stat-card"><span>待处理任务</span><strong>{periodSummary?.status_counts?.queued ?? 0}</strong><em>待值班处理队列</em></div>
           <div className="sentinelflow-stat-card"><span>可用 Skills</span><strong>{skillCount}</strong><em>纯文本 / 文本+可执行</em></div>
           <div className="sentinelflow-stat-card"><span>可用 Agents</span><strong>{summary?.totals.agents ?? 0}</strong><em>当前可用的子 Agent 数量</em></div>
-          <div className="sentinelflow-stat-card"><span>业务触发</span><strong>{summary?.judgment.business_trigger ?? 0}</strong><em>已识别业务/测试触发</em></div>
-          <div className="sentinelflow-stat-card"><span>误报</span><strong>{summary?.judgment.false_positive ?? 0}</strong><em>已识别规则误报</em></div>
-          <div className="sentinelflow-stat-card"><span>真实攻击</span><strong>{summary?.judgment.true_attack ?? 0}</strong><em>已识别真实攻击</em></div>
-          <div className="sentinelflow-stat-card"><span>封禁 IP</span><strong>{summary?.operations.banned_ip_count ?? 0}</strong><em>已执行封禁动作</em></div>
+          <div className="sentinelflow-stat-card"><span>业务触发</span><strong>{periodSummary?.judgment.business_trigger ?? 0}</strong><em>已识别业务/测试触发</em></div>
+          <div className="sentinelflow-stat-card"><span>误报</span><strong>{periodSummary?.judgment.false_positive ?? 0}</strong><em>已识别规则误报</em></div>
+          <div className="sentinelflow-stat-card"><span>真实攻击</span><strong>{periodSummary?.judgment.true_attack ?? 0}</strong><em>已识别真实攻击</em></div>
+          <div className="sentinelflow-stat-card"><span>封禁 IP</span><strong>{periodSummary?.operations.banned_ip_count ?? 0}</strong><em>已执行封禁动作</em></div>
         </div>
       </Surface>
 
