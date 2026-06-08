@@ -959,6 +959,7 @@ def compact_worker_result_for_llm(worker_result: dict[str, Any]) -> dict[str, An
         "step": worker_result.get("step", 0),
         "worker": str(worker_result.get("worker", worker_result.get("worker_agent", ""))).strip(),
         "task_prompt": str(worker_result.get("task_prompt", "")),
+        "final_response": compact_text(final_response, 800),
         "summary": compact_text(worker_result.get("summary") or worker_result.get("display_summary") or final_response, 800),
         "display_summary": compact_text(worker_result.get("display_summary") or final_response, 800),
         "skills_used": list(worker_result.get("skills_used", []) or []),

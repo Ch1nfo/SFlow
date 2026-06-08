@@ -211,6 +211,35 @@ def _has_executable_skill_result(tool_calls_summary: list[dict[str, Any]], execu
     return False
 
 
+def _summarize_executable_skill_result(tool_calls_summary: list[dict[str, Any]], executable_skills: set[str]) -> tuple[bool, bool, str]:
+    """Return whether an executable skill produced a terminal result and a compact fallback summary."""
+    for item in reversed(tool_calls_summary):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name", "")).strip() not in {"execute_skill", "execute_skill_no_args"}:
+            continue
+        args = item.get("args", {})
+        if not isinstance(args, dict):
+            continue
+        skill_name = str(args.get("skill_name", "")).strip()
+        if not skill_name or skill_name not in executable_skills:
+            continue
+        result_summary = item.get("result_summary", {})
+        if not isinstance(result_summary, dict):
+            continue
+        success = result_summary.get("success")
+        if success is not True and success is not False:
+            continue
+        summary = str(result_summary.get("summary") or "").strip()
+        error = str(result_summary.get("error") or "").strip()
+        if success is False and error:
+            summary = f"Skill「{skill_name}」执行失败：{error}"
+        elif not summary:
+            summary = f"Skill「{skill_name}」执行完成。"
+        return True, bool(success), summary
+    return False, False, ""
+
+
 # ── Worker SubGraph Tool Builder ──────────────────────────────────────────────
 
 def _build_worker_subgraph_tool(
@@ -398,6 +427,17 @@ def _build_worker_subgraph_tool(
             if executable_execution_missing
             else None
         )
+        has_skill_result, skill_result_success, skill_result_summary = _summarize_executable_skill_result(
+            tool_calls_summary,
+            executable_skill_set,
+        )
+        fallback_summary = skill_result_summary if has_skill_result and not final_text else ""
+        effective_final_response = final_text or fallback_summary
+        worker_success = (
+            (bool(final_text) or (has_skill_result and skill_result_success))
+            and not terminal_execution_missing
+            and not executable_execution_missing
+        )
         if tracer is not None:
             tracer.log_worker_boundary(
                 worker=worker_agent_def.name,
@@ -405,27 +445,29 @@ def _build_worker_subgraph_tool(
                 event_type="worker_finished",
                 title=f"子 Agent {worker_agent_def.name} · 执行完成",
                 extra={
-                    "success": bool(final_text) and not terminal_execution_missing,
+                    "success": worker_success,
                     "skills_used": skills_used,
-                    "final_response": final_text,
+                    "final_response": effective_final_response,
                     "approval_pending": bool(worker_state.get("approval_pending")),
-                    "error": execution_error,
+                    "error": execution_error or (None if effective_final_response else "子 Agent 未返回有效结果。"),
                 },
             )
         result = {
             "step": step_idx,
             "worker": worker_agent_def.name,
             "task_prompt": task_prompt,
-            "final_response": final_text,
+            "final_response": effective_final_response,
+            "summary": fallback_summary,
+            "display_summary": fallback_summary,
             "skills_used": skills_used,
             "tool_calls_summary": tool_calls_summary,
-            "key_facts": extract_key_facts(task_prompt, final_text, tool_calls_summary, tool_result_facts),
+            "key_facts": extract_key_facts(task_prompt, effective_final_response, tool_calls_summary, tool_result_facts),
             "context_manifest": context_manifest,
             "context_warnings": _context_warnings_from_manifest(context_manifest),
-            "success": bool(final_text) and not terminal_execution_missing,
+            "success": worker_success,
             "approval_pending": bool(worker_state.get("approval_pending")),
             "approval_request": worker_state.get("approval_request", {}),
-            "error": execution_error or (None if final_text else "子 Agent 未返回有效结果。"),
+            "error": execution_error or (None if effective_final_response else "子 Agent 未返回有效结果。"),
         }
         if worker_state.get("approval_pending"):
             approval_request = worker_state.get("approval_request", {})
