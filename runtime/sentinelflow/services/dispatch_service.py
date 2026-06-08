@@ -442,12 +442,21 @@ def _parse_banned_ips_column(raw: Any) -> list[str]:
 
 
 def _period_filter_sql(*, since: str, until: str | None = None, source_id: str | None = None) -> tuple[str, list[Any]]:
-    clauses = ["(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time >= ?)"]
-    params: list[Any] = [since]
+    since_value = str(since or "").strip()
     until_value = str(until or "").strip()
+    time_offset = _datetime_offset_suffix(since_value or until_value)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if since_value:
+        clauses.append(
+            f"(COALESCE(NULLIF(alert_time, ''), '') = '' OR {SQL_ALERT_TIME_EPOCH_EXPR} >= {SQL_BOUND_TIME_EPOCH_EXPR})"
+        )
+        params.extend([time_offset, since_value])
     if until_value:
-        clauses.append("(COALESCE(NULLIF(alert_time, ''), '') = '' OR alert_time <= ?)")
-        params.append(until_value)
+        clauses.append(
+            f"(COALESCE(NULLIF(alert_time, ''), '') != '' AND {SQL_ALERT_TIME_EPOCH_EXPR} <= {SQL_BOUND_TIME_EPOCH_EXPR})"
+        )
+        params.extend([time_offset, until_value])
     if source_id:
         clauses.append("source_id = ?")
         params.append(source_id)
