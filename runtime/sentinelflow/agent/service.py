@@ -614,8 +614,29 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             return False
         data = result_summary.get("data", {})
         data = data if isinstance(data, dict) else {}
-        status = str(data.get("status", result_summary.get("status", ""))).strip()
-        return status in {"4", "6"} and result_summary.get("error") in (None, "")
+        key_facts = result_summary.get("key_facts", {})
+        key_facts = key_facts if isinstance(key_facts, dict) else {}
+        arguments = args.get("arguments", {})
+        arguments = arguments if isinstance(arguments, dict) else {}
+        status = str(
+            data.get(
+                "status",
+                key_facts.get("status", result_summary.get("status", arguments.get("status", ""))),
+            )
+        ).strip()
+        if status in {"4", "6"} and result_summary.get("error") in (None, ""):
+            return True
+        summary = str(result_summary.get("summary", "") or "")
+        return (
+            result_summary.get("error") in (None, "")
+            and result_summary.get("success") is True
+            and (
+                "'status': '4'" in summary
+                or '"status": "4"' in summary
+                or "'status': '6'" in summary
+                or '"status": "6"' in summary
+            )
+        )
 
     def _normalize_graph_state_keys(self, state: dict[str, Any]) -> dict[str, Any]:
         if "graph_checkpoint_ns" not in state and "checkpoint_ns" in state:
