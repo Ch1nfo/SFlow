@@ -560,7 +560,41 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             closure_step = payload.get(key, {})
             if isinstance(closure_step, dict) and closure_step.get("attempted") is True and closure_step.get("success") is True:
                 return True
+        if self._payload_has_successful_closure_summary(payload):
+            return True
         return False
+
+    def _payload_has_successful_closure_summary(self, payload: dict[str, Any]) -> bool:
+        for item in payload.get("tool_calls_summary", []) if isinstance(payload.get("tool_calls_summary", []), list) else []:
+            if self._tool_summary_has_successful_closure(item):
+                return True
+        for worker_result in payload.get("worker_results", []) if isinstance(payload.get("worker_results", []), list) else []:
+            if isinstance(worker_result, dict) and self._payload_has_successful_closure_summary(worker_result):
+                return True
+        for workflow_run in payload.get("workflow_runs", []) if isinstance(payload.get("workflow_runs", []), list) else []:
+            if isinstance(workflow_run, dict) and self._payload_has_successful_closure_summary(workflow_run):
+                return True
+        return False
+
+    def _tool_summary_has_successful_closure(self, item: Any) -> bool:
+        if not isinstance(item, dict):
+            return False
+        name = str(item.get("name", "")).strip()
+        if name not in {"execute_skill", "execute_skill_no_args"}:
+            return False
+        args = item.get("args", {})
+        args = args if isinstance(args, dict) else {}
+        skill_name = str(args.get("skill_name", "")).strip()
+        if not skill_name or not (self._is_closure_skill_name(skill_name) or self._completion_policy_marks_closure(skill_name)):
+            return False
+        result_summary = item.get("result_summary", {})
+        result_summary = result_summary if isinstance(result_summary, dict) else {}
+        if result_summary.get("success") is False:
+            return False
+        data = result_summary.get("data", {})
+        data = data if isinstance(data, dict) else {}
+        status = str(data.get("status", result_summary.get("status", ""))).strip()
+        return status in {"4", "6"} and result_summary.get("error") in (None, "")
 
     def _normalize_graph_state_keys(self, state: dict[str, Any]) -> dict[str, Any]:
         if "graph_checkpoint_ns" not in state and "checkpoint_ns" in state:
