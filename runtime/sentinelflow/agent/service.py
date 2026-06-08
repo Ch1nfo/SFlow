@@ -982,6 +982,9 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             tool_calls,
             tool_messages=source_messages,
         )
+        if not success and self._payload_has_successful_closure_summary({"tool_calls_summary": tool_calls_summary}):
+            success = True
+            error = None
         wrapped = {
             "step": step_idx or 1,
             "worker": str(checkpoint.get("agent_name", "")).strip() or str(graph_result.get("agent_name", "")).strip(),

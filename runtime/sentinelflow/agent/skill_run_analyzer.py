@@ -222,7 +222,7 @@ class SkillRunAnalyzerMixin:
                     explicit_success = result_summary.get("success")
                 if isinstance(explicit_success, bool):
                     tool_payload["success"] = explicit_success
-                if graph_result.get("error"):
+                if graph_result.get("error") and tool_payload.get("success") is not True:
                     tool_payload["error"] = graph_result.get("error")
 
             computed_success = self._compute_skill_run_success(
