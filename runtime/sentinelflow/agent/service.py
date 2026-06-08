@@ -517,6 +517,8 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         tool_calls = worker_result.get("tool_calls", [])
         messages = worker_result.get("messages", [])
         has_tool_error = False
+        has_successful_tool_result = False
+        has_successful_completion = False
         if isinstance(messages, list):
             for message in messages:
                 if not isinstance(message, dict) or str(message.get("type", "")).strip() != "tool":
@@ -529,11 +531,17 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
                     break
                 if self._is_resolved_approval_pending_tool_payload(parsed):
                     continue
+                if self._tool_payload_is_successful(parsed):
+                    has_successful_tool_result = True
+                if self._tool_payload_has_successful_completion(parsed):
+                    has_successful_completion = True
                 if isinstance(parsed, dict) and (not parsed.get("success", True) or parsed.get("error")):
                     has_tool_error = True
-                    break
 
-        has_action = bool(final_response or tool_calls)
+        if has_successful_completion:
+            return True, None
+
+        has_action = bool(final_response or tool_calls or has_successful_tool_result)
         if not has_action:
             return False, "子 Agent 未返回有效结果。"
         if has_tool_error:
@@ -547,6 +555,19 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             return False
         error = str(payload.get("error", "") or "").strip()
         return "需要审批" in error or "审批" in error
+
+    def _tool_payload_is_successful(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        return payload.get("success") is True and not bool(payload.get("error"))
+
+    def _tool_payload_has_successful_completion(self, payload: Any) -> bool:
+        if not self._tool_payload_is_successful(payload):
+            return False
+        data = payload.get("data", {})
+        data = data if isinstance(data, dict) else {}
+        status = str(data.get("status", payload.get("status", ""))).strip()
+        return status in {"4", "6"}
 
     def _approval_payload_has_successful_completion(self, payload: dict[str, Any]) -> bool:
         if bool(payload.get("success")):
