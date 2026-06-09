@@ -110,6 +110,7 @@ class SentinelFlowRuntimeConfig:
     failed_retry_interval_seconds: int
     alert_sources: list[AlertSourceConfig]
     rag: RagConfig
+    rag_agent_restore_map: dict[str, list[str]]
 
 
 def _default_values() -> dict[str, Any]:
@@ -152,6 +153,7 @@ def _default_values() -> dict[str, Any]:
         "rag_retrieve_strategy": int(os.getenv("SENTINELFLOW_RAG_RETRIEVE_STRATEGY", "3")),
         "rag_enable_rerank_model": _read_env_bool("SENTINELFLOW_RAG_ENABLE_RERANK_MODEL", True),
         "rag_rerank_model": os.getenv("SENTINELFLOW_RAG_RERANK_MODEL", "bge-reranker-base").strip(),
+        "rag_agent_restore_map": {},
     }
 
 
@@ -237,6 +239,25 @@ def _normalize_alert_sources(values: dict[str, Any]) -> list[AlertSourceConfig]:
     return [_normalize_alert_source(_legacy_source_values(values), 0)]
 
 
+def _normalize_rag_agent_restore_map(value: Any) -> dict[str, list[str]]:
+    valid_sections = {"skills:", "hybrid_doc_allowlist:", "exec_skill_allowlist:"}
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for agent_name, sections in value.items():
+        agent = str(agent_name).strip()
+        if not agent or not isinstance(sections, list):
+            continue
+        section_values = [
+            str(section).strip()
+            for section in sections
+            if str(section).strip() in valid_sections
+        ]
+        if section_values:
+            normalized[agent] = section_values
+    return normalized
+
+
 def _normalize_config(values: dict[str, Any]) -> SentinelFlowRuntimeConfig:
     alert_sources = _normalize_alert_sources(values)
     primary_source = alert_sources[0]
@@ -281,6 +302,7 @@ def _normalize_config(values: dict[str, Any]) -> SentinelFlowRuntimeConfig:
             enable_rerank_model=_read_bool_value(values.get("rag_enable_rerank_model"), True),
             rerank_model=str(values.get("rag_rerank_model", "bge-reranker-base")).strip(),
         ),
+        rag_agent_restore_map=_normalize_rag_agent_restore_map(values.get("rag_agent_restore_map")),
     )
 
 

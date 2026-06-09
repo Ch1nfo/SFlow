@@ -321,23 +321,41 @@ def _sync_rag_skill_md(config) -> None:
     )
 
 
-AGENT_YAML_PATH = PROJECT_ROOT / ".sentinelflow" / "plugins" / "agents" / "system-primary" / "agent.yaml"
+AGENTS_DIR = PROJECT_ROOT / ".sentinelflow" / "plugins" / "agents"
+RAG_AGENT_SECTIONS = ("skills:", "hybrid_doc_allowlist:", "exec_skill_allowlist:")
+RAG_RESTORE_CONFIG_KEY = "rag_agent_restore_map"
 
 
-def _sync_agent_rag(enabled: bool) -> None:
-    """开启/关闭 RAG 时从 system-primary agent.yaml 的列表中添加/移除 rag。"""
-    if not AGENT_YAML_PATH.is_file():
-        return
+def _sync_agent_rag(enabled: bool, restore_map: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    """开启/关闭 RAG 时同步所有 Agent 配置中的 rag 授权。"""
+    if not AGENTS_DIR.is_dir():
+        return {}
 
-    text = AGENT_YAML_PATH.read_text(encoding="utf-8")
+    removed_map: dict[str, list[str]] = {}
+    for agent_yaml_path in sorted(AGENTS_DIR.glob("*/agent.yaml")):
+        agent_name = agent_yaml_path.parent.name
+        if enabled:
+            sections = (restore_map or {}).get(agent_name, [])
+            _sync_agent_yaml_rag(agent_yaml_path, sections)
+        else:
+            removed_sections = _agent_yaml_rag_sections(agent_yaml_path)
+            if removed_sections:
+                removed_map[agent_name] = removed_sections
+            _sync_agent_yaml_rag(agent_yaml_path, [])
+    return removed_map
 
-    for section in ("skills:", "hybrid_doc_allowlist:", "exec_skill_allowlist:"):
+
+def _sync_agent_yaml_rag(agent_yaml_path: Path, enabled_sections: list[str]) -> None:
+    text = agent_yaml_path.read_text(encoding="utf-8")
+    enabled_section_set = set(enabled_sections)
+
+    for section in RAG_AGENT_SECTIONS:
         escaped = re.escape(section)
 
         def _replace_block(m: re.Match) -> str:
             block = m.group(1)
             block = block.replace("  - rag\n", "")
-            if enabled:
+            if section in enabled_section_set:
                 if not block.endswith("\n"):
                     block += "\n"
                 block += "  - rag\n"
@@ -350,11 +368,60 @@ def _sync_agent_rag(enabled: bool) -> None:
             flags=re.MULTILINE,
         )
 
-    _mirror_project_file(
-        Path(".sentinelflow") / "plugins" / "agents" / "system-primary" / "agent.yaml",
-        text,
+    relative_path = Path(".sentinelflow") / "plugins" / "agents" / agent_yaml_path.parent.name / "agent.yaml"
+    _mirror_project_file(relative_path, text)
+
+
+def _agent_yaml_rag_sections(agent_yaml_path: Path) -> list[str]:
+    if not agent_yaml_path.is_file():
+        return []
+    agent_text = agent_yaml_path.read_text(encoding="utf-8")
+    sections: list[str] = []
+    for section in RAG_AGENT_SECTIONS:
+        escaped = re.escape(section)
+        match = re.search(rf"({escaped}\n(?:(?:  - .+)\n)*)", agent_text, flags=re.MULTILINE)
+        if match and "  - rag\n" in match.group(1):
+            sections.append(section)
+    return sections
+
+
+def _rag_enabled_from_agent_files() -> bool:
+    if not AGENTS_DIR.is_dir():
+        return True
+    return any(
+        _agent_yaml_rag_sections(agent_yaml_path)
+        for agent_yaml_path in AGENTS_DIR.glob("*/agent.yaml")
     )
 
+
+def _collect_current_rag_restore_map() -> dict[str, list[str]]:
+    if not AGENTS_DIR.is_dir():
+        return {}
+    restore_map: dict[str, list[str]] = {}
+    for agent_yaml_path in sorted(AGENTS_DIR.glob("*/agent.yaml")):
+        sections = _agent_yaml_rag_sections(agent_yaml_path)
+        if sections:
+            restore_map[agent_yaml_path.parent.name] = sections
+    return restore_map
+
+
+def _normalize_rag_restore_map(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    valid_sections = set(RAG_AGENT_SECTIONS)
+    for agent_name, sections in value.items():
+        agent = str(agent_name).strip()
+        if not agent or not isinstance(sections, list):
+            continue
+        section_values = [
+            str(section).strip()
+            for section in sections
+            if str(section).strip() in valid_sections
+        ]
+        if section_values:
+            normalized[agent] = section_values
+    return normalized
 
 def _sync_rag_main_py(config) -> None:
     """根据 RAG 配置更新 rag skill 的 main.py 中的 API_KEY 和 FIXED_PARAMS。"""
@@ -446,10 +513,8 @@ def _read_rag_from_files() -> dict[str, Any]:
         "rerank_model": "",
     }
 
-    # 从 agent.yaml 判断 enabled 状态：rag 是否在 skills 列表中
-    if AGENT_YAML_PATH.is_file():
-        agent_text = AGENT_YAML_PATH.read_text(encoding="utf-8")
-        result["enabled"] = bool(re.search(r"^skills:\n(?:  - .+\n)*  - rag\n", agent_text, flags=re.MULTILINE))
+    # 从所有 Agent 配置整体判断 enabled 状态。
+    result["enabled"] = _rag_enabled_from_agent_files()
 
     # 从 main.py 读取各参数
     if RAG_MAIN_PATH.is_file():
@@ -484,9 +549,16 @@ def rag_settings() -> dict[str, Any]:
 
 @router.post("/runtime/rag-settings")
 def save_rag_settings(payload: RagConfigRequest) -> dict[str, Any]:
-    current = load_runtime_config().rag
+    current_runtime = load_runtime_config()
+    current = current_runtime.rag
+    next_enabled = payload.enabled if payload.enabled is not None else current.enabled
+    restore_map = _normalize_rag_restore_map(current_runtime.rag_agent_restore_map)
+    if next_enabled:
+        next_restore_map: dict[str, list[str]] = {}
+    else:
+        next_restore_map = _collect_current_rag_restore_map() or restore_map
     merged = {
-        "rag_enabled": payload.enabled if payload.enabled is not None else current.enabled,
+        "rag_enabled": next_enabled,
         "rag_knowledge_id": payload.knowledge_id if payload.knowledge_id is not None else current.knowledge_id,
         "rag_api_key": payload.api_key if payload.api_key is not None else current.api_key,
         "rag_top_k": payload.top_k if payload.top_k is not None else current.top_k,
@@ -494,9 +566,12 @@ def save_rag_settings(payload: RagConfigRequest) -> dict[str, Any]:
         "rag_retrieve_strategy": payload.retrieve_strategy if payload.retrieve_strategy is not None else current.retrieve_strategy,
         "rag_enable_rerank_model": payload.enable_rerank_model if payload.enable_rerank_model is not None else current.enable_rerank_model,
         "rag_rerank_model": payload.rerank_model if payload.rerank_model is not None else current.rerank_model,
+        RAG_RESTORE_CONFIG_KEY: next_restore_map,
     }
     new_config = save_runtime_config(merged)
-    _sync_agent_rag(new_config.rag.enabled)
+    removed_map = _sync_agent_rag(new_config.rag.enabled, restore_map)
+    if not new_config.rag.enabled and removed_map != next_restore_map:
+        new_config = save_runtime_config({RAG_RESTORE_CONFIG_KEY: removed_map})
     _sync_rag_skill_md(new_config.rag)
     _sync_rag_main_py(new_config.rag)
     return rag_settings()
