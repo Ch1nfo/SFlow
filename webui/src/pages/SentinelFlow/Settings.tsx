@@ -31,6 +31,12 @@ const SETTINGS_DRAFT_KEY = 'sentinelflow:settings:draft'
 const DEBUG_LOG_UNLOCK_CLICKS = 5
 const RUN_LOG_INITIAL_RENDER_COUNT = 80
 const RUN_LOG_RENDER_INCREMENT = 80
+const WEEKLY_ALERT_CLEANUP_CONFIRM_TEXT = [
+  '确认开启历史告警清理？',
+  '',
+  '开启后，系统会在每周一 01:00 自动删除本周一 00:00 之前的全部告警任务数据。',
+  '该操作不可恢复，请确认已完成归档或备份。',
+].join('\n')
 
 function comparableAlertSource(source: AlertSourceDraft) {
   return {
@@ -707,6 +713,7 @@ export default function SentinelFlowSettingsPage() {
   const debugLogRequestSeq = useRef(0)
   const serverDraftRef = useRef<SettingsDraft | null>(null)
   const userEditedRef = useRef(false)
+  const weeklyCleanupEnableConfirmedRef = useRef(false)
   const filteredDebugLogDates = useMemo(
     () => runLogDateFilterEnabled
       ? debugLogDates.filter((item) => isRunLogDateInRange(item.date, runLogDateFilterStart, runLogDateFilterEnd))
@@ -783,7 +790,7 @@ export default function SentinelFlowSettingsPage() {
       { label: '思考模型适配', value: draft.llmThinkingAdapterEnabled ? '已开启' : '未开启' },
       { label: '告警源', value: `${draft.alertSources.length} 个` },
       { label: '解析规则', value: isScriptMode ? '脚本模式' : parserConfigured ? '已配置' : '未配置' },
-      { label: '每周刷新告警', value: draft.weeklyAlertCleanupEnabled ? '已开启' : '未开启' },
+      { label: '历史告警清理', value: draft.weeklyAlertCleanupEnabled ? '已开启（危险）' : '未开启' },
     ]
   }, [loading, draft, settings, isScriptMode])
 
@@ -809,6 +816,7 @@ export default function SentinelFlowSettingsPage() {
     const nextDraft = buildDraft(nextSettings)
     serverDraftRef.current = nextDraft
     userEditedRef.current = false
+    weeklyCleanupEnableConfirmedRef.current = nextDraft.weeklyAlertCleanupEnabled
     setServerDraftChanged(false)
     setDraft(nextDraft)
   }
@@ -871,6 +879,19 @@ export default function SentinelFlowSettingsPage() {
       if (key === 'alertSourceAnalysisPrompt') return updateSelectedSource(next, { analysisPrompt: String(value) })
       return next
     })
+  }
+
+  function handleWeeklyAlertCleanupToggle(enabled: boolean) {
+    if (enabled && !draft.weeklyAlertCleanupEnabled) {
+      if (!window.confirm(WEEKLY_ALERT_CLEANUP_CONFIRM_TEXT)) {
+        return
+      }
+      weeklyCleanupEnableConfirmedRef.current = true
+    }
+    if (!enabled) {
+      weeklyCleanupEnableConfirmedRef.current = false
+    }
+    updateDraft('weeklyAlertCleanupEnabled', enabled)
   }
 
   function selectSource(sourceId: string) {
@@ -936,6 +957,14 @@ export default function SentinelFlowSettingsPage() {
   }
 
   async function handleSave() {
+    if (
+      draft.weeklyAlertCleanupEnabled &&
+      !settings?.runtime.weekly_alert_cleanup_enabled &&
+      !weeklyCleanupEnableConfirmedRef.current &&
+      !window.confirm(WEEKLY_ALERT_CLEANUP_CONFIRM_TEXT)
+    ) {
+      return
+    }
     setSaving(true)
     setSaveMessage(null)
     try {
@@ -1371,7 +1400,7 @@ export default function SentinelFlowSettingsPage() {
           </div>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.agentEnabled} onChange={(event) => updateDraft('agentEnabled', event.target.checked)} /><span>启用 Agent Runtime</span></label>
           <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.alertSourceEnabled} onChange={(event) => updateDraft('alertSourceEnabled', event.target.checked)} /><span>启用告警接入</span></label>
-          <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.weeklyAlertCleanupEnabled} onChange={(event) => updateDraft('weeklyAlertCleanupEnabled', event.target.checked)} /><span>每周刷新告警</span></label>
+          <label className="sentinelflow-settings-toggle"><input type="checkbox" checked={draft.weeklyAlertCleanupEnabled} onChange={(event) => handleWeeklyAlertCleanupToggle(event.target.checked)} /><span>每周删除历史告警</span></label>
           <label className="sentinelflow-settings-field">
             <span>完整报告格式 Skill</span>
             <select className="sentinelflow-settings-input" value={draft.fullReportFormatSkill} onChange={(event) => updateDraft('fullReportFormatSkill', event.target.value)}>
@@ -1386,7 +1415,7 @@ export default function SentinelFlowSettingsPage() {
           </label>
         </div>
         <div className="mt-3 sentinelflow-message-block">
-          开启后，系统会在每周一 01:00 删除上周及以前的全部告警任务数据。
+          危险操作：开启后，系统会在每周一 01:00 自动删除本周一 00:00 之前的全部告警任务数据；删除后不可从平台内恢复，请先确认归档或备份。
         </div>
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50 p-5">
           <div className="mb-4">

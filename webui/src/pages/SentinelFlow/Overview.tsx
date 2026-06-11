@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ChevronRight, LayoutDashboard, ListTodo, MessageSquareText, Siren } from 'lucide-react'
-import { fetchAlertPeriodSummary, fetchDashboardSummary, fetchHealth } from '@/api/sentinelflow'
+import { fetchAlertPeriodSummary, fetchDashboardSummary, fetchHealth, fetchRuntimeSettings } from '@/api/sentinelflow'
 import Surface from '@/components/sentinelflow/Surface'
 import StatusBadge from '@/components/sentinelflow/StatusBadge'
 import AlertTimeRangeFilter, { alertTimeRangeToQuery, createAlertTimeRangeValue, type AlertTimeRangeValue } from '@/components/sentinelflow/AlertTimeRangeFilter'
@@ -32,6 +32,7 @@ export default function SentinelFlowOverviewPage() {
     fetchAlertPeriodSummary(rangeSince, 'all', rangeUntil)
   ), [rangeSince, rangeUntil])
   const { data: health, reload: reloadHealth } = useSentinelFlowAsyncData(fetchHealth, [])
+  const { data: settings, reload: reloadSettings } = useSentinelFlowAsyncData(fetchRuntimeSettings, [])
   // Dashboard counts span more than one page, so request a wide single page.
   const { data: poll, reload: reloadPoll } = useSentinelFlowPollStore('all', { pageSize: 500, since: rangeSince, until: rangeUntil })
   const { data: skills, reload: reloadSkills } = useSentinelFlowResourceStore('skills')
@@ -46,9 +47,9 @@ export default function SentinelFlowOverviewPage() {
   useEffect(() => {
     return subscribeRuntimeActivity((next) => {
       setActivity(next)
-      void Promise.all([reloadHealth(), reloadPoll({ force: true, silent: true }), reloadSkills(), reloadSummary(), reloadPeriodSummary()])
+      void Promise.all([reloadHealth(), reloadSettings(), reloadPoll({ force: true, silent: true }), reloadSkills(), reloadSummary(), reloadPeriodSummary()])
     })
-  }, [reloadHealth, reloadPoll, reloadSkills, reloadSummary, reloadPeriodSummary])
+  }, [reloadHealth, reloadSettings, reloadPoll, reloadSkills, reloadSummary, reloadPeriodSummary])
 
   useSentinelFlowLiveRefresh(() => {
     void reloadPoll({ silent: true })
@@ -181,6 +182,15 @@ export default function SentinelFlowOverviewPage() {
                 <span>执行中 {runningCount}</span>
                 <span>待审批 {awaitingApprovalCount}</span>
                 <span>失败 {failedCount}</span>
+              </div>
+            </div>
+            <div className="sentinelflow-stack-item">
+              <strong>历史告警清理</strong>
+              <div className="sentinelflow-inline-status">
+                <StatusBadge tone={settings?.runtime.weekly_alert_cleanup_enabled ? 'danger' : 'neutral'}>
+                  {settings?.runtime.weekly_alert_cleanup_enabled ? '已开启' : '未开启'}
+                </StatusBadge>
+                <span>{settings?.runtime.weekly_alert_cleanup_enabled ? '每周一 01:00 删除本周一之前全部告警' : '不会自动删除历史告警'}</span>
               </div>
             </div>
           </div>
