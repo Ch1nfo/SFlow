@@ -1414,9 +1414,6 @@ export default function SentinelFlowSettingsPage() {
             </select>
           </label>
         </div>
-        <div className="mt-3 sentinelflow-message-block">
-          危险操作：开启后，系统会在每周一 01:00 自动删除本周一 00:00 之前的全部告警任务数据；删除后不可从平台内恢复，请先确认归档或备份。
-        </div>
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50 p-5">
           <div className="mb-4">
             <h3 className="text-lg font-semibold text-gray-900">告警接入配置</h3>
