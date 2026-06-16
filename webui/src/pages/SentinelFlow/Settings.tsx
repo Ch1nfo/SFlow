@@ -31,6 +31,7 @@ const SETTINGS_DRAFT_KEY = 'sentinelflow:settings:draft'
 const DEBUG_LOG_UNLOCK_CLICKS = 5
 const RUN_LOG_INITIAL_RENDER_COUNT = 80
 const RUN_LOG_RENDER_INCREMENT = 80
+const DEFAULT_RUN_LOG_VISIBLE_DAYS = 7
 const WEEKLY_ALERT_CLEANUP_CONFIRM_TEXT = [
   '确认开启历史告警清理？',
   '',
@@ -278,6 +279,30 @@ function isRunLogDateInRange(date: string, startDate: string, endDate: string): 
   if (normalizedStart && normalizedDate < normalizedStart) return false
   if (normalizedEnd && normalizedDate > normalizedEnd) return false
   return true
+}
+
+function defaultRunLogDateRange(): { start: string; end: string } {
+  const end = new Date()
+  end.setHours(0, 0, 0, 0)
+  const start = new Date(end)
+  start.setDate(start.getDate() - (DEFAULT_RUN_LOG_VISIBLE_DAYS - 1))
+  return {
+    start: formatRunLogDate(start),
+    end: formatRunLogDate(end),
+  }
+}
+
+function visibleRunLogDates(
+  dates: RunLogDateSummary[],
+  filterEnabled: boolean,
+  filterStart: string,
+  filterEnd: string,
+): RunLogDateSummary[] {
+  if (filterEnabled) {
+    return dates.filter((item) => isRunLogDateInRange(item.date, filterStart, filterEnd))
+  }
+  const range = defaultRunLogDateRange()
+  return dates.filter((item) => isRunLogDateInRange(item.date, range.start, range.end))
 }
 
 function padDatePart(value: number): string {
@@ -715,9 +740,7 @@ export default function SentinelFlowSettingsPage() {
   const userEditedRef = useRef(false)
   const weeklyCleanupEnableConfirmedRef = useRef(false)
   const filteredDebugLogDates = useMemo(
-    () => runLogDateFilterEnabled
-      ? debugLogDates.filter((item) => isRunLogDateInRange(item.date, runLogDateFilterStart, runLogDateFilterEnd))
-      : debugLogDates,
+    () => visibleRunLogDates(debugLogDates, runLogDateFilterEnabled, runLogDateFilterStart, runLogDateFilterEnd),
     [debugLogDates, runLogDateFilterEnabled, runLogDateFilterEnd, runLogDateFilterStart],
   )
   const availableRunLogDates = useMemo(
@@ -1112,7 +1135,8 @@ export default function SentinelFlowSettingsPage() {
       setDebugLogDates(data.dates ?? [])
       setActiveRunLogRetentionDays(data.retention_days ?? 1)
       updateDraft('runLogRetentionDays', String(data.retention_days ?? 1))
-      const nextDate = selectedDebugDate || data.dates?.[0]?.date || ''
+      const nextDates = visibleRunLogDates(data.dates ?? [], runLogDateFilterEnabled, runLogDateFilterStart, runLogDateFilterEnd)
+      const nextDate = nextDates.some((item) => item.date === selectedDebugDate) ? selectedDebugDate : nextDates[0]?.date || ''
       setSelectedDebugDate(nextDate)
       if (nextDate) {
         const alertData = await fetchRunLogAlerts(nextDate)
@@ -1217,12 +1241,24 @@ export default function SentinelFlowSettingsPage() {
     await selectDebugDate(nextDate)
   }
 
-  function clearRunLogDateFilter() {
+  async function clearRunLogDateFilter() {
     setRunLogDateFilterEnabled(false)
     setRunLogDateFilterStart('')
     setRunLogDateFilterEnd('')
     setRunLogDateFilterOpen(false)
     setDebugLogError(null)
+    const nextDates = visibleRunLogDates(debugLogDates, false, '', '')
+    const nextDate = nextDates.some((item) => item.date === selectedDebugDate) ? selectedDebugDate : nextDates[0]?.date || ''
+    if (!nextDate) {
+      setSelectedDebugDate('')
+      setSelectedDebugLogId('')
+      setDebugLogAlerts([])
+      setDebugLogDetail(null)
+      return
+    }
+    if (nextDate !== selectedDebugDate) {
+      await selectDebugDate(nextDate)
+    }
   }
 
   async function handleSaveRunLogRetention() {
@@ -1234,9 +1270,7 @@ export default function SentinelFlowSettingsPage() {
       setActiveRunLogRetentionDays(data.retention_days ?? days)
       updateDraft('runLogRetentionDays', String(data.retention_days ?? days))
       setDebugLogDates(data.dates ?? [])
-      const nextDates = runLogDateFilterEnabled
-        ? (data.dates ?? []).filter((item) => isRunLogDateInRange(item.date, runLogDateFilterStart, runLogDateFilterEnd))
-        : (data.dates ?? [])
+      const nextDates = visibleRunLogDates(data.dates ?? [], runLogDateFilterEnabled, runLogDateFilterStart, runLogDateFilterEnd)
       if (selectedDebugDate && !nextDates.some((item) => item.date === selectedDebugDate)) {
         setSelectedDebugDate('')
         setSelectedDebugLogId('')
@@ -1642,7 +1676,7 @@ export default function SentinelFlowSettingsPage() {
                         />
                       </div>
                       <div className="mt-3 flex justify-end gap-2">
-                        <button type="button" className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" onClick={clearRunLogDateFilter}>
+                        <button type="button" className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800" onClick={() => void clearRunLogDateFilter()}>
                           清除
                         </button>
                         <button type="button" className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-white" onClick={() => void applyRunLogDateFilter()}>
@@ -1659,7 +1693,10 @@ export default function SentinelFlowSettingsPage() {
               {debugLogLoading && !debugLogDetail ? <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300">正在读取详细运行日志...</div> : null}
               <div className="grid min-h-[560px] gap-4 lg:grid-cols-[180px_320px_minmax(0,1fr)]">
                 <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
-                  <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">日期</div>
+                  <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">日期</div>
+                  <div className="mb-3 text-xs text-slate-600">
+                    {runLogDateFilterEnabled ? '显示筛选范围' : `默认最近 ${DEFAULT_RUN_LOG_VISIBLE_DAYS} 天`}
+                  </div>
                   <div className="space-y-2">
                     {filteredDebugLogDates.map((item) => (
                       <button
@@ -1672,7 +1709,7 @@ export default function SentinelFlowSettingsPage() {
                         <div className="text-xs text-slate-500">{item.count} 条告警</div>
                       </button>
                     ))}
-                    {!filteredDebugLogDates.length ? <div className="text-sm text-slate-500">{runLogDateFilterEnabled ? '筛选范围内暂无日志' : '暂无日志'}</div> : null}
+                    {!filteredDebugLogDates.length ? <div className="text-sm text-slate-500">{runLogDateFilterEnabled ? '筛选范围内暂无日志' : `最近 ${DEFAULT_RUN_LOG_VISIBLE_DAYS} 天暂无日志，可用筛选查看更早日期`}</div> : null}
                   </div>
                 </div>
                 <div className="rounded-xl border border-slate-800 bg-slate-900 p-3">
