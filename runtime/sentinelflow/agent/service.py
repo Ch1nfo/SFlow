@@ -14,6 +14,7 @@ from sentinelflow.agent.conversation_context import build_conversation_context_p
 from sentinelflow.agent.context_utils import (
     build_compact_final_summary_context,
     build_context_manifest,
+    compact_text,
     compact_worker_result_for_llm,
     extract_explicit_event_id_from_text,
     extract_key_facts,
@@ -53,6 +54,77 @@ def _result_text_for_display(result: dict[str, Any], *, limit: int | None = None
         if text:
             return text[:limit] if limit is not None else text
     return ""
+
+
+MAX_RESULT_STORAGE_LIST_ITEMS = 30
+MAX_RESULT_STORAGE_STRING_CHARS = 8000
+MAX_RESULT_STORAGE_DEPTH = 8
+
+
+def _compact_result_storage_value(value: Any, *, _depth: int = 0) -> Any:
+    if _depth >= MAX_RESULT_STORAGE_DEPTH:
+        if isinstance(value, (dict, list, tuple)):
+            return {
+                "_sentinelflow_truncated": True,
+                "reason": "max_depth",
+                "type": type(value).__name__,
+            }
+        return compact_text(value, MAX_RESULT_STORAGE_STRING_CHARS) if isinstance(value, str) else value
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_result_storage_value(item, _depth=_depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        compacted = [_compact_result_storage_value(item, _depth=_depth + 1) for item in value[:MAX_RESULT_STORAGE_LIST_ITEMS]]
+        if len(value) > MAX_RESULT_STORAGE_LIST_ITEMS:
+            compacted.append(
+                {
+                    "_sentinelflow_truncated": True,
+                    "omitted_items": len(value) - MAX_RESULT_STORAGE_LIST_ITEMS,
+                    "original_count": len(value),
+                }
+            )
+        return compacted
+    if isinstance(value, tuple):
+        return _compact_result_storage_value(list(value), _depth=_depth)
+    if isinstance(value, str):
+        compacted = compact_text(value, MAX_RESULT_STORAGE_STRING_CHARS)
+        if len(compacted) < len(value.strip()):
+            return {
+                "_sentinelflow_truncated": True,
+                "preview": compacted,
+                "original_chars": len(value),
+            }
+        return value
+    return value
+
+
+def _compact_graph_result_for_storage(graph_result: dict[str, Any]) -> dict[str, Any]:
+    graph_result = graph_result if isinstance(graph_result, dict) else {}
+    omitted_runtime_keys = [
+        key
+        for key in ("messages", "tool_calls")
+        if key in graph_result
+    ]
+    compacted: dict[str, Any] = {}
+    for key, value in graph_result.items():
+        if key in {"messages", "tool_calls"}:
+            continue
+        if key == "worker_results" and isinstance(value, list):
+            compacted[key] = [
+                compact_worker_result_for_llm(item)
+                for item in value[:MAX_RESULT_STORAGE_LIST_ITEMS]
+                if isinstance(item, dict)
+            ]
+            if len(value) > MAX_RESULT_STORAGE_LIST_ITEMS:
+                compacted["worker_results_truncated"] = True
+                compacted["worker_results_total"] = len(value)
+            continue
+        compacted[key] = _compact_result_storage_value(value)
+    if omitted_runtime_keys:
+        compacted["runtime_payload_omitted"] = omitted_runtime_keys
+    return compacted
 
 
 class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
@@ -2315,8 +2387,9 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
         if final_judgment_synthesis and not final_judgment_markdown:
             execution_trace = self._trace_with_inserted_step(execution_trace, final_judgment_synthesis)
 
+        storage_graph_result = _compact_graph_result_for_storage(graph_result)
         result_payload = {
-            **graph_result,
+            **storage_graph_result,
             "event_ids": str(alert.get("eventIds", "")).strip(),
             "disposition": final_disposition,
             "summary": summary,
@@ -2338,23 +2411,23 @@ class SentinelFlowAgentService(SkillRunAnalyzerMixin, TextExtractorMixin):
             ).strip(),
             "enrichment": enrichment,
             "workflow_selection": workflow_selection,
-            "workflow_runs": workflow_runs,
+            "workflow_runs": _compact_result_storage_value(workflow_runs),
             "workflow_execution_issues": workflow_execution_issues,
-            "primary_action_steps": primary_action_steps,
-            "primary_closure_step": primary_closure_step,
-            "aggregated_action_steps": aggregated_action_steps,
-            "aggregated_actions": aggregated_actions,
-            "aggregated_closure_steps": aggregated_closure_steps,
-            "effective_closure_step": effective_closure_step,
-            "action_steps": action_steps,
-            "closure_step": closure_step,
-            "closure_result": closure_result,
-            "actions": actions,
+            "primary_action_steps": _compact_result_storage_value(primary_action_steps),
+            "primary_closure_step": _compact_result_storage_value(primary_closure_step),
+            "aggregated_action_steps": _compact_result_storage_value(aggregated_action_steps),
+            "aggregated_actions": _compact_result_storage_value(aggregated_actions),
+            "aggregated_closure_steps": _compact_result_storage_value(aggregated_closure_steps),
+            "effective_closure_step": _compact_result_storage_value(effective_closure_step),
+            "action_steps": _compact_result_storage_value(action_steps),
+            "closure_step": _compact_result_storage_value(closure_step),
+            "closure_result": _compact_result_storage_value(closure_result),
+            "actions": _compact_result_storage_value(actions),
             "success": success,
             "execution_mode": "agent",
-            "execution_trace": execution_trace,
-            "final_facts": final_facts,
-            "report_context_snapshot": report_context_snapshot,
+            "execution_trace": _compact_result_storage_value(execution_trace),
+            "final_facts": _compact_result_storage_value(final_facts),
+            "report_context_snapshot": _compact_result_storage_value(report_context_snapshot),
             "used_agent": True,
             "has_close_action": bool(closure_step.get("attempted")),
             "has_disposal_action": bool(actions),

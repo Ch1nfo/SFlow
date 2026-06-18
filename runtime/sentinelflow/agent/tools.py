@@ -25,6 +25,50 @@ except ModuleNotFoundError:  # pragma: no cover
     InjectedState = object  # type: ignore[assignment]
 
 
+MAX_SKILL_RESULT_LIST_ITEMS = 20
+MAX_SKILL_RESULT_STRING_CHARS = 4000
+MAX_SKILL_RESULT_DEPTH = 6
+
+
+def _compact_skill_result_value(value: Any, *, _depth: int = 0) -> Any:
+    if _depth >= MAX_SKILL_RESULT_DEPTH:
+        if isinstance(value, (dict, list, tuple)):
+            return {
+                "_sentinelflow_truncated": True,
+                "reason": "max_depth",
+                "type": type(value).__name__,
+            }
+        return compact_text(value, MAX_SKILL_RESULT_STRING_CHARS) if isinstance(value, str) else value
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_skill_result_value(item, _depth=_depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        compacted = [_compact_skill_result_value(item, _depth=_depth + 1) for item in value[:MAX_SKILL_RESULT_LIST_ITEMS]]
+        if len(value) > MAX_SKILL_RESULT_LIST_ITEMS:
+            compacted.append(
+                {
+                    "_sentinelflow_truncated": True,
+                    "omitted_items": len(value) - MAX_SKILL_RESULT_LIST_ITEMS,
+                    "original_count": len(value),
+                }
+            )
+        return compacted
+    if isinstance(value, tuple):
+        return _compact_skill_result_value(list(value), _depth=_depth)
+    if isinstance(value, str):
+        compacted = compact_text(value, MAX_SKILL_RESULT_STRING_CHARS)
+        if len(compacted) < len(value.strip()):
+            return {
+                "_sentinelflow_truncated": True,
+                "preview": compacted,
+                "original_chars": len(value),
+            }
+        return value
+    return value
+
+
 def _format_schema_property_label(
     field: str,
     field_schema: Any,
@@ -543,7 +587,8 @@ def build_agent_tools(
             }
             try:
                 result = skill_runtime.execute_skill(skill_name, normalized_arguments, context)
-                payload = result.data if isinstance(result.data, dict) else {"result": result.data}
+                raw_payload = result.data if isinstance(result.data, dict) else {"result": result.data}
+                payload = _compact_skill_result_value(raw_payload)
                 _audit_skill_input(
                     state,
                     skill_name=skill_name,
@@ -695,7 +740,8 @@ def build_agent_tools(
             }
             try:
                 result = skill_runtime.execute_skill(skill_name, no_args, context)
-                payload = result.data if isinstance(result.data, dict) else {"result": result.data}
+                raw_payload = result.data if isinstance(result.data, dict) else {"result": result.data}
+                payload = _compact_skill_result_value(raw_payload)
                 _audit_skill_input(
                     state,
                     skill_name=skill_name,
